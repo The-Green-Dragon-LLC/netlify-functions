@@ -8,8 +8,9 @@ const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(
 
 const productsTableId = "tblkLl9qqg654fWi7";
 const variantsTableId = "tblEtb1aIH5Xk4Nh9";
+const membershipsTableId = "tblrNW5UvoSVMUsYr";
 
-const getTableRecords = async (productCode) => {
+const getProductInventory = async (productCode) => {
   const tableRecords = [];
 
   await base(productsTableId)
@@ -49,6 +50,47 @@ const getTableRecords = async (productCode) => {
   return tableRecords;
 };
 
+const getMembershipPrice = async (membershipCode, subFrequency) => {
+  const tableRecords = [];
+
+  const frequencies = [
+    {
+      code: "1m",
+      name: "Price (Monthly)",
+    },
+    {
+      code: "3m",
+      name: "Price (Quarterly)",
+    },
+    {
+      code: "1y",
+      name: "Price (Annually)",
+    },
+  ];
+
+  const frequencyName = frequencies.find(
+    (freq) => subFrequency === freq.code
+  ).name;
+
+  await base(membershipsTableId)
+    .select({
+      filterByFormula: `SKU = "${membershipCode}"`,
+    })
+    .eachPage(function page(records, fetchNextPage) {
+      records.forEach((record) => {
+        tableRecords.push({
+          name: record.get("Name"),
+          sku: record.get("SKU"),
+          price: record.get(frequencyName),
+        });
+      });
+
+      fetchNextPage();
+    });
+
+  return tableRecords;
+};
+
 exports.handler = async (event, context) => {
   const payload = JSON.parse(event.body);
   const cartItems = payload["_embedded"]["fx:items"];
@@ -56,25 +98,60 @@ exports.handler = async (event, context) => {
   try {
     const invalidProductCode = [];
     const insufficientStock = [];
+    const mismatchMembershipPrice = [];
 
     await Promise.all(
       cartItems.map(async (cartItem) => {
-        const tableRecords = await getTableRecords(cartItem.code);
+        if (cartItem["_embedded"]["fx:item_category"].code === "memberships") {
+          const tableRecords = await getMembershipPrice(
+            cartItem.code,
+            cartItem.subscription_frequency
+          );
 
-        if (tableRecords.length !== 1) {
-          invalidProductCode.push(cartItem.code);
+          if (tableRecords.length !== 1) {
+            console.log(
+              `No records found for SKU ${cartItem.code} in Airtable`
+            );
+            invalidProductCode.push(cartItem.code);
+          } else {
+            const tablePrice = tableRecords[0].price;
+            const cartPrice = cartItem.price;
+
+            if (cartPrice !== tablePrice) {
+              console.log(
+                `Price for ${cartItem.name} should be ${tablePrice}, but showing ${cartPrice} in cart`
+              );
+              mismatchMembershipPrice.push(cartItem.name);
+            }
+          }
         } else {
-          const inventory = tableRecords[0].inventory;
-          const cartQuantity = cartItem.quantity;
+          const tableRecords = await getProductInventory(cartItem.code);
 
-          if (!inventory || cartQuantity > inventory) {
-            insufficientStock.push(cartItem.name);
+          if (tableRecords.length !== 1) {
+            console.log(
+              `No records found for SKU ${cartItem.code} in Airtable`
+            );
+            invalidProductCode.push(cartItem.code);
+          } else {
+            const inventory = tableRecords[0].inventory;
+            const cartQuantity = cartItem.quantity;
+
+            if (!inventory || cartQuantity > inventory) {
+              console.log(
+                `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${inventory}, but having ${cartQuantity} in cart`
+              );
+              insufficientStock.push(cartItem.name);
+            }
           }
         }
       })
     );
 
-    if (invalidProductCode.length > 0 || insufficientStock.length > 0) {
+    if (
+      invalidProductCode.length > 0 ||
+      insufficientStock.length > 0 ||
+      mismatchMembershipPrice.length > 0
+    ) {
       return {
         statusCode: 200,
         body: JSON.stringify({
@@ -85,12 +162,18 @@ exports.handler = async (event, context) => {
               : ""
           }${
             insufficientStock.length > 0
-              ? `Insufficient stock: ${insufficientStock}`
+              ? `Insufficient stock: ${insufficientStock}. `
+              : ""
+          }${
+            mismatchMembershipPrice.length > 0
+              ? `Mismatch membership price: ${mismatchMembershipPrice}.`
               : ""
           }`,
         }),
       };
     } else {
+      console.log("All checks have passed");
+
       return {
         statusCode: 200,
         body: JSON.stringify({
