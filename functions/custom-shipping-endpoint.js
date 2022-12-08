@@ -78,16 +78,18 @@ exports.handler = async (event, context) => {
         items.map(async (item) => {
           const tableRecords = await getProductInventory(item.code);
 
-          const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
-          const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
-          const inventoryStPeters = tableRecords[0].inventoryStPeters;
+          if (tableRecords.length > 0) {
+            const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
+            const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
+            const inventoryStPeters = tableRecords[0].inventoryStPeters;
 
-          if (inventoryChesterfield + inventoryWarehouse < item.quantity) {
-            pickup_chesterfield = false;
-          }
+            if (inventoryChesterfield + inventoryWarehouse < item.quantity) {
+              pickup_chesterfield = false;
+            }
 
-          if (inventoryStPeters < item.quantity) {
-            pickup_st_peters = false;
+            if (inventoryStPeters < item.quantity) {
+              pickup_st_peters = false;
+            }
           }
         })
       ).then(() => {

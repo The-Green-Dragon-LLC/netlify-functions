@@ -22,7 +22,10 @@ const getProductInventory = async (productCode) => {
         tableRecords.push({
           name: record.get("Name"),
           sku: record.get("SKU"),
-          inventory: record.get("Inventory"),
+          inventorySum: record.get("Inventory"),
+          inventoryChesterfield: record.get("Inventory (Chesterfield)"),
+          inventoryStPeters: record.get("Inventory (St Peters)"),
+          inventoryWarehouse: record.get("Inventory (Warehouse)"),
         });
       });
 
@@ -39,7 +42,10 @@ const getProductInventory = async (productCode) => {
           tableRecords.push({
             name: record.get("Name"),
             sku: record.get("SKU"),
-            inventory: record.get("Inventory"),
+            inventorySum: record.get("Inventory"),
+            inventoryChesterfield: record.get("Inventory (Chesterfield)"),
+            inventoryStPeters: record.get("Inventory (St Peters)"),
+            inventoryWarehouse: record.get("Inventory (Warehouse)"),
           });
         });
 
@@ -94,10 +100,13 @@ const getMembershipPrice = async (membershipCode, subFrequency) => {
 exports.handler = async (event, context) => {
   const payload = JSON.parse(event.body);
   const cartItems = payload["_embedded"]["fx:items"];
+  const shippingId = payload["_embedded"]["fx:shipment"]["shipping_service_id"];
 
   try {
     const invalidProductCode = [];
     const insufficientStock = [];
+    const insufficientStockChesterfield = [];
+    const insufficientStockStPeters = [];
     const mismatchMembershipPrice = [];
 
     await Promise.all(
@@ -133,14 +142,39 @@ exports.handler = async (event, context) => {
             );
             invalidProductCode.push(cartItem.code);
           } else {
-            const inventory = tableRecords[0].inventory;
+            const inventorySum = tableRecords[0].inventorySum;
+            const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
+            const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
+            const inventoryStPeters = tableRecords[0].inventoryStPeters;
+
             const cartQuantity = cartItem.quantity;
 
-            if (!inventory || cartQuantity > inventory) {
-              console.log(
-                `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${inventory}, but having ${cartQuantity} in cart`
-              );
-              insufficientStock.push(cartItem.name);
+            if (shippingId === 10011) {
+              if (
+                inventoryChesterfield + inventoryWarehouse <
+                cartItem.quantity
+              ) {
+                console.log(
+                  `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${
+                    inventoryChesterfield + inventoryWarehouse
+                  }, but having ${cartQuantity} in cart`
+                );
+                insufficientStockChesterfield.push(cartItem.name);
+              }
+            } else if (shippingId === 10012) {
+              if (inventoryStPeters < cartItem.quantity) {
+                console.log(
+                  `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${inventoryStPeters}, but having ${cartQuantity} in cart`
+                );
+                insufficientStockStPeters.push(cartItem.name);
+              }
+            } else {
+              if (!inventorySum || cartQuantity > inventorySum) {
+                console.log(
+                  `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${inventorySum}, but having ${cartQuantity} in cart`
+                );
+                insufficientStock.push(cartItem.name);
+              }
             }
           }
         }
@@ -159,6 +193,14 @@ exports.handler = async (event, context) => {
           details: `${
             invalidProductCode.length > 0
               ? `Invalid product code: ${invalidProductCode}. `
+              : ""
+          }${
+            insufficientStockChesterfield.length > 0
+              ? `Insufficient stock in Chesterfield store: ${insufficientStock}. `
+              : ""
+          }${
+            insufficientStockStPeters.length > 0
+              ? `Insufficient stock in St. Peters store: ${insufficientStock}. `
               : ""
           }${
             insufficientStock.length > 0
