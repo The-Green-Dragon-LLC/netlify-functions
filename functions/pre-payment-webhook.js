@@ -149,7 +149,7 @@ exports.handler = async (event, context) => {
 
             const cartQuantity = cartItem.quantity;
 
-            if (shippingId === 10011) {
+            if (shippingId === "10011") {
               if (
                 inventoryChesterfield + inventoryWarehouse <
                 cartItem.quantity
@@ -161,7 +161,7 @@ exports.handler = async (event, context) => {
                 );
                 insufficientStockChesterfield.push(cartItem.name);
               }
-            } else if (shippingId === 10012) {
+            } else if (shippingId === "10012") {
               if (inventoryStPeters < cartItem.quantity) {
                 console.log(
                   `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${inventoryStPeters}, but having ${cartQuantity} in cart`
@@ -183,6 +183,8 @@ exports.handler = async (event, context) => {
 
     if (
       invalidProductCode.length > 0 ||
+      insufficientStockChesterfield.length > 0 ||
+      insufficientStockStPeters.length > 0 ||
       insufficientStock.length > 0 ||
       mismatchMembershipPrice.length > 0
     ) {
@@ -196,11 +198,11 @@ exports.handler = async (event, context) => {
               : ""
           }${
             insufficientStockChesterfield.length > 0
-              ? `Insufficient stock in Chesterfield store: ${insufficientStock}. `
+              ? `Insufficient stock in Chesterfield store: ${insufficientStockChesterfield}. `
               : ""
           }${
             insufficientStockStPeters.length > 0
-              ? `Insufficient stock in St. Peters store: ${insufficientStock}. `
+              ? `Insufficient stock in St. Peters store: ${insufficientStockStPeters}. `
               : ""
           }${
             insufficientStock.length > 0
