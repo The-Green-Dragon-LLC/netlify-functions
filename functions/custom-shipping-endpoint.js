@@ -10,17 +10,19 @@ const productsTableId = "tblkLl9qqg654fWi7";
 const variantsTableId = "tblEtb1aIH5Xk4Nh9";
 
 const getProductInventory = async (productCode) => {
+  if (!productCode) return [];
+
   const tableRecords = [];
 
   await base(productsTableId)
     .select({
-      filterByFormula: `SKU = "${productCode}"`,
+      filterByFormula: `"Website Product Code" = "${productCode}"`,
     })
     .eachPage(function page(records, fetchNextPage) {
       records.forEach((record) => {
         tableRecords.push({
           name: record.get("Name"),
-          sku: record.get("SKU"),
+          wpc: record.get("Website Product Code"),
           inventoryChesterfield: record.get("Inventory (Chesterfield)"),
           inventoryStPeters: record.get("Inventory (St Peters)"),
           inventoryWarehouse: record.get("Inventory (Warehouse)"),
@@ -33,13 +35,13 @@ const getProductInventory = async (productCode) => {
   if (tableRecords.length === 0) {
     await base(variantsTableId)
       .select({
-        filterByFormula: `SKU = "${productCode}"`,
+        filterByFormula: `"Website Product Code" = "${productCode}"`,
       })
       .eachPage(function page(records, fetchNextPage) {
         records.forEach((record) => {
           tableRecords.push({
             name: record.get("Name"),
-            sku: record.get("SKU"),
+            wpc: record.get("Website Product Code"),
             inventoryChesterfield: record.get("Inventory (Chesterfield)"),
             inventoryStPeters: record.get("Inventory (St Peters)"),
             inventoryWarehouse: record.get("Inventory (Warehouse)"),
@@ -78,7 +80,11 @@ exports.handler = async (event, context) => {
         items.map(async (item) => {
           const tableRecords = await getProductInventory(item.code);
 
-          if (tableRecords.length > 0) {
+          if (tableRecords.length !== 1) {
+            console.log(`No records found for WPC ${item.code} in Airtable`);
+            pickup_chesterfield = false;
+            pickup_st_peters = false;
+          } else {
             const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
             const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
             const inventoryStPeters = tableRecords[0].inventoryStPeters;

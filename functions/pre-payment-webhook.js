@@ -15,13 +15,13 @@ const getProductInventory = async (productCode) => {
 
   await base(productsTableId)
     .select({
-      filterByFormula: `SKU = "${productCode}"`,
+      filterByFormula: `"Website Product Code" = "${productCode}"`,
     })
     .eachPage(function page(records, fetchNextPage) {
       records.forEach((record) => {
         tableRecords.push({
           name: record.get("Name"),
-          sku: record.get("SKU"),
+          wpc: record.get("Website Product Code"),
           inventorySum: record.get("Inventory"),
           inventoryChesterfield: record.get("Inventory (Chesterfield)"),
           inventoryStPeters: record.get("Inventory (St Peters)"),
@@ -35,13 +35,13 @@ const getProductInventory = async (productCode) => {
   if (tableRecords.length === 0) {
     await base(variantsTableId)
       .select({
-        filterByFormula: `SKU = "${productCode}"`,
+        filterByFormula: `"Website Product Code" = "${productCode}"`,
       })
       .eachPage(function page(records, fetchNextPage) {
         records.forEach((record) => {
           tableRecords.push({
             name: record.get("Name"),
-            sku: record.get("SKU"),
+            wpc: record.get("Website Product Code"),
             inventorySum: record.get("Inventory"),
             inventoryChesterfield: record.get("Inventory (Chesterfield)"),
             inventoryStPeters: record.get("Inventory (St Peters)"),
@@ -119,7 +119,7 @@ exports.handler = async (event, context) => {
 
           if (tableRecords.length !== 1) {
             console.log(
-              `No records found for SKU ${cartItem.code} in Airtable`
+              `No records found for SKU ${cartItem.code} in Memberships table`
             );
             invalidProductCode.push(cartItem.code);
           } else {
@@ -138,7 +138,7 @@ exports.handler = async (event, context) => {
 
           if (tableRecords.length !== 1) {
             console.log(
-              `No records found for SKU ${cartItem.code} in Airtable`
+              `No records found for WPC ${cartItem.code} in Products or Product Variants table`
             );
             invalidProductCode.push(cartItem.code);
           } else {
@@ -155,7 +155,7 @@ exports.handler = async (event, context) => {
                 cartItem.quantity
               ) {
                 console.log(
-                  `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${
+                  `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${
                     inventoryChesterfield + inventoryWarehouse
                   }, but having ${cartQuantity} in cart`
                 );
@@ -164,14 +164,14 @@ exports.handler = async (event, context) => {
             } else if (shippingId === "10012") {
               if (inventoryStPeters < cartItem.quantity) {
                 console.log(
-                  `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${inventoryStPeters}, but having ${cartQuantity} in cart`
+                  `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventoryStPeters}, but having ${cartQuantity} in cart`
                 );
                 insufficientStockStPeters.push(cartItem.name);
               }
             } else {
               if (!inventorySum || cartQuantity > inventorySum) {
                 console.log(
-                  `Inventory for ${cartItem.name} (SKU: ${cartItem.code}) is ${inventorySum}, but having ${cartQuantity} in cart`
+                  `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventorySum}, but having ${cartQuantity} in cart`
                 );
                 insufficientStock.push(cartItem.name);
               }
