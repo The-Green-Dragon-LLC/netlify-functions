@@ -15,7 +15,7 @@ const getProductInventory = async (productCode) => {
 
   await base(productsTableId)
     .select({
-      filterByFormula: `"Website Product Code" = "${productCode}"`,
+      filterByFormula: `{Website Product Code} = "${productCode}"`,
     })
     .eachPage(function page(records, fetchNextPage) {
       records.forEach((record) => {
@@ -35,7 +35,7 @@ const getProductInventory = async (productCode) => {
   if (tableRecords.length === 0) {
     await base(variantsTableId)
       .select({
-        filterByFormula: `"Website Product Code" = "${productCode}"`,
+        filterByFormula: `{Website Product Code} = "${productCode}"`,
       })
       .eachPage(function page(records, fetchNextPage) {
         records.forEach((record) => {
