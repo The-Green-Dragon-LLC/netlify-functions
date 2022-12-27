@@ -67,8 +67,22 @@ exports.handler = async (event, context) => {
     63138, 63120, 63366, 63118, 63136, 63128, 63049, 63026, 63033, 63376, 63368,
     63367, 63043, 63348, 63385,
   ];
+
+  const local_delivery_minimum = 99;
+  const local_delivery = [
+    63146, 63103, 63104, 63128, 63125, 63118, 63051, 63129, 63110, 63123, 63109,
+    63073, 63032, 63139, 63049, 63112, 63025, 63135, 63301, 63341, 63031, 63121,
+    63026, 63368, 63133, 63143, 63099, 63140, 63126, 63119, 63127, 63134, 63042,
+    63130, 63105, 63117, 63144, 63145, 63376, 63114, 63038, 63044, 63122, 63124,
+    63040, 63045, 63074, 63051, 63088, 63132, 63338, 63302, 63005, 63304, 63021,
+    63131, 63043, 63022, 63011, 63024, 63146, 63141, 63303, 63006, 63088, 63017,
+    63138, 63120, 63366, 63118, 63136, 63128, 63049, 63026, 63033, 63376, 63368,
+    63367, 63043,
+  ];
+
   const cart = JSON.parse(event.body);
   const postal_code = Number(cart["_embedded"]["fx:shipment"]["postal_code"]);
+  const total_item_price = cart["_embedded"]["fx:shipment"]["total_item_price"];
   const items = cart["_embedded"]["fx:items"];
 
   try {
@@ -115,6 +129,40 @@ exports.handler = async (event, context) => {
             price: 0,
             method: "",
             service_name: "Local Pickup: St. Peters Store",
+          });
+        }
+      });
+    }
+
+    if (
+      local_delivery.includes(postal_code) &&
+      total_item_price > local_delivery_minimum
+    ) {
+      let isLocalDelivery = true;
+
+      await Promise.all(
+        items.map(async (item) => {
+          const tableRecords = await getProductInventory(item.code);
+
+          if (tableRecords.length !== 1) {
+            console.log(`No records found for WPC ${item.code} in Airtable`);
+            isLocalDelivery = false;
+          } else {
+            const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
+            const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
+
+            if (inventoryChesterfield + inventoryWarehouse < item.quantity) {
+              isLocalDelivery = false;
+            }
+          }
+        })
+      ).then(() => {
+        if (isLocalDelivery) {
+          rates.push({
+            service_id: 10013,
+            price: 4.99,
+            method: "",
+            service_name: "Local Delivery (same day if ordered before 3pm)",
           });
         }
       });
