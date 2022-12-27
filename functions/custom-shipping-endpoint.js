@@ -103,11 +103,18 @@ exports.handler = async (event, context) => {
             const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
             const inventoryStPeters = tableRecords[0].inventoryStPeters;
 
-            if (inventoryChesterfield + inventoryWarehouse < item.quantity) {
+            if (
+              typeof inventoryChesterfield !== "number" ||
+              typeof inventoryWarehouse !== "number" ||
+              inventoryChesterfield + inventoryWarehouse < item.quantity
+            ) {
               pickup_chesterfield = false;
             }
 
-            if (inventoryStPeters < item.quantity) {
+            if (
+              typeof inventoryStPeters !== "number" ||
+              inventoryStPeters < item.quantity
+            ) {
               pickup_st_peters = false;
             }
           }
@@ -151,7 +158,11 @@ exports.handler = async (event, context) => {
             const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
             const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
 
-            if (inventoryChesterfield + inventoryWarehouse < item.quantity) {
+            if (
+              typeof inventoryChesterfield !== "number" ||
+              typeof inventoryWarehouse !== "number" ||
+              inventoryChesterfield + inventoryWarehouse < item.quantity
+            ) {
               isLocalDelivery = false;
             }
           }
