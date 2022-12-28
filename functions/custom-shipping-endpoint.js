@@ -171,7 +171,7 @@ exports.handler = async (event, context) => {
         if (isLocalDelivery) {
           rates.push({
             service_id: 10013,
-            price: 4.99,
+            price: 5.99,
             method: "",
             service_name: "Local Delivery (same day if ordered before 3pm)",
           });
