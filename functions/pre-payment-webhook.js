@@ -13,6 +13,7 @@ const membershipsTableId = "tblrNW5UvoSVMUsYr";
 const getProductInventory = async (productCode) => {
   const tableRecords = [];
 
+  // find record in Products table
   await base(productsTableId)
     .select({
       filterByFormula: `{Website Product Code} = "${productCode}"`,
@@ -33,6 +34,7 @@ const getProductInventory = async (productCode) => {
     });
 
   if (tableRecords.length === 0) {
+    // find record in Product Variants table
     await base(variantsTableId)
       .select({
         filterByFormula: `{Website Product Code} = "${productCode}"`,
@@ -112,6 +114,7 @@ exports.handler = async (event, context) => {
     await Promise.all(
       cartItems.map(async (cartItem) => {
         if (cartItem["_embedded"]["fx:item_category"].code === "memberships") {
+          // validate price for membership product
           const tableRecords = await getMembershipPrice(
             cartItem.code,
             cartItem.subscription_frequency
@@ -134,46 +137,58 @@ exports.handler = async (event, context) => {
             }
           }
         } else {
-          const tableRecords = await getProductInventory(cartItem.code);
+          // ignore inventory validation if product has `Delayed shipping` option
+          const isDelayedShipping = cartItem["_embedded"][
+            "fx:item_options"
+          ]?.some((option) => option.name === "Delayed_shipping");
 
-          if (tableRecords.length !== 1) {
-            console.log(
-              `No records found for WPC ${cartItem.code} in Products or Product Variants table`
-            );
-            invalidProductCode.push(cartItem.code);
-          } else {
-            const inventorySum = tableRecords[0].inventorySum;
-            const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
-            const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
-            const inventoryStPeters = tableRecords[0].inventoryStPeters;
+          if (!isDelayedShipping) {
+            const tableRecords = await getProductInventory(cartItem.code);
 
-            const cartQuantity = cartItem.quantity;
-
-            if (shippingId === "10011") {
-              if (
-                inventoryChesterfield + inventoryWarehouse <
-                cartItem.quantity
-              ) {
-                console.log(
-                  `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${
-                    inventoryChesterfield + inventoryWarehouse
-                  }, but having ${cartQuantity} in cart`
-                );
-                insufficientStockChesterfield.push(cartItem.name);
-              }
-            } else if (shippingId === "10012") {
-              if (inventoryStPeters < cartItem.quantity) {
-                console.log(
-                  `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventoryStPeters}, but having ${cartQuantity} in cart`
-                );
-                insufficientStockStPeters.push(cartItem.name);
-              }
+            if (tableRecords.length !== 1) {
+              console.log(
+                `No records found for WPC ${cartItem.code} in Products or Product Variants table`
+              );
+              invalidProductCode.push(cartItem.code);
             } else {
-              if (!inventorySum || cartQuantity > inventorySum) {
-                console.log(
-                  `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventorySum}, but having ${cartQuantity} in cart`
-                );
-                insufficientStock.push(cartItem.name);
+              const inventorySum = tableRecords[0].inventorySum;
+              const inventoryChesterfield =
+                tableRecords[0].inventoryChesterfield;
+              const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
+              const inventoryStPeters = tableRecords[0].inventoryStPeters;
+
+              const cartQuantity = cartItem.quantity;
+
+              if (shippingId === "10011") {
+                // pickup in Chesterfield
+                if (
+                  inventoryChesterfield + inventoryWarehouse <
+                  cartItem.quantity
+                ) {
+                  console.log(
+                    `Inventory for ${cartItem.name} (WPC: ${
+                      cartItem.code
+                    }) is ${
+                      inventoryChesterfield + inventoryWarehouse
+                    }, but having ${cartQuantity} in cart`
+                  );
+                  insufficientStockChesterfield.push(cartItem.name);
+                }
+              } else if (shippingId === "10012") {
+                // pickup in St Peters
+                if (inventoryStPeters < cartItem.quantity) {
+                  console.log(
+                    `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventoryStPeters}, but having ${cartQuantity} in cart`
+                  );
+                  insufficientStockStPeters.push(cartItem.name);
+                }
+              } else {
+                if (!inventorySum || cartQuantity > inventorySum) {
+                  console.log(
+                    `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventorySum}, but having ${cartQuantity} in cart`
+                  );
+                  insufficientStock.push(cartItem.name);
+                }
               }
             }
           }
