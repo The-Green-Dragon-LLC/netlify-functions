@@ -86,7 +86,13 @@ exports.handler = async (event, context) => {
   const items = cart["_embedded"]["fx:items"];
 
   try {
+    console.log(`Fetching rates for transaction ${cart.id}...`);
+
     if (local_pickup.includes(postal_code)) {
+      console.log(
+        "Meets requirements for local pickup. Checking inventory in Airtable..."
+      );
+
       let pickup_chesterfield = true,
         pickup_st_peters = true;
 
@@ -96,12 +102,17 @@ exports.handler = async (event, context) => {
 
           if (tableRecords.length !== 1) {
             console.log(`No records found for WPC ${item.code} in Airtable`);
+
             pickup_chesterfield = false;
             pickup_st_peters = false;
           } else {
             const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
             const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
             const inventoryStPeters = tableRecords[0].inventoryStPeters;
+
+            console.log(
+              `Inventory for WPC ${item.code}: Chesterfield - ${inventoryChesterfield}, Warehouse - ${inventoryWarehouse}, St. Peters - ${inventoryStPeters}`
+            );
 
             if (
               typeof inventoryChesterfield !== "number" ||
@@ -128,6 +139,8 @@ exports.handler = async (event, context) => {
             service_name:
               "Local Pickup: Chesterfield Store (Allow 2 hours - same day if ordered before 3PM)",
           });
+
+          console.log("Added option for pickup in Chesterfield");
         }
 
         if (pickup_st_peters) {
@@ -137,6 +150,8 @@ exports.handler = async (event, context) => {
             method: "",
             service_name: "Local Pickup: St. Peters Store",
           });
+
+          console.log("Added option for pickup in St. Peters");
         }
       });
     }
@@ -145,6 +160,10 @@ exports.handler = async (event, context) => {
       local_delivery.includes(postal_code) &&
       total_item_price > local_delivery_minimum
     ) {
+      console.log(
+        "Meets requirements for local delivery. Checking inventory in Airtable..."
+      );
+
       let isLocalDelivery = true;
 
       await Promise.all(
@@ -153,10 +172,15 @@ exports.handler = async (event, context) => {
 
           if (tableRecords.length !== 1) {
             console.log(`No records found for WPC ${item.code} in Airtable`);
+
             isLocalDelivery = false;
           } else {
             const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
             const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
+
+            console.log(
+              `Inventory for WPC ${item.code}: Chesterfield - ${inventoryChesterfield}, Warehouse - ${inventoryWarehouse}`
+            );
 
             if (
               typeof inventoryChesterfield !== "number" ||
@@ -175,6 +199,8 @@ exports.handler = async (event, context) => {
             method: "",
             service_name: "Local Delivery (same day if ordered before 3pm)",
           });
+
+          console.log("Added option for local delivery");
         }
       });
     }
