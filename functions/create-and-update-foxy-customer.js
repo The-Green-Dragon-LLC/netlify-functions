@@ -1,4 +1,4 @@
-import * as FoxySDK from "@foxy.io/sdk";
+import FoxySDK from "@foxy.io/sdk";
 const { FOXY_REFRESH_TOKEN, FOXY_CLIENT_SECRET, FOXY_CLIENT_ID } = process.env;
 const customerByEmail = customerEmail =>
   `https://api.foxycart.com/stores/101277/customers?email=${customerEmail}`;
