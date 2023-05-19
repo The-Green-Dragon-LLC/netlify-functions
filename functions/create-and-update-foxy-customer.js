@@ -16,7 +16,8 @@ exports.handler = async (event, context) => {
 
     // Update Tier Flow
     if (is_update && customerExists.returned_items) {
-      const customerAttributes = customerExists._embedded[0]._links["fx:attributes"].href;
+      const customerAttributes =
+        customerExists._embedded["fx:customers"][0]._links["fx:attributes"].href;
       console.log("Update Flow. customerAttributes", JSON.stringify(customerAttributes));
       const attributes = await (
         await foxy.fetch(customerAttributes, {
