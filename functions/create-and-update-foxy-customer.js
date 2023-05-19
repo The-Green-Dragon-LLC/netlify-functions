@@ -11,12 +11,12 @@ const foxy = new FoxySDK.Backend.API({
 
 exports.handler = async (event, context) => {
   try {
-    const { customer, customer_tier, customer_id } = JSON.parse(event.body);
+    const { customer, customer_tier, is_update } = JSON.parse(event.body);
     const customerExists = await (await foxy.fetch(customerByEmail(customer.email))).json();
 
     // Update Tier Flow
-    if (customer_id && customerExists.returned_items) {
-      const customerAttributes = customerExists._links["fx:attributes"].href;
+    if (is_update && customerExists.returned_items) {
+      const customerAttributes = customerExists._embedded[0]._links["fx:attributes"].href;
       const attributes = await (
         await foxy.fetch(customerAttributes, {
           method: "PATCH",
