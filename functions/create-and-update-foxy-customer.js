@@ -43,9 +43,11 @@ exports.handler = async (event, context) => {
           body: JSON.stringify(customer),
         })
       ).json();
-      console.log("newCustomer", newCustomer);
+      console.log("newCustomer", newCustomer._embedded);
 
-      const customerAttributes = customer._links["fx:attributes"].href;
+      const customerAttributes = newCustomer._links["fx:attributes"].href;
+      // TODO set default address if needed
+      //const customerDefaultShippingAddress = newCustomer._links["fx:default_shipping_address"].href;
 
       const attributes = await (
         await foxy.fetch(customerAttributes, {
@@ -53,12 +55,13 @@ exports.handler = async (event, context) => {
           body: JSON.stringify({ name: "wholesale_tier", value: customer_tier }),
         })
       ).json();
+
       console.log("newCustomer attributes", attributes);
       return {
         body: JSON.stringify({
           ok: true,
           data: {
-            customer: newCustomer,
+            customer: newCustomer.message,
             attributes,
           },
         }),
