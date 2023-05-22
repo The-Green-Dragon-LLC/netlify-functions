@@ -65,6 +65,14 @@ exports.handler = async (event, context) => {
         }),
         statusCode: 200,
       };
+    } else {
+      return {
+        body: JSON.stringify({
+          ok: true,
+          details: "Customer already exists",
+        }),
+        statusCode: 409,
+      };
     }
   } catch (error) {
     console.log("ERROR: ", error);
