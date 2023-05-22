@@ -38,12 +38,11 @@ exports.handler = async (event, context) => {
 
     //Create Customer and Add Tier Flow
     if (!customerExists.returned_items) {
-      const newCustomer = await (
-        await foxy.fetch(createCustomer, {
-          method: "POST",
-          body: JSON.stringify(customer),
-        })
-      ).json();
+      const res = await foxy.fetch(createCustomer, {
+        method: "POST",
+        body: JSON.stringify(customer),
+      });
+      const newCustomer = await res.json();
       console.log("newCustomer", JSON.stringify(newCustomer));
 
       const customerAttributes = newCustomer._links["fx:attributes"].href;
