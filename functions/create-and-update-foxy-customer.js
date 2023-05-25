@@ -14,6 +14,8 @@ exports.handler = async (event, context) => {
     const { customer, customer_tier, is_update } = JSON.parse(event.body);
     const customerExists = await (await foxy.fetch(customerByEmail(customer.email))).json();
 
+    // All together and lower case.
+    const customerTier = customer_tier.split(" ").join("").toLowerCase();
     // Update Tier Flow
     if (is_update && customerExists.returned_items) {
       const customerAttributes =
@@ -23,7 +25,7 @@ exports.handler = async (event, context) => {
         await foxy.fetch(customerAttributes, {
           method: "PATCH",
           // Needs to be an array because issue with API.
-          body: JSON.stringify([{ name: "wholesale_tier", value: customer_tier }]),
+          body: JSON.stringify([{ name: "wholesale_tier", value: customerTier }]),
         })
       ).json();
       return {
@@ -51,7 +53,7 @@ exports.handler = async (event, context) => {
       const attributes = await (
         await foxy.fetch(customerAttributes, {
           method: "PATCH",
-          body: JSON.stringify([{ name: "wholesale_tier", value: customer_tier }]),
+          body: JSON.stringify([{ name: "wholesale_tier", value: customerTier }]),
         })
       ).json();
 
