@@ -25,7 +25,9 @@ exports.handler = async (event, context) => {
         await foxy.fetch(customerAttributes, {
           method: "PATCH",
           // Needs to be an array because issue with API.
-          body: JSON.stringify([{ name: "wholesale_tier", value: customerTier }]),
+          body: JSON.stringify([
+            { name: "wholesale_tier", value: customerTier, visibility: "public" },
+          ]),
         })
       ).json();
       return {
@@ -53,7 +55,9 @@ exports.handler = async (event, context) => {
       const attributes = await (
         await foxy.fetch(customerAttributes, {
           method: "PATCH",
-          body: JSON.stringify([{ name: "wholesale_tier", value: customerTier }]),
+          body: JSON.stringify([
+            { name: "wholesale_tier", value: customerTier, visibility: "public" },
+          ]),
         })
       ).json();
 
