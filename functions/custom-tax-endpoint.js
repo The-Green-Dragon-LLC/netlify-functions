@@ -4,8 +4,10 @@ exports.handler = async (event, context) => {
     const totalShipping = payload.total_shipping;
     const totalItemPrice = payload.total_item_price;
     const totalDiscount = payload.total_discount;
+    const region = payload.shipping_state;
 
-    const taxRate = totalShipping === 0 ? "0.08238" : "0.08738";
+    const taxRate =
+      region === "MO" ? (totalShipping === 0 ? 0.08738 : 0.08238) : 0;
     const taxAmount =
       Math.round(
         taxRate * (totalItemPrice + totalDiscount + totalShipping) * 100
