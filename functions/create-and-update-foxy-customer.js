@@ -17,7 +17,7 @@ exports.handler = async (event, context) => {
   try {
     if (event.httpMethod === "OPTIONS") {
       console.log("OPTIONS", event);
-      console.log("headers.origin", headers.origin);
+      console.log("headers.origin", event.headers.origin);
 
       return {
         headers: {
