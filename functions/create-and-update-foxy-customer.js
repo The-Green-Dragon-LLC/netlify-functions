@@ -10,7 +10,26 @@ const foxy = new FoxySDK.Backend.API({
 });
 
 exports.handler = async (event, context) => {
+  const isAllowedOrigin = event.headers.origin.includes("alt.airtableblocks.com")
+    ? event.headers.origin
+    : "";
+  const isVary = isAllowedOrigin ? "Origin" : "";
   try {
+    if (event.httpMethod === "OPTIONS") {
+      console.log("OPTIONS", event);
+      console.log("headers.origin", headers.origin);
+
+      return {
+        headers: {
+          "Access-Control-Allow-Headers": "authorization,Content-Type,foxy-api-version",
+          "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
+          "Access-Control-Allow-Origin": isAllowedOrigin,
+          Vary: isVary,
+        },
+        statusCode: 204,
+      };
+    }
+
     const { customer, customer_tier, is_update } = JSON.parse(event.body);
     const customerExists = await (await foxy.fetch(customerByEmail(customer.email))).json();
 
@@ -38,6 +57,10 @@ exports.handler = async (event, context) => {
           },
         }),
         statusCode: 200,
+        headers: {
+          "Access-Control-Allow-Origin": isAllowedOrigin,
+          Vary: isVary,
+        },
       };
     }
 
@@ -71,6 +94,10 @@ exports.handler = async (event, context) => {
           },
         }),
         statusCode: 200,
+        headers: {
+          "Access-Control-Allow-Origin": isAllowedOrigin,
+          Vary: isVary,
+        },
       };
     } else {
       return {
@@ -79,6 +106,10 @@ exports.handler = async (event, context) => {
           details: "Customer already exists",
         }),
         statusCode: 409,
+        headers: {
+          "Access-Control-Allow-Origin": isAllowedOrigin,
+          Vary: isVary,
+        },
       };
     }
   } catch (error) {
