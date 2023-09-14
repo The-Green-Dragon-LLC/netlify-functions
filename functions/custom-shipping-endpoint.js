@@ -128,7 +128,7 @@ exports.handler = async (event, context) => {
             price: 0,
             method: "",
             service_name:
-              "Local Pickup: Chesterfield Store (Allow 2 hours - same day if ordered before 3PM)",
+              "Local Pickup: Chesterfield Store (Order by Noon for Pickup after 3pm - Weekdays only)",
           });
 
           console.log("Added option for pickup in Chesterfield");
