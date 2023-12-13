@@ -1,6 +1,11 @@
-import Airtable from "airtable";
-
-const { AIRTABLE_API_KEY } = process.env;
+const Airtable = require("airtable");
+const FoxySDK = require("@foxy.io/sdk");
+const {
+  AIRTABLE_API_KEY,
+  FOXY_REFRESH_TOKEN,
+  FOXY_CLIENT_SECRET,
+  FOXY_CLIENT_ID,
+} = process.env;
 
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(
   "appWUsGD3byrYcN3l"
@@ -110,10 +115,36 @@ exports.handler = async (event, context) => {
     const insufficientStockChesterfield = [];
     const insufficientStockStPeters = [];
     const mismatchMembershipPrice = [];
+    let hasActiveMembership = false;
 
     await Promise.all(
       cartItems.map(async (cartItem) => {
         if (cartItem["_embedded"]["fx:item_category"].code === "memberships") {
+          // check if customer already has an active subscription
+          const customerId = payload["_embedded"]["fx:customer"].id;
+
+          if (customerId !== "0") {
+            const foxy = new FoxySDK.Backend.API({
+              refreshToken: FOXY_REFRESH_TOKEN,
+              clientSecret: FOXY_CLIENT_SECRET,
+              clientId: FOXY_CLIENT_ID,
+            });
+
+            const customerNode = foxy.follow("fx:store").follow("fx:customers");
+            const customerResponse = await customerNode.get({
+              filters: [`id=${customerId}`],
+            });
+            const customerData = await customerResponse.json();
+            const subscriptionResponse = await customerData._embedded[
+              "fx:customers"
+            ][0]._links["fx:subscriptions"].get();
+            const subscriptionData = await subscriptionResponse.json();
+
+            hasActiveMembership = subscriptionData._embedded[
+              "fx:subscriptions"
+            ].some((subscription) => subscription.is_active === true);
+          }
+
           // validate price for membership product
           const tableRecords = await getMembershipPrice(
             cartItem.code,
@@ -201,7 +232,8 @@ exports.handler = async (event, context) => {
       insufficientStockChesterfield.length > 0 ||
       insufficientStockStPeters.length > 0 ||
       insufficientStock.length > 0 ||
-      mismatchMembershipPrice.length > 0
+      mismatchMembershipPrice.length > 0 ||
+      hasActiveMembership
     ) {
       return {
         statusCode: 200,
@@ -226,6 +258,10 @@ exports.handler = async (event, context) => {
           }${
             mismatchMembershipPrice.length > 0
               ? `Mismatch membership price: ${mismatchMembershipPrice}.`
+              : ""
+          }${
+            hasActiveMembership
+              ? "Looks like you already have an active membership."
               : ""
           }`,
         }),
