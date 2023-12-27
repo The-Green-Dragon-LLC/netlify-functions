@@ -120,29 +120,33 @@ exports.handler = async (event, context) => {
     await Promise.all(
       cartItems.map(async (cartItem) => {
         if (cartItem["_embedded"]["fx:item_category"].code === "memberships") {
-          // check if customer already has an active subscription
-          const customerId = payload["_embedded"]["fx:customer"].id;
+          if (cartItem.subscription_end_date === null) {
+            // check if customer already has an active subscription
+            const customerId = payload["_embedded"]["fx:customer"].id;
 
-          if (customerId !== "0") {
-            const foxy = new FoxySDK.Backend.API({
-              refreshToken: FOXY_REFRESH_TOKEN,
-              clientSecret: FOXY_CLIENT_SECRET,
-              clientId: FOXY_CLIENT_ID,
-            });
+            if (customerId !== "0") {
+              const foxy = new FoxySDK.Backend.API({
+                refreshToken: FOXY_REFRESH_TOKEN,
+                clientSecret: FOXY_CLIENT_SECRET,
+                clientId: FOXY_CLIENT_ID,
+              });
 
-            const customerNode = foxy.follow("fx:store").follow("fx:customers");
-            const customerResponse = await customerNode.get({
-              filters: [`id=${customerId}`],
-            });
-            const customerData = await customerResponse.json();
-            const subscriptionResponse = await customerData._embedded[
-              "fx:customers"
-            ][0]._links["fx:subscriptions"].get();
-            const subscriptionData = await subscriptionResponse.json();
+              const customerNode = foxy
+                .follow("fx:store")
+                .follow("fx:customers");
+              const customerResponse = await customerNode.get({
+                filters: [`id=${customerId}`],
+              });
+              const customerData = await customerResponse.json();
+              const subscriptionResponse = await customerData._embedded[
+                "fx:customers"
+              ][0]._links["fx:subscriptions"].get();
+              const subscriptionData = await subscriptionResponse.json();
 
-            hasActiveMembership = subscriptionData._embedded[
-              "fx:subscriptions"
-            ].some((subscription) => subscription.is_active === true);
+              hasActiveMembership = subscriptionData._embedded[
+                "fx:subscriptions"
+              ].some((subscription) => subscription.is_active === true);
+            }
           }
 
           // validate price for membership product
