@@ -120,6 +120,8 @@ exports.handler = async (event, context) => {
     await Promise.all(
       cartItems.map(async (cartItem) => {
         if (cartItem["_embedded"]["fx:item_category"].code === "memberships") {
+          if (cartItem.name === "Past Due Amount") return;
+
           if (cartItem.subscription_end_date === null) {
             // check if customer already has an active subscription
             const customerId = payload["_embedded"]["fx:customer"].id;
