@@ -1,12 +1,12 @@
 const FoxySDK = require("@foxy.io/sdk");
-const { FOXY_REFRESH_TOKEN, FOXY_CLIENT_SECRET, FOXY_CLIENT_ID } = process.env;
+const { FOXY_DISTRO_REFRESH_TOKEN, FOXY_DISTRO_CLIENT_SECRET, FOXY_DISTRO_CLIENT_ID } = process.env;
 const customerByEmail = customerEmail =>
-  `https://api.foxycart.com/stores/101277/customers?email=${customerEmail}`;
-const createCustomer = "https://api.foxycart.com/stores/101277/customers";
+  `https://api.foxycart.com/stores/115654/customers?email=${customerEmail}`;
+const createCustomer = "https://api.foxycart.com/stores/115654/customers";
 const foxy = new FoxySDK.Backend.API({
-  refreshToken: FOXY_REFRESH_TOKEN,
-  clientSecret: FOXY_CLIENT_SECRET,
-  clientId: FOXY_CLIENT_ID,
+  refreshToken: FOXY_DISTRO_REFRESH_TOKEN,
+  clientSecret: FOXY_DISTRO_CLIENT_SECRET,
+  clientId: FOXY_DISTRO_CLIENT_ID,
 });
 
 exports.handler = async (event, context) => {
@@ -79,7 +79,7 @@ exports.handler = async (event, context) => {
         await foxy.fetch(customerAttributes, {
           method: "PATCH",
           body: JSON.stringify([
-            { name: "wholesale_tier", value: customerTier, visibility: "public" },
+            { name: "wholesale_tier", value: customerTier, visibility: "public"},
           ]),
         })
       ).json();
