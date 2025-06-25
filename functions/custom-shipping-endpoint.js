@@ -115,7 +115,8 @@ exports.handler = async (event, context) => {
 
             if (
               typeof inventoryStPeters !== "number" ||
-              inventoryStPeters < item.quantity
+              typeof inventoryWarehouse !== "number" ||
+              inventoryStPeters + inventoryWarehouse  < item.quantity
             ) {
               pickup_st_peters = false;
             }
@@ -139,7 +140,7 @@ exports.handler = async (event, context) => {
             service_id: 10012,
             price: 0,
             method: "",
-            service_name: "Local Pickup: St. Peters Store",
+            service_name: "Local Pickup: St. Peters Store (Order by Noon for Pickup after 3pm - Tues-Fri only)",
           });
 
           console.log("Added option for pickup in St. Peters");

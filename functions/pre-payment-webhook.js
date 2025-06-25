@@ -213,9 +213,9 @@ exports.handler = async (event, context) => {
                 }
               } else if (shippingId === "10012") {
                 // pickup in St Peters
-                if (inventoryStPeters < cartItem.quantity) {
+                if (inventoryStPeters + inventoryWarehouse < cartItem.quantity) {
                   console.log(
-                    `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventoryStPeters}, but having ${cartQuantity} in cart`
+                    `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventoryStPeters} + ${inventoryWarehouse}, but having ${cartQuantity} in cart`
                   );
                   insufficientStockStPeters.push(cartItem.name);
                 }
