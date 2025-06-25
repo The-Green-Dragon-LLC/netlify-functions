@@ -56,7 +56,7 @@ const getProductInventory = async (productCode) => {
 };
 
 exports.handler = async (event, context) => {
-  const rates = [];
+  const rates = []; 
   const local_pickup = [
     63146, 63103, 63104, 63128, 63125, 63118, 63051, 63129, 63110, 63123, 63109,
     63073, 63032, 63139, 63049, 63112, 63025, 63135, 63301, 63341, 63031, 63121,
