@@ -140,7 +140,7 @@ exports.handler = async (event, context) => {
             service_id: 10012,
             price: 0,
             method: "",
-            service_name: "Local Pickup: St. Peters Store (Order by Noon for Pickup after 3pm - Tues-Fri only)",
+            service_name: "Local Pickup: St. Peters Store (Order by Noon for Pickup after 3pm - Mon-Fri only)",
           });
 
           console.log("Added option for pickup in St. Peters");
