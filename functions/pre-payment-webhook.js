@@ -184,7 +184,7 @@ exports.handler = async (event, context) => {
           if (!isDelayedShipping) {
             const tableRecords = await getProductInventory(cartItem.code);
 
-            if (tableRecords.length !== 1 || inStoreOnly) { 
+            if (tableRecords.length !== 1) { 
               console.log(
                 `No records found for WPC ${cartItem.code} in Products or Product Variants table`
               );
