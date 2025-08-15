@@ -32,6 +32,7 @@ const getProductInventory = async (productCode) => {
           inventoryChesterfield: record.get("Inventory (Chesterfield)"),
           inventoryStPeters: record.get("Inventory (St Peters)"),
           inventoryWarehouse: record.get("Inventory (Warehouse)"),
+          inStoreOnly: record.get("In-Store Only"),
         });
       });
 
@@ -53,6 +54,7 @@ const getProductInventory = async (productCode) => {
             inventoryChesterfield: record.get("Inventory (Chesterfield)"),
             inventoryStPeters: record.get("Inventory (St Peters)"),
             inventoryWarehouse: record.get("Inventory (Warehouse)"),
+            inStoreOnly: record.get("In-Store Only"),
           });
         });
 
@@ -182,7 +184,7 @@ exports.handler = async (event, context) => {
           if (!isDelayedShipping) {
             const tableRecords = await getProductInventory(cartItem.code);
 
-            if (tableRecords.length !== 1) {
+            if (tableRecords.length !== 1 || inStoreOnly) { 
               console.log(
                 `No records found for WPC ${cartItem.code} in Products or Product Variants table`
               );
