@@ -183,7 +183,7 @@ exports.handler = async (event, context) => {
             }
           }
         })
-      ).then(() => {
+      ).then(() => { 
         if (isLocalDelivery) {
           rates.push({
             service_id: 10013,
