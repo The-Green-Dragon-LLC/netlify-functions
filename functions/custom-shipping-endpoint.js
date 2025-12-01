@@ -134,7 +134,7 @@ exports.handler = async (event, context) => {
 
           console.log("Added option for pickup in Chesterfield");
         }
-
+/*
         if (pickup_st_peters) {
           rates.push({
             service_id: 10012,
@@ -145,6 +145,7 @@ exports.handler = async (event, context) => {
 
           console.log("Added option for pickup in St. Peters");
         }
+          */
       });
     }
 
