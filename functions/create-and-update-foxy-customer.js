@@ -13,7 +13,7 @@ exports.handler = async (event, context) => {
   const isAllowedOrigin = event.headers.origin.includes("alt.airtableblocks.com")
     ? event.headers.origin
     : "";
-  //const isAllowedOrigin = "*";
+  //const isAllowedOrigin = "*"; 
   const isVary = isAllowedOrigin ? "Origin" : "";
   try {
     if (event.httpMethod === "OPTIONS") {
