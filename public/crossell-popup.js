@@ -168,7 +168,7 @@
    */
   function addToCart(name, price, code, category, qty) {
     var json     = window.FC && FC.json;
-    var domain   = (json && json.store_domain) || STORE_DOMAIN;
+    var domain   = (json && json.config && json.config.store_domain) || STORE_DOMAIN;
     var sessName = (json && json.session_name) || '';
     var sessId   = (json && json.session_id)   || '';
 
