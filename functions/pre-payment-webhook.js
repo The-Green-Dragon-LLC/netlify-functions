@@ -7,6 +7,17 @@ const {
   FOXY_CLIENT_ID,
 } = process.env;
 
+// ─── Cross-sell promo validation ────────────────────────────────────────────
+// Keep these in sync with crossell-popup.js and crossell-validate.js
+const CROSSELL_PROMO_CATEGORY = "CROSSELL_PROMO";
+const CROSSELL_PROMO_LIMIT = 3;
+const CROSSELL_PROMO_PRICES = {
+  "FW-001": 23.99, // ← UPDATE: Math.round(regularPrice * 60) / 100
+  "FW-002": 20.99, // ← UPDATE: Math.round(regularPrice * 60) / 100
+};
+const CROSSELL_PRICE_TOLERANCE = 0.01;
+// ────────────────────────────────────────────────────────────────────────────
+
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(
   "appWUsGD3byrYcN3l"
 );
@@ -118,6 +129,7 @@ exports.handler = async (event, context) => {
     const insufficientStockStPeters = [];
     const mismatchMembershipPrice = [];
     let hasActiveMembership = false;
+    const crossellPriceMismatch = [];
 
     await Promise.all(
       cartItems.map(async (cartItem) => {
@@ -174,6 +186,25 @@ exports.handler = async (event, context) => {
               );
               mismatchMembershipPrice.push(cartItem.name);
             }
+          }
+        } else if (
+          cartItem["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
+        ) {
+          // Cross-sell promo item: validate price only (no Airtable inventory check).
+          // Quantity limit is checked after this loop where we can sum across all items.
+          const expectedPrice = CROSSELL_PROMO_PRICES[cartItem.code];
+
+          if (expectedPrice === undefined) {
+            console.log(
+              `Unknown cross-sell promo code: ${cartItem.code}`
+            );
+            invalidProductCode.push(cartItem.code);
+          } else if (cartItem.price < expectedPrice - CROSSELL_PRICE_TOLERANCE) {
+            console.log(
+              `Cross-sell price mismatch for ${cartItem.name}: ` +
+              `expected >= ${expectedPrice}, got ${cartItem.price}`
+            );
+            crossellPriceMismatch.push(cartItem.name);
           }
         } else {
           // ignore inventory validation if product has `Delayed shipping` option
@@ -235,13 +266,31 @@ exports.handler = async (event, context) => {
       })
     );
 
+    // Cross-sell quantity limit — checked here so we can sum across all items
+    const crossellPromoQty = cartItems
+      .filter(
+        (item) =>
+          item["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
+      )
+      .reduce((sum, item) => sum + item.quantity, 0);
+
+    const crossellQtyExceeded = crossellPromoQty > CROSSELL_PROMO_LIMIT;
+
+    if (crossellQtyExceeded) {
+      console.log(
+        `Cross-sell promo qty exceeded: ${crossellPromoQty} > ${CROSSELL_PROMO_LIMIT}`
+      );
+    }
+
     if (
       invalidProductCode.length > 0 ||
       insufficientStockChesterfield.length > 0 ||
       insufficientStockStPeters.length > 0 ||
       insufficientStock.length > 0 ||
       mismatchMembershipPrice.length > 0 ||
-      hasActiveMembership
+      hasActiveMembership ||
+      crossellPriceMismatch.length > 0 ||
+      crossellQtyExceeded
     ) {
       return {
         statusCode: 200,
@@ -270,6 +319,14 @@ exports.handler = async (event, context) => {
           }${
             hasActiveMembership
               ? "Looks like you already have an active membership."
+              : ""
+          }${
+            crossellPriceMismatch.length > 0
+              ? `The promotional price for ${crossellPriceMismatch.join(", ")} could not be validated. Please remove the item and add it again from the offer.`
+              : ""
+          }${
+            crossellQtyExceeded
+              ? `The promotional price is limited to ${CROSSELL_PROMO_LIMIT} units per order. Please reduce the quantity of the promotional item in your cart.`
               : ""
           }`,
         }),

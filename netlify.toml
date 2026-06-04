@@ -1,2 +1,13 @@
 [functions]
   node_bundler = "esbuild"
+
+# Production — deploys from main branch
+[context.production]
+  # Production function URL: https://YOUR-SITE-NAME.netlify.app/.netlify/functions/
+
+# Development — deploys from develop branch
+# Function URL: https://develop--YOUR-SITE-NAME.netlify.app/.netlify/functions/
+[context.branch-deploy]
+  # Add branch-specific overrides here if needed in future
+  # e.g. environment variables that differ between dev and prod
+  # are set in Netlify dashboard → Environment variables (not here, for security)
