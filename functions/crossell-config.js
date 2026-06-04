@@ -1,18 +1,19 @@
 /**
  * crossell-config.js  —  Netlify Function
  * ─────────────────────────────────────────────────────────────────────────────
- * Returns the live cross-sell configuration from Airtable:
+ * Returns live cross-sell configuration from Airtable:
  *
- *   categories — names of all Parent Categories whose Primary Category is
- *                "THC" (used to decide when the popup fires)
+ *   categories — Parent Category names whose Primary Category is "THC"
+ *   products   — Products with "Cross-sell Promo" checked, including variants
  *
- *   products   — products with the "Cross-sell Promo" checkbox checked
- *                (the items shown in the popup at 40% off)
- *
- * Called by crossell-popup.js on cart page load.  Response is cached in the
- * browser's sessionStorage so Airtable is only hit once per session.
- *
- * URL: https://YOUR-SITE.netlify.app/.netlify/functions/crossell-config
+ * Product shape:
+ * {
+ *   name, code, regularPrice, image, url,
+ *   variantsLabel: "Flavor",          // option name for cart URL
+ *   variants: [                        // empty array = no variants
+ *     { name: "Watermelon Pucker", code: "recXXX", image: "https://..." }
+ *   ]
+ * }
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -20,10 +21,11 @@
 
 const Airtable = require('airtable');
 
-const BASE_ID                  = 'appWUsGD3byrYcN3l';
-const PARENT_CATEGORIES_TABLE  = 'tbltqhRcmg8d8zHWE';
-const PRODUCTS_TABLE           = 'tblkLl9qqg654fWi7';
-const PRODUCT_PAGE_BASE_URL    = 'https://www.thegreendragoncbd.com/products/';
+const BASE_ID               = 'appWUsGD3byrYcN3l';
+const PARENT_CATEGORIES_TABLE = 'tbltqhRcmg8d8zHWE';
+const PRODUCTS_TABLE        = 'tblkLl9qqg654fWi7';
+const VARIANTS_TABLE        = 'tblEtb1aIH5Xk4Nh9';
+const PRODUCT_PAGE_BASE_URL = 'https://www.thegreendragoncbd.com/products/';
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
@@ -32,7 +34,6 @@ const CORS = {
 };
 
 exports.handler = async (event) => {
-  // Handle CORS preflight
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: CORS };
   }
@@ -50,13 +51,12 @@ exports.handler = async (event) => {
       headers: {
         ...CORS,
         'Content-Type': 'application/json',
-        // Cache at the CDN edge for 5 minutes; browser re-validates after 1 min
         'Cache-Control': 'public, max-age=60, s-maxage=300',
       },
       body: JSON.stringify({ categories, products }),
     };
   } catch (err) {
-    console.error('[crossell-config] Airtable error:', err.message || err);
+    console.error('[crossell-config] Error:', err.message || err);
     return {
       statusCode: 500,
       headers: { ...CORS, 'Content-Type': 'application/json' },
@@ -65,34 +65,21 @@ exports.handler = async (event) => {
   }
 };
 
-/**
- * Returns the Name of every Parent Category whose Primary Category
- * links to the "THC" record — these are the Foxy product category codes
- * that should trigger the cross-sell popup.
- */
+/* ─── THC categories ──────────────────────────────────────────────────────── */
+
 async function fetchTHCCategories(base) {
   const names = [];
   await base(PARENT_CATEGORIES_TABLE)
-    .select({
-      fields:          ['Name'],
-      filterByFormula: `{Primary Categories} = "THC"`,
-    })
-    .eachPage((records, fetchNextPage) => {
-      records.forEach((r) => {
-        const name = r.get('Name');
-        if (name) names.push(name);
-      });
-      fetchNextPage();
-    });
+    .select({ fields: ['Name'], filterByFormula: `{Primary Categories} = "THC"` })
+    .eachPage((records, next) => { records.forEach(r => { if (r.get('Name')) names.push(r.get('Name')); }); next(); });
   return names;
 }
 
-/**
- * Returns products that have the "Cross-sell Promo" checkbox checked.
- * The 40%-off sale price is calculated client-side from regularPrice.
- */
+/* ─── Cross-sell products + variants ─────────────────────────────────────── */
+
 async function fetchCrossSellProducts(base) {
-  const products = [];
+  // Step 1 — collect all cross-sell product records
+  const productRecords = [];
   await base(PRODUCTS_TABLE)
     .select({
       fields: [
@@ -101,25 +88,70 @@ async function fetchCrossSellProducts(base) {
         'Price',
         'Primary Image Webflow URL',
         'Slug',
+        'Variants',          // linked record IDs of variants
+        'Variants Label',    // option name, e.g. "Flavor"
       ],
       filterByFormula: `{Cross-sell Promo} = TRUE()`,
     })
-    .eachPage((records, fetchNextPage) => {
-      records.forEach((r) => {
-        const code  = r.get('Website Product Code');
-        const price = r.get('Price');
-        const slug  = r.get('Slug');
-        if (!code || !price) return; // skip records missing required fields
+    .eachPage((records, next) => { records.forEach(r => productRecords.push(r)); next(); });
 
-        products.push({
-          name:         r.get('Name') || '',
-          code:         code,
-          regularPrice: price,
-          image:        r.get('Primary Image Webflow URL') || '',
-          url:          slug ? PRODUCT_PAGE_BASE_URL + slug : '',
+  if (!productRecords.length) return [];
+
+  // Step 2 — collect all variant record IDs across every product
+  const allVariantIds = productRecords.reduce((acc, r) => {
+    const ids = r.get('Variants') || [];
+    return acc.concat(ids);
+  }, []);
+
+  // Step 3 — batch-fetch all variants in one Airtable call
+  const variantMap = {}; // recordId → { name, code, image, label }
+  if (allVariantIds.length > 0) {
+    const formula = allVariantIds.length === 1
+      ? `RECORD_ID() = "${allVariantIds[0]}"`
+      : `OR(${allVariantIds.map(id => `RECORD_ID() = "${id}"`).join(',')})`;
+
+    await base(VARIANTS_TABLE)
+      .select({
+        fields: [
+          'Name',                      // display value, e.g. "Watermelon Pucker"
+          'Website Product Code',      // variant's Foxy code
+          'Primary Image Webflow URL', // variant-specific image (may be empty)
+          'Variant Label',             // option type, e.g. "Flavor"
+        ],
+        filterByFormula: formula,
+      })
+      .eachPage((records, next) => {
+        records.forEach(r => {
+          variantMap[r.id] = {
+            name:  r.get('Name')                      || '',
+            code:  r.get('Website Product Code')      || '',
+            image: r.get('Primary Image Webflow URL') || '',
+            label: r.get('Variant Label')             || '',
+          };
         });
+        next();
       });
-      fetchNextPage();
+  }
+
+  // Step 4 — assemble final product objects
+  return productRecords
+    .filter(r => r.get('Website Product Code') && r.get('Price'))
+    .map(r => {
+      const variantIds    = r.get('Variants') || [];
+      const variantsLabel = r.get('Variants Label') || '';
+      const variants      = variantIds
+        .map(id => variantMap[id])
+        .filter(v => v && v.code); // drop any that have no Foxy code
+
+      const slug = r.get('Slug');
+      return {
+        name:          r.get('Name') || '',
+        code:          r.get('Website Product Code'),
+        regularPrice:  r.get('Price'),
+        image:         r.get('Primary Image Webflow URL') || '',
+        url:           slug ? PRODUCT_PAGE_BASE_URL + slug : '',
+        variantsLabel: variantsLabel || (variants[0] && variants[0].label) || '',
+        variants:      variants,
+      };
     });
-  return products;
 }

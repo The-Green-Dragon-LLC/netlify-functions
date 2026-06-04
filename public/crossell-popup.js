@@ -166,7 +166,12 @@
    * Falls back to direct link navigation only if FC.client is somehow
    * unavailable (should never happen once attach() has confirmed it exists).
    */
-  function addToCart(name, price, code, category, qty) {
+  /**
+   * @param {Array} [customOptions]  e.g. [{name:'Flavor', value:'Watermelon Pucker'}]
+   *   Appended to the cart URL as &Flavor=Watermelon+Pucker so Foxy stores
+   *   them as item options visible in the cart.
+   */
+  function addToCart(name, price, code, category, qty, image, url, customOptions) {
     var json     = window.FC && FC.json;
     var domain   = (json && json.config && json.config.store_domain) || STORE_DOMAIN;
     var sessName = (json && json.session_name) || '';
@@ -177,7 +182,12 @@
       + '&price='    + Number(price).toFixed(2)
       + '&code='     + encodeURIComponent(code)
       + '&category=' + encodeURIComponent(category)
-      + '&quantity=' + qty;
+      + '&quantity=' + qty
+      + (image ? '&image=' + encodeURIComponent(image) : '')
+      + (url   ? '&url='   + encodeURIComponent(url)   : '')
+      + (customOptions ? customOptions.map(function (o) {
+          return '&' + encodeURIComponent(o.name) + '=' + encodeURIComponent(o.value);
+        }).join('') : '');
 
     // Always include the session ID so the item attaches to the existing cart.
     if (sessName && sessId) {
@@ -265,13 +275,7 @@
 
       var product = getProductByCode(cartItem.code);
       if (product) {
-        addToCart(
-          product.name,
-          product.regularPrice,   // full price
-          product.code,
-          'DEFAULT',               // not CROSSELL_PROMO → not subject to promo validation
-          1
-        );
+        addToCart(product.name, product.regularPrice, product.code, 'DEFAULT', 1, product.image, product.url);
       }
     }, true); // capture phase — runs before Foxy's bubble-phase listeners
   }
@@ -303,7 +307,9 @@
     '#tgd-crossell .cs-badge{font-size:11px;font-weight:700;background:#e07b00;color:#fff;border-radius:4px;padding:2px 7px;white-space:nowrap;}',
     '#tgd-crossell .cs-add-btn{display:block;text-align:center;padding:10px 14px;background:linear-gradient(142deg,#48d88d,#2fa264);color:#fff!important;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none!important;cursor:pointer;border:none;transition:opacity .15s;}',
     '#tgd-crossell .cs-add-btn:hover{opacity:.88;}',
-    '#tgd-crossell .cs-add-btn:disabled{opacity:.5;cursor:not-allowed;}',
+    '#tgd-crossell .cs-add-btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none;}',
+    '#tgd-crossell .cs-variant-select{width:100%;padding:8px 10px;border:1px solid #d0d0d0;border-radius:6px;font-size:13px;font-family:Lato,sans-serif;color:#333;background:#fff;margin-bottom:10px;cursor:pointer;-webkit-appearance:auto;appearance:auto;}',
+    '#tgd-crossell .cs-variant-select:focus{outline:2px solid #37b772;border-color:#37b772;}',
     '#tgd-crossell .cs-decline{display:block;width:100%;background:none;border:none;color:#bbb;font-size:12px;text-decoration:underline;cursor:pointer;padding:2px 0 0;text-align:center;font-family:Lato,sans-serif;}',
     '#tgd-crossell .cs-decline:hover{color:#888;}',
     '@media(max-width:479px){#tgd-crossell .cs-product{flex:1 1 100%;}#tgd-crossell .cs-box{padding:22px 14px 18px;}#tgd-crossell .cs-title{font-size:18px;}}'
@@ -314,9 +320,26 @@
      ═══════════════════════════════════════════════════════════════════════════ */
 
   function productCardHTML(p) {
-    var sale = salePrice(p.regularPrice);
+    var sale      = salePrice(p.regularPrice);
+    var hasVars   = p.variants && p.variants.length > 0;
+    var varLabel  = p.variantsLabel || 'Option';
+
+    // Build variant dropdown (disabled Add to Cart until selection is made)
+    var variantSelect = '';
+    if (hasVars) {
+      variantSelect = '<select class="cs-variant-select" data-product-code="' + p.code + '">'
+        + '<option value="">— Select ' + varLabel + ' —</option>'
+        + p.variants.map(function (v) {
+            return '<option value="' + v.code + '"'
+              + ' data-name="' + v.name.replace(/"/g, '&quot;') + '"'
+              + ' data-image="' + (v.image || '').replace(/"/g, '&quot;') + '">'
+              + v.name + '</option>';
+          }).join('')
+        + '</select>';
+    }
+
     return '<div class="cs-product">'
-      + '<img src="' + p.image + '" alt="' + p.name + '" loading="lazy"/>'
+      + '<img src="' + p.image + '" alt="' + p.name + '" loading="lazy" class="cs-product-img"/>'
       + '<div class="cs-product-info">'
       + '<p class="cs-product-name">' + p.name + '</p>'
       + '<div class="cs-prices">'
@@ -324,8 +347,9 @@
       + '<span class="cs-price-sale">$' + sale + '</span>'
       + '<span class="cs-badge">40% OFF</span>'
       + '</div>'
-      // data-product-code lets the click handler look up the product config
-      + '<button class="cs-add-btn" data-product-code="' + p.code + '">Add to Cart</button>'
+      + variantSelect
+      + '<button class="cs-add-btn" data-product-code="' + p.code + '"'
+      + (hasVars ? ' disabled' : '') + '>Add to Cart</button>'
       + '</div></div>';
   }
 
@@ -363,15 +387,35 @@
     var product = getProductByCode(productCode);
     if (!product) return;
 
-    var currentPromoQty = getPromoQty();
-    var spaceLeft = PROMO_LIMIT - currentPromoQty;
+    // Resolve which code / image / options to use (base product or selected variant)
+    var useCode    = product.code;
+    var useImage   = product.image;
+    var customOpts = [];
+
+    if (product.variants && product.variants.length > 0) {
+      var select = document.querySelector(
+        '.cs-variant-select[data-product-code="' + productCode + '"]'
+      );
+      if (!select || !select.value) return; // button should be disabled, but safety check
+
+      var selectedOpt = select.options[select.selectedIndex];
+      useCode = select.value;                                        // variant's Foxy code
+      var variantName = selectedOpt.getAttribute('data-name') || selectedOpt.text;
+      var variantImg  = selectedOpt.getAttribute('data-image') || '';
+      if (variantImg) useImage = variantImg;
+
+      // Include the option so it appears in the cart  (e.g. &Flavor=Watermelon+Pucker)
+      if (product.variantsLabel && variantName) {
+        customOpts.push({ name: product.variantsLabel, value: variantName });
+      }
+    }
+
+    var spaceLeft = PROMO_LIMIT - getPromoQty();
 
     if (spaceLeft > 0) {
-      // Still room: add 1 at promo price
-      addToCart(product.name, salePrice(product.regularPrice), product.code, PROMO_CATEGORY, 1);
+      addToCart(product.name, salePrice(product.regularPrice), useCode, PROMO_CATEGORY, 1, useImage, product.url, customOpts);
     } else {
-      // Limit reached: add 1 at full price
-      addToCart(product.name, product.regularPrice, product.code, 'DEFAULT', 1);
+      addToCart(product.name, product.regularPrice, useCode, 'DEFAULT', 1, useImage, product.url, customOpts);
     }
 
     setTimeout(closePopup, 400);
@@ -402,10 +446,31 @@
     popup.querySelector('.cs-close').addEventListener('click', closePopup);
     popup.querySelector('.cs-decline').addEventListener('click', closePopup);
 
-    // Wire up Add to Cart buttons (use event delegation on the popup)
+    // Wire up Add to Cart buttons (skip if button is disabled)
     popup.addEventListener('click', function (e) {
       var btn = e.target.closest ? e.target.closest('.cs-add-btn') : null;
-      if (btn) handlePromoAddClick(btn.getAttribute('data-product-code'));
+      if (btn && !btn.disabled) handlePromoAddClick(btn.getAttribute('data-product-code'));
+    });
+
+    // Variant dropdown: enable Add to Cart when a variant is selected,
+    // and swap the product card image to the variant-specific image.
+    popup.addEventListener('change', function (e) {
+      var select = e.target.closest ? e.target.closest('.cs-variant-select') : null;
+      if (!select) return;
+      var card = select.closest('.cs-product');
+      if (!card) return;
+
+      // Enable / disable the Add to Cart button
+      var btn = card.querySelector('.cs-add-btn');
+      if (btn) btn.disabled = !select.value;
+
+      // Swap product image to variant image if available
+      if (select.value) {
+        var opt      = select.options[select.selectedIndex];
+        var varImg   = opt.getAttribute('data-image');
+        var cardImg  = card.querySelector('.cs-product-img');
+        if (varImg && cardImg) cardImg.src = varImg;
+      }
     });
   }
 
