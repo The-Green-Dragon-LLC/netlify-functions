@@ -119,10 +119,33 @@
     return (Math.round(regular * 60) / 100).toFixed(2);
   }
 
-  /** Look up a product config by its Foxy product code. */
+  /**
+   * Look up a product config by its Foxy product code.
+   * Searches both parent codes and variant codes so variant cart items
+   * (whose code is the variant record ID) are still found.
+   * Returns the parent product object in both cases.
+   */
   function getProductByCode(code) {
     for (var i = 0; i < CROSSELL_PRODUCTS.length; i++) {
       if (CROSSELL_PRODUCTS[i].code === code) return CROSSELL_PRODUCTS[i];
+      var vars = CROSSELL_PRODUCTS[i].variants || [];
+      for (var j = 0; j < vars.length; j++) {
+        if (vars[j].code === code) return CROSSELL_PRODUCTS[i];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Given a cart item code (may be a variant code), return the matching
+   * variant object or null if it's a parent code or not found.
+   */
+  function getVariantByCode(code) {
+    for (var i = 0; i < CROSSELL_PRODUCTS.length; i++) {
+      var vars = CROSSELL_PRODUCTS[i].variants || [];
+      for (var j = 0; j < vars.length; j++) {
+        if (vars[j].code === code) return vars[j];
+      }
     }
     return null;
   }
@@ -275,7 +298,31 @@
 
       var product = getProductByCode(cartItem.code);
       if (product) {
-        addToCart(product.name, product.regularPrice, product.code, 'DEFAULT', 1, product.image, product.url);
+        // Determine the correct price — variant price if this is a variant item
+        var variant      = getVariantByCode(cartItem.code);
+        var overflowPrice = (variant && variant.price) ? variant.price : product.regularPrice;
+        var overflowCode  = cartItem.code; // keep the exact variant code already in cart
+
+        // Carry through visible cart options (e.g. Flavor) so the overflow
+        // line item shows the same variant. Filter out hidden system options.
+        var overflowOpts = (cartItem.options || []).filter(function (o) {
+          var n = normaliseOptionName(o.name);
+          return n !== 'restrictedshopping' &&
+                 n !== 'restrictedshippingcode' &&
+                 n !== 'airtablerecordid' &&
+                 n !== 'heavydrink';
+        });
+
+        addToCart(
+          cartItem.name,
+          overflowPrice,
+          overflowCode,
+          'DEFAULT',
+          1,
+          product.image,
+          product.url,
+          overflowOpts.length ? overflowOpts : undefined
+        );
       }
     }, true); // capture phase — runs before Foxy's bubble-phase listeners
   }
