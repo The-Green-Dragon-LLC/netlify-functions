@@ -180,22 +180,34 @@
       + '&quantity=' + qty;
 
     // Always include the session ID so the item attaches to the existing cart.
-    // Without it, Foxy creates a new empty session → blank cart.
     if (sessName && sessId) {
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // Use a real link click — Foxy's JS intercepts links to its cart URL.
-    // • Sidecart (production): intercepted as AJAX → item added, no navigation.
-    // • Full-page cart (test): may navigate, but session ID keeps the correct cart.
-    // NOTE: FC.client.request is Foxy's cart-refresh (JSONP GET) — it does NOT
-    //       add items. Only a navigated or intercepted link click actually adds.
-    var link = document.createElement('a');
-    link.style.display = 'none';
-    link.href = cartUrl;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(function () { document.body.removeChild(link); }, 200);
+    // Two different mechanisms depending on context:
+    //
+    // FULL-PAGE CART (on a Foxy domain — tgd-test.foxycart.com, etc.):
+    //   link.click() is intercepted by Foxy but silently fails to add items on
+    //   the full-page cart.  Direct navigation works: Foxy processes the add-to-cart
+    //   URL and reloads the cart page with the new item present.
+    //   domain is now correct (FC.json.config.store_domain) so this stays on the
+    //   right store (test vs production).
+    //
+    // SIDECART (on a Webflow domain):
+    //   Foxy intercepts the link click via AJAX → item added without page navigation.
+    var onFoxyDomain = window.location.hostname.indexOf('foxycart') !== -1 ||
+                       window.location.hostname.indexOf('foxy.io')  !== -1;
+
+    if (onFoxyDomain) {
+      window.location.href = cartUrl;
+    } else {
+      var link = document.createElement('a');
+      link.style.display = 'none';
+      link.href = cartUrl;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(function () { document.body.removeChild(link); }, 200);
+    }
   }
 
   /** True if popup has already been shown this browser session. */
