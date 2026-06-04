@@ -168,12 +168,7 @@
    */
   function addToCart(name, price, code, category, qty) {
     var json     = window.FC && FC.json;
-    // FC.json.config.store_domain is not always present; derive from cdn_base_path
-    // which is always 'https://cdn.foxycart.com/{store-name}/' — extract the
-    // store name and append '.foxycart.com' to get the correct cart domain.
-    var cdnBase      = json && json.config && json.config.cdn_base_path;
-    var storeMatch   = cdnBase && cdnBase.match(/cdn\.foxycart\.com\/([^\/]+)\//);
-    var domain       = (storeMatch && storeMatch[1] + '.foxycart.com') || STORE_DOMAIN;
+    var domain   = (json && json.config && json.config.store_domain) || STORE_DOMAIN;
     var sessName = (json && json.session_name) || '';
     var sessId   = (json && json.session_id)   || '';
 
@@ -406,7 +401,34 @@
      7.  FOXY EVENT HOOK
      ═══════════════════════════════════════════════════════════════════════════ */
 
-  /** Returns true if the given Foxy category code is a THC product category. */
+  /**
+   * Normalise an option name for loose comparison — removes spaces, underscores,
+   * hyphens and lowercases so "Restricted Shipping Code", "restricted_shipping_code"
+   * and "restricted-shipping-code" all compare equal.
+   */
+  function normaliseOptionName(s) {
+    return (s || '').toLowerCase().replace(/[\s_\-]/g, '');
+  }
+
+  /**
+   * Returns true if the cart item has the hidden Foxy option
+   * "Restricted Shipping Code" set to "thc".
+   * This option is applied to every THC product via Airtable/Foxy and is
+   * more reliable than matching Foxy category codes, which differ between
+   * products (e.g. "THCa" vs "thc-p" vs "delta-8").
+   */
+  function itemHasTHCOption(item) {
+    var options = item.options || [];
+    for (var i = 0; i < options.length; i++) {
+      if (normaliseOptionName(options[i].name) === 'restrictedshippingcode' &&
+          (options[i].value || '').toLowerCase() === 'thc') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns true if the given Foxy category code is in the THC category list. */
   function isTHCCategory(category) {
     var cat = (category || '').toLowerCase();
     for (var i = 0; i < THC_CATEGORIES.length; i++) {
@@ -415,15 +437,21 @@
     return false;
   }
 
+  /**
+   * Count THC items in the cart.
+   * Primarily uses the "Restricted Shipping Code = thc" option (set on every
+   * THC product regardless of its Foxy category code).  Falls back to
+   * category-name matching for items that lack that option.
+   */
   function countTHCItems() {
     var items = window.FC && FC.json && FC.json.items;
     if (!items) return 0;
-    var count = 0;
-    for (var id in items) {
-      if (Object.prototype.hasOwnProperty.call(items, id)) {
-        if (isTHCCategory(items[id].category)) {
-          count += (items[id].quantity || 1);
-        }
+    var count   = 0;
+    var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+    for (var i = 0; i < asArray.length; i++) {
+      var item = asArray[i];
+      if (itemHasTHCOption(item) || isTHCCategory(item.category)) {
+        count += (item.quantity || 1);
       }
     }
     return count;
