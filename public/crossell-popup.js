@@ -367,18 +367,31 @@
     return count;
   }
 
+  function checkAndShow() {
+    if (countTHCItems() > 0) showPopup();
+  }
+
   function attach() {
     if (!window.FC || !FC.client || typeof FC.client.on !== 'function') {
-      setTimeout(attach, 400); // FC loads async — retry
+      setTimeout(attach, 100); // Poll frequently — Foxy loads async
       return;
     }
 
-    // Full-page cart: 'loaded.done' fires once when the cart page initialises
-    // with its items already populated.  showPopup() checks sessionStorage
-    // internally so it only ever shows once per browser session.
-    FC.client.on('loaded.done', function () {
-      if (countTHCItems() > 0) showPopup();
-    });
+    // Register event listeners for future cart updates (sidecart scenario and
+    // any quantity changes after initial load).  Try both known event names
+    // across FoxyCart versions.
+    FC.client.on('loaded.done', checkAndShow);
+    try { FC.client.on('add.done',    checkAndShow); } catch (e) {}
+    try { FC.client.on('cart-loaded', checkAndShow); } catch (e) {}
+
+    // Immediate check: on the full-page cart, loaded.done may have already
+    // fired before this listener was registered.  FC.json is populated by now.
+    checkAndShow();
+
+    // Belt-and-suspenders: re-check after short delays in case cart data
+    // arrives slightly after FC.client becomes available.
+    setTimeout(checkAndShow, 300);
+    setTimeout(checkAndShow, 800);
 
     // Intercept cart + button for promo items once FC is ready
     attachCartPlusInterceptor();
