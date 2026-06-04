@@ -167,8 +167,8 @@
    * unavailable (should never happen once attach() has confirmed it exists).
    */
   function addToCart(name, price, code, category, qty) {
-    var json    = window.FC && FC.json;
-    var domain  = (json && json.store_domain) || STORE_DOMAIN;
+    var json     = window.FC && FC.json;
+    var domain   = (json && json.store_domain) || STORE_DOMAIN;
     var sessName = (json && json.session_name) || '';
     var sessId   = (json && json.session_id)   || '';
 
@@ -179,23 +179,23 @@
       + '&category=' + encodeURIComponent(category)
       + '&quantity=' + qty;
 
-    // Include the session ID — without it, FC.client.request (JSONP) creates
-    // a brand-new empty cart instead of adding to the existing session.
+    // Always include the session ID so the item attaches to the existing cart.
+    // Without it, Foxy creates a new empty session → blank cart.
     if (sessName && sessId) {
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    if (window.FC && FC.client && typeof FC.client.request === 'function') {
-      FC.client.request(cartUrl);
-    } else {
-      // Fallback — should not be reached in normal operation
-      var link = document.createElement('a');
-      link.style.display = 'none';
-      link.href = cartUrl;
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(function () { document.body.removeChild(link); }, 200);
-    }
+    // Use a real link click — Foxy's JS intercepts links to its cart URL.
+    // • Sidecart (production): intercepted as AJAX → item added, no navigation.
+    // • Full-page cart (test): may navigate, but session ID keeps the correct cart.
+    // NOTE: FC.client.request is Foxy's cart-refresh (JSONP GET) — it does NOT
+    //       add items. Only a navigated or intercepted link click actually adds.
+    var link = document.createElement('a');
+    link.style.display = 'none';
+    link.href = cartUrl;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(function () { document.body.removeChild(link); }, 200);
   }
 
   /** True if popup has already been shown this browser session. */
