@@ -330,9 +330,14 @@
       variantSelect = '<select class="cs-variant-select" data-product-code="' + p.code + '">'
         + '<option value="">— Select ' + varLabel + ' —</option>'
         + p.variants.map(function (v) {
+            var vSale = salePrice(v.price || p.regularPrice);
+            var vOrig = Number(v.price || p.regularPrice).toFixed(2);
             return '<option value="' + v.code + '"'
-              + ' data-name="' + v.name.replace(/"/g, '&quot;') + '"'
-              + ' data-image="' + (v.image || '').replace(/"/g, '&quot;') + '">'
+              + ' data-name="'  + v.name.replace(/"/g, '&quot;') + '"'
+              + ' data-image="' + (v.image || '').replace(/"/g, '&quot;') + '"'
+              + ' data-price="' + (v.price || p.regularPrice) + '"'
+              + ' data-sale="'  + vSale + '"'
+              + ' data-orig="'  + vOrig + '">'
               + v.name + '</option>';
           }).join('')
         + '</select>';
@@ -387,9 +392,10 @@
     var product = getProductByCode(productCode);
     if (!product) return;
 
-    // Resolve which code / image / options to use (base product or selected variant)
+    // Resolve which code / image / price / options to use
     var useCode    = product.code;
     var useImage   = product.image;
+    var usePrice   = product.regularPrice;
     var customOpts = [];
 
     if (product.variants && product.variants.length > 0) {
@@ -398,13 +404,15 @@
       );
       if (!select || !select.value) return; // button should be disabled, but safety check
 
-      var selectedOpt = select.options[select.selectedIndex];
-      useCode = select.value;                                        // variant's Foxy code
-      var variantName = selectedOpt.getAttribute('data-name') || selectedOpt.text;
-      var variantImg  = selectedOpt.getAttribute('data-image') || '';
-      if (variantImg) useImage = variantImg;
+      var selectedOpt  = select.options[select.selectedIndex];
+      useCode          = select.value;
+      var variantName  = selectedOpt.getAttribute('data-name')  || selectedOpt.text;
+      var variantImg   = selectedOpt.getAttribute('data-image') || '';
+      var variantPrice = parseFloat(selectedOpt.getAttribute('data-price') || '0');
+      if (variantImg)   useImage = variantImg;
+      // Use variant price if set, otherwise fall back to parent product price
+      if (variantPrice > 0) usePrice = variantPrice;
 
-      // Include the option so it appears in the cart  (e.g. &Flavor=Watermelon+Pucker)
       if (product.variantsLabel && variantName) {
         customOpts.push({ name: product.variantsLabel, value: variantName });
       }
@@ -413,9 +421,9 @@
     var spaceLeft = PROMO_LIMIT - getPromoQty();
 
     if (spaceLeft > 0) {
-      addToCart(product.name, salePrice(product.regularPrice), useCode, PROMO_CATEGORY, 1, useImage, product.url, customOpts);
+      addToCart(product.name, salePrice(usePrice), useCode, PROMO_CATEGORY, 1, useImage, product.url, customOpts);
     } else {
-      addToCart(product.name, product.regularPrice, useCode, 'DEFAULT', 1, useImage, product.url, customOpts);
+      addToCart(product.name, usePrice, useCode, 'DEFAULT', 1, useImage, product.url, customOpts);
     }
 
     setTimeout(closePopup, 400);
@@ -464,12 +472,20 @@
       var btn = card.querySelector('.cs-add-btn');
       if (btn) btn.disabled = !select.value;
 
-      // Swap product image to variant image if available
+      // Swap product image and update price display when a variant is selected
       if (select.value) {
-        var opt      = select.options[select.selectedIndex];
-        var varImg   = opt.getAttribute('data-image');
-        var cardImg  = card.querySelector('.cs-product-img');
+        var opt    = select.options[select.selectedIndex];
+        var varImg = opt.getAttribute('data-image');
+        var varSale = opt.getAttribute('data-sale');
+        var varOrig = opt.getAttribute('data-orig');
+
+        var cardImg = card.querySelector('.cs-product-img');
         if (varImg && cardImg) cardImg.src = varImg;
+
+        var priceOrig = card.querySelector('.cs-price-orig');
+        var priceSale = card.querySelector('.cs-price-sale');
+        if (varOrig && priceOrig) priceOrig.textContent = '$' + varOrig;
+        if (varSale && priceSale) priceSale.textContent = '$' + varSale;
       }
     });
   }

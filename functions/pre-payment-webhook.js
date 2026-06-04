@@ -12,28 +12,55 @@ const CROSSELL_PROMO_CATEGORY  = "CROSSELL_PROMO";
 const CROSSELL_PROMO_LIMIT     = 3;
 const CROSSELL_PRICE_TOLERANCE = 0.01;
 const CROSSELL_PRODUCTS_TABLE  = "tblkLl9qqg654fWi7";
+const CROSSELL_VARIANTS_TABLE  = "tblEtb1aIH5Xk4Nh9";
 
 /**
- * Fetches all products with "Cross-sell Promo" checked from Airtable and
- * returns a map of { [Website Product Code]: regularPrice }.
- * This is called at checkout time so no static price list needs to be
- * maintained — checking/unchecking the Airtable checkbox is enough.
+ * Builds a map of { [Foxy code]: regularPrice } for all cross-sell products
+ * AND their variants.  Pricing may live at the variant level (parent product
+ * has no Price), so we fetch both tables.
  */
 async function fetchCrossSellPriceMap(airtableBase) {
   const map = {};
+
+  // 1. Fetch parent products and collect any with a parent-level price + variant IDs
+  const allVariantIds = [];
   await airtableBase(CROSSELL_PRODUCTS_TABLE)
     .select({
-      fields:          ["Website Product Code", "Price"],
-      filterByFormula: `{Cross-sell Promo}`,
+      fields:          ["Website Product Code", "Price", "Variants"],
+      filterByFormula: "{Cross-sell Promo}",
     })
     .eachPage((records, fetchNextPage) => {
       records.forEach((r) => {
         const code  = r.get("Website Product Code");
         const price = r.get("Price");
-        if (code && price) map[code] = price;
+        if (code && price) map[code] = price;          // parent has a price
+        const varIds = r.get("Variants") || [];
+        varIds.forEach(id => allVariantIds.push(id));  // collect variant IDs
       });
       fetchNextPage();
     });
+
+  // 2. Fetch all variant prices for those products
+  if (allVariantIds.length > 0) {
+    const formula = allVariantIds.length === 1
+      ? `RECORD_ID() = "${allVariantIds[0]}"`
+      : `OR(${allVariantIds.map(id => `RECORD_ID() = "${id}"`).join(",")})`;
+
+    await airtableBase(CROSSELL_VARIANTS_TABLE)
+      .select({
+        fields:          ["Website Product Code", "Price"],
+        filterByFormula: formula,
+      })
+      .eachPage((records, fetchNextPage) => {
+        records.forEach((r) => {
+          const code  = r.get("Website Product Code");
+          const price = r.get("Price");
+          if (code && price) map[code] = price;        // variant-level price
+        });
+        fetchNextPage();
+      });
+  }
+
   return map;
 }
 // ────────────────────────────────────────────────────────────────────────────
