@@ -300,7 +300,7 @@
       + '<div class="cs-box">'
       + '<button class="cs-close" aria-label="Close offer">&times;</button>'
       + '<p class="cs-eyebrow">🎡 Exclusive One-Time Offer</p>'
-      + '<h2 id="cs-title" class="cs-title">Try Our New Ferris Wheel Euphoric Products &mdash; 40% Off!</h2>'
+      + '<h2 id="cs-title" class="cs-title">Try Our New Euphoric Products &mdash; 40% Off!</h2>'
       + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site. Limited to ' + PROMO_LIMIT + ' units per customer at the discounted price.</p>'
       + '<div class="cs-products">' + CROSSELL_PRODUCTS.map(productCardHTML).join('') + '</div>'
       + '<button class="cs-decline">No thanks, I\'ll skip this offer</button>'
