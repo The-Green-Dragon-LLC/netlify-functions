@@ -167,13 +167,23 @@
    * unavailable (should never happen once attach() has confirmed it exists).
    */
   function addToCart(name, price, code, category, qty) {
-    var domain  = (window.FC && FC.json && FC.json.store_domain) || STORE_DOMAIN;
+    var json    = window.FC && FC.json;
+    var domain  = (json && json.store_domain) || STORE_DOMAIN;
+    var sessName = (json && json.session_name) || '';
+    var sessId   = (json && json.session_id)   || '';
+
     var cartUrl = 'https://' + domain + '/cart'
       + '?name='     + encodeURIComponent(name)
       + '&price='    + Number(price).toFixed(2)
       + '&code='     + encodeURIComponent(code)
       + '&category=' + encodeURIComponent(category)
       + '&quantity=' + qty;
+
+    // Include the session ID — without it, FC.client.request (JSONP) creates
+    // a brand-new empty cart instead of adding to the existing session.
+    if (sessName && sessId) {
+      cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
+    }
 
     if (window.FC && FC.client && typeof FC.client.request === 'function') {
       FC.client.request(cartUrl);
