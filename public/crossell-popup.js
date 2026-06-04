@@ -155,21 +155,19 @@
   }
 
   /**
-   * Add an item to the Foxy cart.
+   * Add an item to the Foxy cart without page navigation.
    *
-   * Two contexts require different strategies:
+   * FC.client.request() is FoxyCart's own internal AJAX method — the same one
+   * it uses when intercepting add-to-cart link clicks for the sidecart.
+   * Calling it directly works in ALL contexts (sidecart, full-page cart, test,
+   * production) because it goes through Foxy's JSONP request pipeline and
+   * triggers a cart refresh via the 'loaded.done' event without navigating.
    *
-   * SIDECART (production — user is on a Webflow page):
-   *   Foxy's JS intercepts anchor clicks to its cart URL via AJAX, so no page
-   *   navigation occurs and the sidecart updates in place.
-   *
-   * FULL-PAGE CART (test — user is already on the Foxy domain):
-   *   Foxy does NOT intercept programmatic link.click() calls on the cart page,
-   *   so we navigate directly via window.location.href instead.  The cart page
-   *   reloads with the new item added.
+   * Falls back to direct link navigation only if FC.client is somehow
+   * unavailable (should never happen once attach() has confirmed it exists).
    */
   function addToCart(name, price, code, category, qty) {
-    var domain = (window.FC && FC.json && FC.json.store_domain) || STORE_DOMAIN;
+    var domain  = (window.FC && FC.json && FC.json.store_domain) || STORE_DOMAIN;
     var cartUrl = 'https://' + domain + '/cart'
       + '?name='     + encodeURIComponent(name)
       + '&price='    + Number(price).toFixed(2)
@@ -177,15 +175,10 @@
       + '&category=' + encodeURIComponent(category)
       + '&quantity=' + qty;
 
-    // Detect full-page cart: we're already on the Foxy/FoxyCart domain
-    var onFoxyDomain = window.location.hostname.indexOf('foxycart') !== -1 ||
-                       window.location.hostname.indexOf('foxy.io')  !== -1;
-
-    if (onFoxyDomain) {
-      // Full-page cart — navigate directly; cart reloads with item added
-      window.location.href = cartUrl;
+    if (window.FC && FC.client && typeof FC.client.request === 'function') {
+      FC.client.request(cartUrl);
     } else {
-      // Sidecart — Foxy intercepts the anchor click via AJAX
+      // Fallback — should not be reached in normal operation
       var link = document.createElement('a');
       link.style.display = 'none';
       link.href = cartUrl;
