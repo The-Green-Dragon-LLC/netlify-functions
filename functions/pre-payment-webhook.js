@@ -24,7 +24,7 @@ async function fetchCrossSellPriceMap(airtableBase) {
   await airtableBase(CROSSELL_PRODUCTS_TABLE)
     .select({
       fields:          ["Website Product Code", "Price"],
-      filterByFormula: `{Cross-sell Promo} = TRUE()`,
+      filterByFormula: `{Cross-sell Promo}`,
     })
     .eachPage((records, fetchNextPage) => {
       records.forEach((r) => {

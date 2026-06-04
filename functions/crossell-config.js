@@ -91,7 +91,7 @@ async function fetchCrossSellProducts(base) {
         'Variants',          // linked record IDs of variants
         'Variants Label',    // option name, e.g. "Flavor"
       ],
-      filterByFormula: `{Cross-sell Promo} = TRUE()`,
+      filterByFormula: `{Cross-sell Promo}`,
     })
     .eachPage((records, next) => { records.forEach(r => productRecords.push(r)); next(); });
 
