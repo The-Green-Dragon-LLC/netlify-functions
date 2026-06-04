@@ -168,7 +168,12 @@
    */
   function addToCart(name, price, code, category, qty) {
     var json     = window.FC && FC.json;
-    var domain   = (json && json.config && json.config.store_domain) || STORE_DOMAIN;
+    // FC.json.config.store_domain is not always present; derive from cdn_base_path
+    // which is always 'https://cdn.foxycart.com/{store-name}/' — extract the
+    // store name and append '.foxycart.com' to get the correct cart domain.
+    var cdnBase      = json && json.config && json.config.cdn_base_path;
+    var storeMatch   = cdnBase && cdnBase.match(/cdn\.foxycart\.com\/([^\/]+)\//);
+    var domain       = (storeMatch && storeMatch[1] + '.foxycart.com') || STORE_DOMAIN;
     var sessName = (json && json.session_name) || '';
     var sessId   = (json && json.session_id)   || '';
 
