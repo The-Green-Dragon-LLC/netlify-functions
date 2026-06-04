@@ -38,8 +38,36 @@
      1.  CONFIGURATION — update these values
      ═══════════════════════════════════════════════════════════════════════════ */
 
-  /** Foxy product-category code for THC products (case-insensitive). */
-  var THC_CATEGORY = 'thc';
+  /**
+   * URL of the Netlify function that returns live config from Airtable.
+   * Update to your production URL when going live.
+   */
+  var CONFIG_URL = 'https://develop--wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
+
+  /**
+   * sessionStorage key for caching the Airtable config so it's only
+   * fetched once per browser session.
+   */
+  var CONFIG_CACHE_KEY = 'tgd_crossell_config';
+
+  /**
+   * Fallback THC categories used if the Airtable config fetch fails.
+   * These are the Foxy product-category codes — comparisons are case-insensitive.
+   */
+  var THC_CATEGORIES = [
+    'Vape Kits',
+    'Delta 8',
+    'Delta 9',
+    'THCa',
+    'Delta 10',
+    'Delta 11 (HXY-11)',
+    'Delta 6',
+    'Live Resin',
+    'THCP',
+    'THC-V',
+    'THCh',
+    'THCjd'
+  ];
 
   /**
    * Foxy product-category code for cross-sell promo items.
@@ -61,27 +89,25 @@
   var SESSION_KEY = 'tgd_crossell_shown';
 
   /**
-   * Cross-sell products shown in the popup.
-   * regularPrice is the full retail price; the 40%-off sale price is
-   * calculated automatically.  Keep product codes in sync with
-   * crossell-validate.js → PROMO_PRICES.
+   * Fallback cross-sell products used if the Airtable config fetch fails.
+   * In normal operation these are replaced by live data from Airtable
+   * (products with the "Cross-sell Promo" checkbox checked).
    */
   var CROSSELL_PRODUCTS = [
     {
-      name:         'Ferris Wheel - Kanna Extract Tablets',          // ← UPDATE
-      code:         'recKkoAfqQsG0egdL',                                      // ← UPDATE
-      regularPrice: 19.99,                                         // ← UPDATE
-      image:        'https://cdn.prod.website-files.com/62829462cb406845143ba31e/6a0490a564b912e53be28dc5_FerrisWheel-ezgif.com-resize.webp', // ← UPDATE
-      url:          'https://www.thegreendragoncbd.com//product/ferris-wheel-kanna-party-blend-tablets'  // ← UPDATE
+      name:         'Ferris Wheel - Kanna Extract Tablets',
+      code:         'recKkoAfqQsG0egdL',
+      regularPrice: 19.99,
+      image:        'https://cdn.prod.website-files.com/62829462cb406845143ba31e/6a0490a564b912e53be28dc5_FerrisWheel-ezgif.com-resize.webp',
+      url:          'https://www.thegreendragoncbd.com/products/ferris-wheel-kanna-party-blend-tablets'
     },
     {
-      name:         'Mmelt - Hippie Flip Mushroom Gummies - 10 count',          // ← UPDATE
-      code:         'rechUKdlBzIOr1MLn',                                      // ← UPDATE
-      regularPrice: 34.99,                                         // ← UPDATE
-      image:        'https://cdn.prod.website-files.com/62829462cb406845143ba31e/6a0cd593b0d30d35c6d61c77_HippyFlipGummies-ezgif.com-resize.webp', // ← UPDATE
-      url:          'https://www.thegreendragoncbd.com/product/mmelt-hippie-flip-mushroom-gummies'  // ← UPDATE
+      name:         'Mmelt - Hippie Flip Mushroom Gummies - 10 count',
+      code:         'rechUKdlBzIOr1MLn',
+      regularPrice: 34.99,
+      image:        'https://cdn.prod.website-files.com/62829462cb406845143ba31e/6a0cd593b0d30d35c6d61c77_HippyFlipGummies-ezgif.com-resize.webp',
+      url:          'https://www.thegreendragoncbd.com/product/mmelt-hippie-flip-mushroom-gummies'
     }
-    // Add more products as needed
   ];
 
   /* ═══════════════════════════════════════════════════════════════════════════
@@ -352,14 +378,22 @@
      7.  FOXY EVENT HOOK
      ═══════════════════════════════════════════════════════════════════════════ */
 
+  /** Returns true if the given Foxy category code is a THC product category. */
+  function isTHCCategory(category) {
+    var cat = (category || '').toLowerCase();
+    for (var i = 0; i < THC_CATEGORIES.length; i++) {
+      if (THC_CATEGORIES[i].toLowerCase() === cat) return true;
+    }
+    return false;
+  }
+
   function countTHCItems() {
     var items = window.FC && FC.json && FC.json.items;
     if (!items) return 0;
-    var thcLower = THC_CATEGORY.toLowerCase();
     var count = 0;
     for (var id in items) {
       if (Object.prototype.hasOwnProperty.call(items, id)) {
-        if ((items[id].category || '').toLowerCase() === thcLower) {
+        if (isTHCCategory(items[id].category)) {
           count += (items[id].quantity || 1);
         }
       }
@@ -371,30 +405,72 @@
     if (countTHCItems() > 0) showPopup();
   }
 
+  /* ═══════════════════════════════════════════════════════════════════════════
+     8.  AIRTABLE CONFIG LOADER
+     ═══════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Fetches live category and product config from the crossell-config Netlify
+   * function.  Result is cached in sessionStorage so Airtable is only hit
+   * once per browser session.  Falls back to the hardcoded arrays if the
+   * fetch fails.
+   */
+  function loadConfig() {
+    // Return cached config if available
+    try {
+      var cached = sessionStorage.getItem(CONFIG_CACHE_KEY);
+      if (cached) return Promise.resolve(JSON.parse(cached));
+    } catch (e) { /* ignore */ }
+
+    return fetch(CONFIG_URL)
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        try { sessionStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
+        return data;
+      })
+      .catch(function (err) {
+        console.warn('[crossell] Config fetch failed, using fallback:', err.message);
+        return null;
+      });
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     9.  FOXY EVENT HOOK
+     ═══════════════════════════════════════════════════════════════════════════ */
+
   function attach() {
     if (!window.FC || !FC.client || typeof FC.client.on !== 'function') {
       setTimeout(attach, 100); // Poll frequently — Foxy loads async
       return;
     }
 
-    // Register event listeners for future cart updates (sidecart scenario and
-    // any quantity changes after initial load).  Try both known event names
-    // across FoxyCart versions.
-    FC.client.on('loaded.done', checkAndShow);
-    try { FC.client.on('add.done',    checkAndShow); } catch (e) {}
-    try { FC.client.on('cart-loaded', checkAndShow); } catch (e) {}
+    // Load config from Airtable (or session cache), then wire up cart listeners
+    loadConfig().then(function (config) {
+      // Apply live data if fetch succeeded; otherwise keep hardcoded fallbacks
+      if (config) {
+        if (config.categories && config.categories.length) {
+          THC_CATEGORIES = config.categories;
+        }
+        if (config.products && config.products.length) {
+          CROSSELL_PRODUCTS = config.products;
+        }
+      }
 
-    // Immediate check: on the full-page cart, loaded.done may have already
-    // fired before this listener was registered.  FC.json is populated by now.
-    checkAndShow();
+      // Register event listeners (try multiple event names across FC versions)
+      FC.client.on('loaded.done', checkAndShow);
+      try { FC.client.on('add.done',    checkAndShow); } catch (e) {}
+      try { FC.client.on('cart-loaded', checkAndShow); } catch (e) {}
 
-    // Belt-and-suspenders: re-check after short delays in case cart data
-    // arrives slightly after FC.client becomes available.
-    setTimeout(checkAndShow, 300);
-    setTimeout(checkAndShow, 800);
+      // Immediate check — catches full-page cart where loaded.done already fired
+      checkAndShow();
+      setTimeout(checkAndShow, 300);
+      setTimeout(checkAndShow, 800);
 
-    // Intercept cart + button for promo items once FC is ready
-    attachCartPlusInterceptor();
+      attachCartPlusInterceptor();
+    });
   }
 
   if (document.readyState === 'loading') {
