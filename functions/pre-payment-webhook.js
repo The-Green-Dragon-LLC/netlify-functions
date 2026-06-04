@@ -8,14 +8,34 @@ const {
 } = process.env;
 
 // ─── Cross-sell promo validation ────────────────────────────────────────────
-// Keep these in sync with crossell-popup.js and crossell-validate.js
-const CROSSELL_PROMO_CATEGORY = "CROSSELL_PROMO";
-const CROSSELL_PROMO_LIMIT = 3;
-const CROSSELL_PROMO_PRICES = {
-  "FW-001": 23.99, // ← UPDATE: Math.round(regularPrice * 60) / 100
-  "FW-002": 20.99, // ← UPDATE: Math.round(regularPrice * 60) / 100
-};
+const CROSSELL_PROMO_CATEGORY  = "CROSSELL_PROMO";
+const CROSSELL_PROMO_LIMIT     = 3;
 const CROSSELL_PRICE_TOLERANCE = 0.01;
+const CROSSELL_PRODUCTS_TABLE  = "tblkLl9qqg654fWi7";
+
+/**
+ * Fetches all products with "Cross-sell Promo" checked from Airtable and
+ * returns a map of { [Website Product Code]: regularPrice }.
+ * This is called at checkout time so no static price list needs to be
+ * maintained — checking/unchecking the Airtable checkbox is enough.
+ */
+async function fetchCrossSellPriceMap(airtableBase) {
+  const map = {};
+  await airtableBase(CROSSELL_PRODUCTS_TABLE)
+    .select({
+      fields:          ["Website Product Code", "Price"],
+      filterByFormula: `{Cross-sell Promo} = TRUE()`,
+    })
+    .eachPage((records, fetchNextPage) => {
+      records.forEach((r) => {
+        const code  = r.get("Website Product Code");
+        const price = r.get("Price");
+        if (code && price) map[code] = price;
+      });
+      fetchNextPage();
+    });
+  return map;
+}
 // ────────────────────────────────────────────────────────────────────────────
 
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(
@@ -131,6 +151,15 @@ exports.handler = async (event, context) => {
     let hasActiveMembership = false;
     const crossellPriceMismatch = [];
 
+    // Pre-fetch the cross-sell price map once before processing items,
+    // so we don't hit Airtable per-item inside the Promise.all loop.
+    const hasCrossSellItems = cartItems.some(
+      (item) => item["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
+    );
+    const crossellPriceMap = hasCrossSellItems
+      ? await fetchCrossSellPriceMap(base)
+      : {};
+
     await Promise.all(
       cartItems.map(async (cartItem) => {
         if (cartItem["_embedded"]["fx:item_category"].code === "memberships") {
@@ -190,21 +219,25 @@ exports.handler = async (event, context) => {
         } else if (
           cartItem["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
         ) {
-          // Cross-sell promo item: validate price only (no Airtable inventory check).
+          // Cross-sell promo item: validate price against Airtable's live data.
           // Quantity limit is checked after this loop where we can sum across all items.
-          const expectedPrice = CROSSELL_PROMO_PRICES[cartItem.code];
+          const regularPrice = crossellPriceMap[cartItem.code];
 
-          if (expectedPrice === undefined) {
-            console.log(
-              `Unknown cross-sell promo code: ${cartItem.code}`
-            );
+          if (regularPrice === undefined) {
+            // Code not found in Airtable's cross-sell products — reject.
+            // This catches items added with a fabricated CROSSELL_PROMO category.
+            console.log(`Unknown cross-sell promo code: ${cartItem.code}`);
             invalidProductCode.push(cartItem.code);
-          } else if (cartItem.price < expectedPrice - CROSSELL_PRICE_TOLERANCE) {
-            console.log(
-              `Cross-sell price mismatch for ${cartItem.name}: ` +
-              `expected >= ${expectedPrice}, got ${cartItem.price}`
-            );
-            crossellPriceMismatch.push(cartItem.name);
+          } else {
+            // Expected price = 40% off the regular Airtable price
+            const expectedPrice = Math.round(regularPrice * 60) / 100;
+            if (cartItem.price < expectedPrice - CROSSELL_PRICE_TOLERANCE) {
+              console.log(
+                `Cross-sell price mismatch for ${cartItem.name}: ` +
+                `expected >= ${expectedPrice.toFixed(2)}, got ${cartItem.price}`
+              );
+              crossellPriceMismatch.push(cartItem.name);
+            }
           }
         } else {
           // ignore inventory validation if product has `Delayed shipping` option

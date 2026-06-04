@@ -155,24 +155,44 @@
   }
 
   /**
-   * Add an item to the Foxy cart programmatically by creating a temporary
-   * anchor and clicking it.  Foxy's JS intercepts all clicks on links pointing
-   * to the cart URL and handles them as AJAX cart additions, so no page
-   * navigation occurs.
+   * Add an item to the Foxy cart.
+   *
+   * Two contexts require different strategies:
+   *
+   * SIDECART (production — user is on a Webflow page):
+   *   Foxy's JS intercepts anchor clicks to its cart URL via AJAX, so no page
+   *   navigation occurs and the sidecart updates in place.
+   *
+   * FULL-PAGE CART (test — user is already on the Foxy domain):
+   *   Foxy does NOT intercept programmatic link.click() calls on the cart page,
+   *   so we navigate directly via window.location.href instead.  The cart page
+   *   reloads with the new item added.
    */
   function addToCart(name, price, code, category, qty) {
     var domain = (window.FC && FC.json && FC.json.store_domain) || STORE_DOMAIN;
-    var link = document.createElement('a');
-    link.style.display = 'none';
-    link.href = 'https://' + domain + '/cart'
+    var cartUrl = 'https://' + domain + '/cart'
       + '?name='     + encodeURIComponent(name)
       + '&price='    + Number(price).toFixed(2)
       + '&code='     + encodeURIComponent(code)
       + '&category=' + encodeURIComponent(category)
       + '&quantity=' + qty;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(function () { document.body.removeChild(link); }, 200);
+
+    // Detect full-page cart: we're already on the Foxy/FoxyCart domain
+    var onFoxyDomain = window.location.hostname.indexOf('foxycart') !== -1 ||
+                       window.location.hostname.indexOf('foxy.io')  !== -1;
+
+    if (onFoxyDomain) {
+      // Full-page cart — navigate directly; cart reloads with item added
+      window.location.href = cartUrl;
+    } else {
+      // Sidecart — Foxy intercepts the anchor click via AJAX
+      var link = document.createElement('a');
+      link.style.display = 'none';
+      link.href = cartUrl;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(function () { document.body.removeChild(link); }, 200);
+    }
   }
 
   /** True if popup has already been shown this browser session. */
