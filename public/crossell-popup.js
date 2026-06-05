@@ -451,7 +451,7 @@
     var variantSelect = '';
     if (hasVars) {
       variantSelect = '<select class="cs-variant-select" data-product-code="' + p.code + '">'
-        + '<option value="" selected disabled>Select ' + varLabel + '</option>'
+        + '<option value="" selected disabled>Select</option>'
         + p.variants.map(function (v) {
             var vSale    = salePrice(v.price || p.regularPrice);
             var vOrig    = Number(v.price || p.regularPrice).toFixed(2);
