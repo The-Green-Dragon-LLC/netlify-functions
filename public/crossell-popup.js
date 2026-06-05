@@ -313,13 +313,16 @@
                  n !== 'heavydrink';
         });
 
+        // Use variant image if available, fall back to parent image
+        var overflowImage = (variant && variant.image) ? variant.image : product.image;
+
         addToCart(
-          cartItem.name,
+          cartItem.name,   // already includes variant (e.g. "Ferris Wheel…-   Blue Razz")
           overflowPrice,
           overflowCode,
           'DEFAULT',
           1,
-          product.image,
+          overflowImage,
           product.url,
           overflowOpts.length ? overflowOpts : undefined
         );
@@ -377,15 +380,18 @@
       variantSelect = '<select class="cs-variant-select" data-product-code="' + p.code + '">'
         + '<option value="">— Select ' + varLabel + ' —</option>'
         + p.variants.map(function (v) {
-            var vSale = salePrice(v.price || p.regularPrice);
-            var vOrig = Number(v.price || p.regularPrice).toFixed(2);
+            var vSale    = salePrice(v.price || p.regularPrice);
+            var vOrig    = Number(v.price || p.regularPrice).toFixed(2);
+            var dispName = v.displayName || v.name; // short: "Blue Razz"
+            var fullName = v.name;                  // full: "Ferris Wheel…-   Blue Razz"
             return '<option value="' + v.code + '"'
-              + ' data-name="'  + v.name.replace(/"/g, '&quot;') + '"'
-              + ' data-image="' + (v.image || '').replace(/"/g, '&quot;') + '"'
-              + ' data-price="' + (v.price || p.regularPrice) + '"'
-              + ' data-sale="'  + vSale + '"'
-              + ' data-orig="'  + vOrig + '">'
-              + v.name + '</option>';
+              + ' data-displayname="' + dispName.replace(/"/g, '&quot;') + '"'
+              + ' data-fullname="'    + fullName.replace(/"/g, '&quot;') + '"'
+              + ' data-image="'       + (v.image || '').replace(/"/g, '&quot;') + '"'
+              + ' data-price="'       + (v.price || p.regularPrice) + '"'
+              + ' data-sale="'        + vSale + '"'
+              + ' data-orig="'        + vOrig + '">'
+              + dispName + '</option>';
           }).join('')
         + '</select>';
     }
@@ -439,7 +445,8 @@
     var product = getProductByCode(productCode);
     if (!product) return;
 
-    // Resolve which code / image / price / options to use
+    // Resolve which name / code / image / price / options to use
+    var useName    = product.name;
     var useCode    = product.code;
     var useImage   = product.image;
     var usePrice   = product.regularPrice;
@@ -452,25 +459,31 @@
       if (!select || !select.value) return; // button should be disabled, but safety check
 
       var selectedOpt  = select.options[select.selectedIndex];
-      useCode          = select.value;
-      var variantName  = selectedOpt.getAttribute('data-name')  || selectedOpt.text;
-      var variantImg   = selectedOpt.getAttribute('data-image') || '';
-      var variantPrice = parseFloat(selectedOpt.getAttribute('data-price') || '0');
-      if (variantImg)   useImage = variantImg;
-      // Use variant price if set, otherwise fall back to parent product price
-      if (variantPrice > 0) usePrice = variantPrice;
+      useCode = select.value;
 
-      if (product.variantsLabel && variantName) {
-        customOpts.push({ name: product.variantsLabel, value: variantName });
+      // Full name used as cart item name (e.g. "Ferris Wheel…-   Blue Razz")
+      var variantFullName  = selectedOpt.getAttribute('data-fullname')    || selectedOpt.text;
+      // Display name used as option value (e.g. "Blue Razz")
+      var variantDispName  = selectedOpt.getAttribute('data-displayname') || variantFullName;
+      var variantImg       = selectedOpt.getAttribute('data-image')       || '';
+      var variantPrice     = parseFloat(selectedOpt.getAttribute('data-price') || '0');
+
+      if (variantImg)          useImage = variantImg;
+      if (variantPrice > 0)    usePrice = variantPrice;
+      if (variantFullName)     useName  = variantFullName; // show "Ferris Wheel…- Blue Razz" in cart
+
+      // Add the option so it appears in cart details (e.g. Flavor: Blue Razz)
+      if (product.variantsLabel && variantDispName) {
+        customOpts.push({ name: product.variantsLabel, value: variantDispName });
       }
     }
 
     var spaceLeft = PROMO_LIMIT - getPromoQty();
 
     if (spaceLeft > 0) {
-      addToCart(product.name, salePrice(usePrice), useCode, PROMO_CATEGORY, 1, useImage, product.url, customOpts);
+      addToCart(useName, salePrice(usePrice), useCode, PROMO_CATEGORY, 1, useImage, product.url, customOpts);
     } else {
-      addToCart(product.name, usePrice, useCode, 'DEFAULT', 1, useImage, product.url, customOpts);
+      addToCart(useName, usePrice, useCode, 'DEFAULT', 1, useImage, product.url, customOpts);
     }
 
     setTimeout(closePopup, 400);

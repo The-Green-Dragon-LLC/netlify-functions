@@ -112,15 +112,27 @@ async function fetchCrossSellProducts(base) {
         : 0;
       const regularPrice = parentPrice || lowestVariantPrice;
 
-      const slug = r.get('Slug');
+      const parentName = r.get('Name') || '';
+      const slug       = r.get('Slug');
+
+      // For each variant, derive a short display name by stripping the
+      // parent product name prefix (e.g. "Ferris Wheel…-   Blue Razz" → "Blue Razz")
+      const variantsWithDisplay = variants.map(v => {
+        let displayName = v.name;
+        if (displayName.startsWith(parentName)) {
+          displayName = displayName.slice(parentName.length).replace(/^[\s\-]+/, '').trim();
+        }
+        return Object.assign({}, v, { displayName });
+      });
+
       return {
-        name:          r.get('Name') || '',
+        name:          parentName,
         code:          r.get('Website Product Code'),
         regularPrice:  regularPrice,
         image:         r.get('Primary Image Webflow URL') || '',
         url:           slug ? PRODUCT_PAGE_BASE_URL + slug : '',
         variantsLabel: variantsLabel || (variants[0] && variants[0].label) || '',
-        variants:      variants,
+        variants:      variantsWithDisplay,
       };
     });
 }
