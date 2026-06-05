@@ -266,7 +266,67 @@
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
-     3.  CART QUANTITY LIMIT ENFORCEMENT
+     3.  PROMO LIMIT DISCLAIMER
+     ═══════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Inserts a small notice under each promo item in the cart when either:
+   *  a) A full-price overflow line exists for the same product (the customer
+   *     clicked + past the limit), or
+   *  b) The promo item's qty was set above the limit by typing directly.
+   *
+   * The notice is re-evaluated on every FC loaded.done event so it stays
+   * accurate as the cart changes.
+   */
+  function updatePromoDisclaimer() {
+    setTimeout(function () {
+      // Remove stale notices first
+      var old = document.querySelectorAll('.cs-promo-limit-notice');
+      for (var i = 0; i < old.length; i++) {
+        if (old[i].parentNode) old[i].parentNode.removeChild(old[i]);
+      }
+
+      var items = window.FC && FC.json && FC.json.items;
+      if (!items) return;
+
+      var asArray = Array.isArray(items)
+        ? items
+        : Object.keys(items).map(function (k) { return items[k]; });
+
+      var promoItems = asArray.filter(isPromoItem);
+      if (!promoItems.length) return;
+
+      var totalPromoQty = promoItems.reduce(function (sum, it) { return sum + (it.quantity || 0); }, 0);
+
+      // Show if any overflow full-price item exists (same variant code, no marker)
+      var hasOverflow = asArray.some(function (it) {
+        if (isPromoItem(it)) return false;
+        return promoItems.some(function (p) { return p.code === it.code; });
+      });
+
+      // Also show if someone typed a qty higher than the limit
+      if (!hasOverflow && totalPromoQty <= PROMO_LIMIT) return;
+
+      var msg = '⚠️  The promotional price is limited to '
+              + PROMO_LIMIT + ' units. '
+              + 'Additional units have been added to your cart at the regular price.';
+
+      promoItems.forEach(function (it) {
+        var el = document.querySelector('[data-fc-item-id="' + it.id + '"]');
+        if (!el) return;
+        el.insertAdjacentHTML('afterend',
+          '<div class="cs-promo-limit-notice" style="'
+          + 'font-size:11px;line-height:1.4;color:#7a3c00;'
+          + 'background:#fff8f0;border:1px solid #f5cba0;border-radius:5px;'
+          + 'padding:5px 10px;margin:2px 0 8px;font-family:Lato,sans-serif;'
+          + '">' + msg + '</div>'
+        );
+      });
+    }, 300); // short delay to let Foxy finish re-rendering the cart DOM
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     4.  CART QUANTITY LIMIT ENFORCEMENT
      ═══════════════════════════════════════════════════════════════════════════ */
 
   /**
@@ -682,14 +742,15 @@
       }
 
       // Register event listeners (try multiple event names across FC versions)
-      FC.client.on('loaded.done', checkAndShow);
-      try { FC.client.on('add.done',    checkAndShow); } catch (e) {}
-      try { FC.client.on('cart-loaded', checkAndShow); } catch (e) {}
+      FC.client.on('loaded.done', function () { checkAndShow(); updatePromoDisclaimer(); });
+      try { FC.client.on('add.done',    function () { checkAndShow(); updatePromoDisclaimer(); }); } catch (e) {}
+      try { FC.client.on('cart-loaded', function () { checkAndShow(); updatePromoDisclaimer(); }); } catch (e) {}
 
-      // Immediate check — catches full-page cart where loaded.done already fired
+      // Immediate checks — catches full-page cart where loaded.done already fired
       checkAndShow();
-      setTimeout(checkAndShow, 300);
-      setTimeout(checkAndShow, 800);
+      updatePromoDisclaimer();
+      setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 300);
+      setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 800);
 
       attachCartPlusInterceptor();
     });
