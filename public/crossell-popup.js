@@ -421,7 +421,7 @@
     '#tgd-crossell .cs-products{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:18px;}',
     '#tgd-crossell .cs-product{flex:1 1 calc(50% - 7px);min-width:220px;border:1px solid #e4e4e4;border-radius:10px;overflow:hidden;display:flex;flex-direction:column;transition:box-shadow .15s;}',
     '#tgd-crossell .cs-product:hover{box-shadow:0 4px 16px rgba(0,0,0,.12);}',
-    '#tgd-crossell .cs-product img{width:100%;height:160px;object-fit:cover;display:block;}',
+    '#tgd-crossell .cs-product img{width:100%;height:220px;object-fit:contain;background:#f7f7f7;display:block;}',
     '#tgd-crossell .cs-product-info{padding:12px 14px 14px;flex:1;display:flex;flex-direction:column;}',
     '#tgd-crossell .cs-product-name{font-size:13px;font-weight:600;color:#222;margin:0 0 10px;flex:1;line-height:1.4;}',
     '#tgd-crossell .cs-prices{display:flex;align-items:center;gap:8px;margin-bottom:12px;}',
@@ -451,7 +451,7 @@
     var variantSelect = '';
     if (hasVars) {
       variantSelect = '<select class="cs-variant-select" data-product-code="' + p.code + '">'
-        + '<option value="">— Select ' + varLabel + ' —</option>'
+        + '<option value="" selected disabled>Select ' + varLabel + '</option>'
         + p.variants.map(function (v) {
             var vSale    = salePrice(v.price || p.regularPrice);
             var vOrig    = Number(v.price || p.regularPrice).toFixed(2);
