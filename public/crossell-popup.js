@@ -150,17 +150,27 @@
     return null;
   }
 
-  /** Sum of quantities for all CROSSELL_PROMO items currently in the cart. */
+  /** Returns true if a cart item was added as a cross-sell promo item. */
+  function isPromoItem(item) {
+    // Primary: check for the hidden marker option (reliable regardless of Foxy category)
+    var opts = item.options || [];
+    for (var i = 0; i < opts.length; i++) {
+      if ((opts[i].name || '').toLowerCase() === 'crossell_promo' && opts[i].value === 'true') {
+        return true;
+      }
+    }
+    // Fallback: category check (works when Foxy correctly assigns CROSSELL_PROMO)
+    return (item.category || '').toUpperCase() === PROMO_CATEGORY.toUpperCase();
+  }
+
+  /** Sum of quantities for all cross-sell promo items currently in the cart. */
   function getPromoQty() {
     var items = window.FC && FC.json && FC.json.items;
     if (!items) return 0;
-    var total = 0;
-    for (var id in items) {
-      if (Object.prototype.hasOwnProperty.call(items, id)) {
-        if ((items[id].category || '').toUpperCase() === PROMO_CATEGORY.toUpperCase()) {
-          total += (items[id].quantity || 0);
-        }
-      }
+    var total   = 0;
+    var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+    for (var i = 0; i < asArray.length; i++) {
+      if (isPromoItem(asArray[i])) total += (asArray[i].quantity || 0);
     }
     return total;
   }
@@ -210,7 +220,10 @@
       + (url   ? '&url='   + encodeURIComponent(url)   : '')
       + (customOptions ? customOptions.map(function (o) {
           return '&' + encodeURIComponent(o.name) + '=' + encodeURIComponent(o.value);
-        }).join('') : '');
+        }).join('') : '')
+      // Hidden marker that travels with the item regardless of Foxy's category assignment.
+      // Used by getPromoQty() and attachCartPlusInterceptor() for reliable detection.
+      + (category === PROMO_CATEGORY ? '&crossell_promo=true' : '');
 
     // Always include the session ID so the item attaches to the existing cart.
     if (sessName && sessId) {
@@ -286,8 +299,8 @@
       var cartItem = getCartItemByFcId(fcItemId);
       if (!cartItem) return;
 
-      // Only intercept CROSSELL_PROMO items
-      if ((cartItem.category || '').toUpperCase() !== PROMO_CATEGORY.toUpperCase()) return;
+      // Only intercept cross-sell promo items (detected by marker option or category)
+      if (!isPromoItem(cartItem)) return;
 
       // If still under the limit, let Foxy handle it normally
       if (getPromoQty() < PROMO_LIMIT) return;
