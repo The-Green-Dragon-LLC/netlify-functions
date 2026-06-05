@@ -433,6 +433,7 @@
     '#tgd-crossell .cs-add-btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none;}',
     '#tgd-crossell .cs-variant-select{width:100%;padding:8px 10px;border:1px solid #d0d0d0;border-radius:6px;font-size:13px;font-family:Lato,sans-serif;color:#333;background:#fff;margin-bottom:10px;cursor:pointer;-webkit-appearance:auto;appearance:auto;}',
     '#tgd-crossell .cs-variant-select:focus{outline:2px solid #37b772;border-color:#37b772;}',
+    '#tgd-crossell .cs-disclaimer{font-size:11px;color:#999;text-align:center;margin:0 0 10px;font-style:italic;}',
     '#tgd-crossell .cs-decline{display:block;width:100%;background:none;border:none;color:#bbb;font-size:12px;text-decoration:underline;cursor:pointer;padding:2px 0 0;text-align:center;font-family:Lato,sans-serif;}',
     '#tgd-crossell .cs-decline:hover{color:#888;}',
     '@media(max-width:479px){#tgd-crossell .cs-product{flex:1 1 100%;}#tgd-crossell .cs-box{padding:22px 14px 18px;}#tgd-crossell .cs-title{font-size:18px;}}'
@@ -493,6 +494,7 @@
       + '<h2 id="cs-title" class="cs-title">Try Our New Euphoric Products &mdash; 40% Off!</h2>'
       + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site. Limited to ' + PROMO_LIMIT + ' units per customer at the discounted price.</p>'
       + '<div class="cs-products">' + CROSSELL_PRODUCTS.map(productCardHTML).join('') + '</div>'
+      + '<p class="cs-disclaimer">This discount cannot be combined with other offers or coupon codes.</p>'
       + '<button class="cs-decline">No thanks, I\'ll skip this offer</button>'
       + '</div></div>';
   }
