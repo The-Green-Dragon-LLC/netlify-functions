@@ -155,7 +155,8 @@
     // Primary: check for the hidden marker option (reliable regardless of Foxy category)
     var opts = item.options || [];
     for (var i = 0; i < opts.length; i++) {
-      if ((opts[i].name || '').toLowerCase() === 'crossell_promo' && opts[i].value === 'true') {
+      var n = (opts[i].name || '').toLowerCase().replace(/^h:/, '');
+      if (n === 'crossell_promo' && opts[i].value === 'true') {
         return true;
       }
     }
@@ -223,41 +224,32 @@
         }).join('') : '')
       // Hidden marker that travels with the item regardless of Foxy's category assignment.
       // Used by getPromoQty() and attachCartPlusInterceptor() for reliable detection.
-      + (category === PROMO_CATEGORY ? '&crossell_promo=true' : '');
+      + (category === PROMO_CATEGORY ? '&h:crossell_promo=true' : '');
 
     // Always include the session ID so the item attaches to the existing cart.
     if (sessName && sessId) {
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // Two different mechanisms depending on context:
-    //
-    // FULL-PAGE CART (on a Foxy domain â€” tgd-test.foxycart.com, etc.):
-    //   link.click() is intercepted by Foxy but silently fails to add items on
-    //   the full-page cart.  Direct navigation works: Foxy processes the add-to-cart
-    //   URL and reloads the cart page with the new item present.
-    //   domain is now correct (FC.json.config.store_domain) so this stays on the
-    //   right store (test vs production).
-    //
-    // SIDECART (on a Webflow domain):
-    //   Foxy intercepts the link click via AJAX â†’ item added without page navigation.
-    var onFoxyDomain = window.location.hostname.indexOf('foxycart') !== -1 ||
-                       window.location.hostname.indexOf('foxy.io')  !== -1;
-
-    if (onFoxyDomain) {
-      window.location.href = cartUrl;
-    } else {
-      // Use off-screen positioning instead of display:none — some Foxy builds
-      // ignore click events on invisible (display:none) elements.
-      var link = document.createElement('a');
-      link.style.position = 'absolute';
-      link.style.top      = '-9999px';
-      link.style.left     = '-9999px';
-      link.href = cartUrl;
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(function () { document.body.removeChild(link); }, 200);
+    // FC.client.request() is Foxy’s own internal AJAX pipeline — the same call
+    // Foxy makes when it intercepts an add-to-cart link click on the sidecart.
+    // Using it directly works on BOTH the Webflow sidecart and the Foxy
+    // full-page cart without any page navigation or domain branching.
+    if (window.FC && FC.client && typeof FC.client.request === ‘function’) {
+      FC.client.request(cartUrl);
+      return;
     }
+
+    // Fallback (FC.client.request unavailable — should not happen after attach()):
+    // Off-screen link click; Foxy’s document-level delegation intercepts it.
+    var link = document.createElement(‘a’);
+    link.style.position = ‘absolute’;
+    link.style.top      = ‘-9999px’;
+    link.style.left     = ‘-9999px’;
+    link.href = cartUrl;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(function () { document.body.removeChild(link); }, 200);
   }
 
   /** True if popup has already been shown this browser session. */
@@ -633,11 +625,13 @@
 
     // Never show on the Foxy cart / checkout domain.  sessionStorage is
     // origin-scoped, so the "already shown" flag set on www.thegreendragoncbd.com
-    // (sidecart) is invisible to thegreendragoncbd.foxycart.com (full cart),
-    // causing the popup to fire twice.  The full-page cart is already deep in
-    // the checkout flow — showing a cross-sell popup there would be disruptive.
+    // (sidecart) is invisible here (full cart), causing the popup to fire twice.
+    // We check both common Foxy hostnames AND the store_domain from FC.json to
+    // handle custom checkout domains that don't contain "foxycart" or "foxy.io".
+    var foxyStoreDomain = window.FC && FC.json && FC.json.config && FC.json.config.store_domain;
     if (window.location.hostname.indexOf('foxycart') !== -1 ||
-        window.location.hostname.indexOf('foxy.io')  !== -1) return;
+        window.location.hostname.indexOf('foxy.io')  !== -1 ||
+        (foxyStoreDomain && window.location.hostname === foxyStoreDomain)) return;
 
     markShown();
 
