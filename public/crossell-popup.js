@@ -801,13 +801,21 @@
       return;
     }
 
-    // Track the last known THC item count so the popup only fires when a NEW
-  // THC item is actively added -- not on page-load with pre-existing items
-  // (fixes popup appearing on homepage/any page with leftover cart items).
+    // Track the last known THC item count so the popup fires only when
+  // a NEW item is added -- not on page load with pre-existing items.
   var knownTHCCount = null;
 
+  // Seed the baseline 1 s after Foxy loads.  By then FC.json is populated
+  // with whatever was already in the cart (pre-existing items), so we can
+  // distinguish those from items the user adds DURING this page view.
+  // This is the fix for the homepage popup: even if Foxy never fires an
+  // initial loaded.done, FC.json will reflect the pre-existing count.
+  var _baselineTimer = setTimeout(function () {
+    if (knownTHCCount === null) knownTHCCount = countTHCItems();
+  }, 1000);
+
   // loaded.done fires on initial cart load AND after every cart change.
-  // Only show the popup if the THC count increases from its last known value.
+  // Only show popup if the THC count increases from the last known value.
   var onLoadEvent = function () {
     var current = countTHCItems();
     if (knownTHCCount !== null && current > knownTHCCount) {
@@ -819,10 +827,11 @@
     updatePromoDisclaimer();
   };
 
-  // add.done is an explicit signal that an item was just added -- always show
-  // the popup if THC items are now in the cart (e.g. Foxy's add.done fires
-  // before loaded.done, so knownTHCCount may still be null here).
+  // add.done is an explicit add signal -- always show popup if THC items
+  // present.  Foxy may fire add.done before loaded.done, so knownTHCCount
+  // could still be null; handle that case the same way.
   var onAddEvent = function () {
+    clearTimeout(_baselineTimer); // baseline no longer needed; we have live data
     var current = countTHCItems();
     knownTHCCount = current;
     if (current > 0) showPopup();
