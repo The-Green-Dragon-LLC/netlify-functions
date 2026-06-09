@@ -1,48 +1,48 @@
-/**
+﻿/**
  * crossell-popup.js
- * ─────────────────────────────────────────────────────────────────────────────
- * Green Dragon CBD — THC Cross-Sell Popup (Ferris Wheel Euphoric)
+ * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ * Green Dragon CBD â€” THC Cross-Sell Popup (Ferris Wheel Euphoric)
  *
- * • Shows a one-time-per-session popup when a THC-category item is added.
- * • Offers Ferris Wheel Euphoric products at 40% off, up to 3 units total.
- * • Units 4+ are automatically added as a separate line item at full price.
- * • Price tampering is blocked server-side by the pre-payment webhook
+ * â€¢ Shows a one-time-per-session popup when a THC-category item is added.
+ * â€¢ Offers Ferris Wheel Euphoric products at 40% off, up to 3 units total.
+ * â€¢ Units 4+ are automatically added as a separate line item at full price.
+ * â€¢ Price tampering is blocked server-side by the pre-payment webhook
  *   (crossell-validate.js) before any card is ever charged.
  *
- * ─── SETUP CHECKLIST ────────────────────────────────────────────────────────
+ * â”€â”€â”€ SETUP CHECKLIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  *
  *  1. Fill in CROSSELL_PRODUCTS below (name, code, regularPrice, image, url).
  *
  *  2. Confirm THC_CATEGORY matches your Foxy product-category code for THC.
  *
- *  3. In Foxy Admin → Products → Categories, create:
+ *  3. In Foxy Admin â†’ Products â†’ Categories, create:
  *       Code: CROSSELL_PROMO   Name: Cross-sell Promo
  *
- *  4. For every coupon in Foxy Admin → Advanced → Product Category Restrictions:
+ *  4. For every coupon in Foxy Admin â†’ Advanced â†’ Product Category Restrictions:
  *     whitelist only the categories the coupon should apply to, leaving
  *     CROSSELL_PROMO off the list.
  *
  *  5. Deploy crossell-validate.js as a Netlify function and register its URL
- *     in Foxy Admin → Store → Advanced → Pre-payment webhook URL.
+ *     in Foxy Admin â†’ Store â†’ Advanced â†’ Pre-payment webhook URL.
  *
- *  6. In Webflow Site Settings → Custom Code → Footer Code, paste this file's
- *     contents wrapped in <script>…< / script>.
+ *  6. In Webflow Site Settings â†’ Custom Code â†’ Footer Code, paste this file's
+ *     contents wrapped in <script>â€¦< / script>.
  *
- * ─────────────────────────────────────────────────────────────────────────────
+ * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  */
 
 (function () {
   'use strict';
 
-  /* ═══════════════════════════════════════════════════════════════════════════
-     1.  CONFIGURATION — update these values
-     ═══════════════════════════════════════════════════════════════════════════ */
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+     1.  CONFIGURATION â€” update these values
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   /**
    * URL of the Netlify function that returns live config from Airtable.
    * Update to your production URL when going live.
    */
-  var CONFIG_URL = 'https://develop--wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
+  var CONFIG_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
 
   /**
    * sessionStorage key for caching the Airtable config so it's only
@@ -52,7 +52,7 @@
 
   /**
    * Fallback THC categories used if the Airtable config fetch fails.
-   * These are the Foxy product-category codes — comparisons are case-insensitive.
+   * These are the Foxy product-category codes â€” comparisons are case-insensitive.
    */
   var THC_CATEGORIES = [
     'Vape Kits',
@@ -72,7 +72,7 @@
   /**
    * Foxy product-category code for cross-sell promo items.
    * Used to exclude items from coupon codes and to validate pricing in the
-   * pre-payment webhook (crossell-validate.js — keep both files in sync).
+   * pre-payment webhook (crossell-validate.js â€” keep both files in sync).
    */
   var PROMO_CATEGORY = 'CROSSELL_PROMO';
 
@@ -83,7 +83,7 @@
   var STORE_DOMAIN = 'thegreendragoncbd.foxycart.com';
 
   /**
-   * sessionStorage key — popup shows only once per browser session.
+   * sessionStorage key â€” popup shows only once per browser session.
    * Clears automatically when the user closes their browser or tab.
    */
   var SESSION_KEY = 'tgd_crossell_shown';
@@ -110,9 +110,9 @@
     }
   ];
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      2.  HELPERS
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   /** 40% off = pay 60%.  Returns a string like "23.99". */
   function salePrice(regular) {
@@ -190,7 +190,7 @@
   /**
    * Add an item to the Foxy cart without page navigation.
    *
-   * FC.client.request() is FoxyCart's own internal AJAX method — the same one
+   * FC.client.request() is FoxyCart's own internal AJAX method â€” the same one
    * it uses when intercepting add-to-cart link clicks for the sidecart.
    * Calling it directly works in ALL contexts (sidecart, full-page cart, test,
    * production) because it goes through Foxy's JSONP request pipeline and
@@ -232,7 +232,7 @@
 
     // Two different mechanisms depending on context:
     //
-    // FULL-PAGE CART (on a Foxy domain — tgd-test.foxycart.com, etc.):
+    // FULL-PAGE CART (on a Foxy domain â€” tgd-test.foxycart.com, etc.):
     //   link.click() is intercepted by Foxy but silently fails to add items on
     //   the full-page cart.  Direct navigation works: Foxy processes the add-to-cart
     //   URL and reloads the cart page with the new item present.
@@ -240,7 +240,7 @@
     //   right store (test vs production).
     //
     // SIDECART (on a Webflow domain):
-    //   Foxy intercepts the link click via AJAX → item added without page navigation.
+    //   Foxy intercepts the link click via AJAX â†’ item added without page navigation.
     var onFoxyDomain = window.location.hostname.indexOf('foxycart') !== -1 ||
                        window.location.hostname.indexOf('foxy.io')  !== -1;
 
@@ -265,9 +265,9 @@
     try { sessionStorage.setItem(SESSION_KEY, '1'); } catch (e) { /* ignore */ }
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      3.  PROMO LIMIT DISCLAIMER
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   /**
    * Inserts a small notice under each promo item in the cart when either:
@@ -307,7 +307,7 @@
       // Also show if someone typed a qty higher than the limit
       if (!hasOverflow && totalPromoQty <= PROMO_LIMIT) return;
 
-      var msg = '⚠️  The promotional price is limited to '
+      var msg = 'âš ï¸  The promotional price is limited to '
               + PROMO_LIMIT + ' units. '
               + 'Additional units have been added to your cart at the regular price.';
 
@@ -325,9 +325,69 @@
     }, 300); // short delay to let Foxy finish re-rendering the cart DOM
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      4.  CART QUANTITY LIMIT ENFORCEMENT
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+
+  /**
+   * Watches the Foxy quantity input for direct edits (mobile keyboard, desktop
+   * typing).  Runs in capture phase so we can cap the value before Foxy reads
+   * it.  If the typed qty would push promo units over PROMO_LIMIT we:
+   *   1. Set input.value to the allowed max (Foxy then submits with that value)
+   *   2. Add the overflow units at full price via addToCart
+   */
+  function attachQuantityInputWatcher() {
+    document.addEventListener('change', function (e) {
+      var input = e.target;
+      if (!input || !input.getAttribute) return;
+      if (input.getAttribute('data-fc-id') !== 'item-quantity-input') return;
+
+      var fcItemId = input.getAttribute('data-fc-item-id');
+      if (!fcItemId) return;
+
+      var cartItem = getCartItemByFcId(fcItemId);
+      if (!cartItem || !isPromoItem(cartItem)) return;
+
+      var newQty = parseInt(input.value, 10);
+      if (isNaN(newQty) || newQty <= 0) return;
+
+      // Max promo units this one item is allowed to have
+      var otherPromoQty = getPromoQty() - (cartItem.quantity || 0);
+      var maxAllowed    = Math.max(1, PROMO_LIMIT - otherPromoQty);
+      if (newQty <= maxAllowed) return; // still within limit â€” allow
+
+      var overflowQty = newQty - maxAllowed;
+
+      // Cap the input â€” Foxy reads input.value in the bubble phase, so it
+      // will submit with the capped value rather than the typed value.
+      input.value = maxAllowed;
+
+      // Add overflow at full price
+      var product = getProductByCode(cartItem.code);
+      var variant  = getVariantByCode(cartItem.code);
+      if (!product) return;
+
+      var overflowPrice = (variant && variant.price) ? variant.price : product.regularPrice;
+      var overflowImage = (variant && variant.image) ? variant.image : product.image;
+      var overflowOpts  = (cartItem.options || []).filter(function (o) {
+        var n = normaliseOptionName(o.name);
+        return n !== 'restrictedshopping' && n !== 'restrictedshippingcode' &&
+               n !== 'airtablerecordid'   && n !== 'heavydrink' && n !== 'crossellpromo';
+      });
+
+      addToCart(
+        cartItem.name,
+        overflowPrice,
+        cartItem.code,
+        'DEFAULT',
+        overflowQty,
+        overflowImage,
+        product.url,
+        overflowOpts.length ? overflowOpts : undefined
+      );
+
+    }, true); // useCapture â€” runs before Foxy's listeners
+  }
 
   /**
    * Called when a shopper clicks the "+" button on a CROSSELL_PROMO item in the
@@ -365,13 +425,13 @@
       // If still under the limit, let Foxy handle it normally
       if (getPromoQty() < PROMO_LIMIT) return;
 
-      // AT LIMIT — intercept and add 1 at full price instead
+      // AT LIMIT â€” intercept and add 1 at full price instead
       e.stopPropagation();
       e.preventDefault();
 
       var product = getProductByCode(cartItem.code);
       if (product) {
-        // Determine the correct price — variant price if this is a variant item
+        // Determine the correct price â€” variant price if this is a variant item
         var variant      = getVariantByCode(cartItem.code);
         var overflowPrice = (variant && variant.price) ? variant.price : product.regularPrice;
         var overflowCode  = cartItem.code; // keep the exact variant code already in cart
@@ -390,7 +450,7 @@
         var overflowImage = (variant && variant.image) ? variant.image : product.image;
 
         addToCart(
-          cartItem.name,   // already includes variant (e.g. "Ferris Wheel…-   Blue Razz")
+          cartItem.name,   // already includes variant (e.g. "Ferris Wheelâ€¦-   Blue Razz")
           overflowPrice,
           overflowCode,
           'DEFAULT',
@@ -400,12 +460,12 @@
           overflowOpts.length ? overflowOpts : undefined
         );
       }
-    }, true); // capture phase — runs before Foxy's bubble-phase listeners
+    }, true); // capture phase â€” runs before Foxy's bubble-phase listeners
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      4.  STYLES
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   var STYLES = [
     '#tgd-crossell{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;font-family:Lato,sans-serif;}',
@@ -439,9 +499,9 @@
     '@media(max-width:479px){#tgd-crossell .cs-product{flex:1 1 100%;}#tgd-crossell .cs-box{padding:22px 14px 18px;}#tgd-crossell .cs-title{font-size:18px;}}'
   ].join('');
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      5.  POPUP HTML
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   function productCardHTML(p) {
     var sale      = salePrice(p.regularPrice);
@@ -457,7 +517,7 @@
             var vSale    = salePrice(v.price || p.regularPrice);
             var vOrig    = Number(v.price || p.regularPrice).toFixed(2);
             var dispName = v.displayName || v.name; // short: "Blue Razz"
-            var fullName = v.name;                  // full: "Ferris Wheel…-   Blue Razz"
+            var fullName = v.name;                  // full: "Ferris Wheelâ€¦-   Blue Razz"
             return '<option value="' + v.code + '"'
               + ' data-displayname="' + dispName.replace(/"/g, '&quot;') + '"'
               + ' data-fullname="'    + fullName.replace(/"/g, '&quot;') + '"'
@@ -490,7 +550,7 @@
       + '<div class="cs-backdrop"></div>'
       + '<div class="cs-box">'
       + '<button class="cs-close" aria-label="Close offer">&times;</button>'
-      + '<p class="cs-eyebrow">🎡 Exclusive One-Time Offer</p>'
+      + '<p class="cs-eyebrow">ðŸŽ¡ Exclusive One-Time Offer</p>'
       + '<h2 id="cs-title" class="cs-title">Try Our New Euphoric Products &mdash; 40% Off!</h2>'
       + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site. Limited to ' + PROMO_LIMIT + ' units per customer at the discounted price.</p>'
       + '<div class="cs-products">' + CROSSELL_PRODUCTS.map(productCardHTML).join('') + '</div>'
@@ -499,9 +559,9 @@
       + '</div></div>';
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      6.  SHOW / CLOSE
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   function closePopup() {
     var el = document.getElementById('tgd-crossell');
@@ -511,9 +571,9 @@
   /**
    * Handle "Add to Cart" clicks inside the popup.
    * Respects the PROMO_LIMIT:
-   *   - If space remains under the limit → add at promo price (CROSSELL_PROMO)
-   *   - If limit already reached         → add at full price (DEFAULT category)
-   *   - If partially under limit         → add the remaining allowance at promo,
+   *   - If space remains under the limit â†’ add at promo price (CROSSELL_PROMO)
+   *   - If limit already reached         â†’ add at full price (DEFAULT category)
+   *   - If partially under limit         â†’ add the remaining allowance at promo,
    *                                        nothing extra (qty=1 per click)
    */
   function handlePromoAddClick(productCode) {
@@ -536,7 +596,7 @@
       var selectedOpt  = select.options[select.selectedIndex];
       useCode = select.value;
 
-      // Full name used as cart item name (e.g. "Ferris Wheel…-   Blue Razz")
+      // Full name used as cart item name (e.g. "Ferris Wheelâ€¦-   Blue Razz")
       var variantFullName  = selectedOpt.getAttribute('data-fullname')    || selectedOpt.text;
       // Display name used as option value (e.g. "Blue Razz")
       var variantDispName  = selectedOpt.getAttribute('data-displayname') || variantFullName;
@@ -545,7 +605,7 @@
 
       if (variantImg)          useImage = variantImg;
       if (variantPrice > 0)    usePrice = variantPrice;
-      if (variantFullName)     useName  = variantFullName; // show "Ferris Wheel…- Blue Razz" in cart
+      if (variantFullName)     useName  = variantFullName; // show "Ferris Wheelâ€¦- Blue Razz" in cart
 
       // Add the option so it appears in cart details (e.g. Flavor: Blue Razz)
       if (product.variantsLabel && variantDispName) {
@@ -625,12 +685,12 @@
     });
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      7.  FOXY EVENT HOOK
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   /**
-   * Normalise an option name for loose comparison — removes spaces, underscores,
+   * Normalise an option name for loose comparison â€” removes spaces, underscores,
    * hyphens and lowercases so "Restricted Shipping Code", "restricted_shipping_code"
    * and "restricted-shipping-code" all compare equal.
    */
@@ -689,9 +749,9 @@
     if (countTHCItems() > 0) showPopup();
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      8.  AIRTABLE CONFIG LOADER
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   /**
    * Fetches live category and product config from the crossell-config Netlify
@@ -721,13 +781,13 @@
       });
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════
+  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
      9.  FOXY EVENT HOOK
-     ═══════════════════════════════════════════════════════════════════════════ */
+     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
   function attach() {
     if (!window.FC || !FC.client || typeof FC.client.on !== 'function') {
-      setTimeout(attach, 100); // Poll frequently — Foxy loads async
+      setTimeout(attach, 100); // Poll frequently â€” Foxy loads async
       return;
     }
 
@@ -748,13 +808,14 @@
       try { FC.client.on('add.done',    function () { checkAndShow(); updatePromoDisclaimer(); }); } catch (e) {}
       try { FC.client.on('cart-loaded', function () { checkAndShow(); updatePromoDisclaimer(); }); } catch (e) {}
 
-      // Immediate checks — catches full-page cart where loaded.done already fired
+      // Immediate checks â€” catches full-page cart where loaded.done already fired
       checkAndShow();
       updatePromoDisclaimer();
       setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 300);
       setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 800);
 
       attachCartPlusInterceptor();
+      attachQuantityInputWatcher();
     });
   }
 
