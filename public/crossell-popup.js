@@ -626,8 +626,9 @@
     // Never show on the Foxy cart / checkout domain.  sessionStorage is
     // origin-scoped, so the "already shown" flag set on www.thegreendragoncbd.com
     // (sidecart) is invisible here (full cart), causing the popup to fire twice.
-    if (window.location.hostname.indexOf('foxycart') !== -1 ||
-        window.location.hostname.indexOf('foxy.io')  !== -1) return;
+    if (window.location.hostname.indexOf('foxycart')          !== -1 ||
+        window.location.hostname.indexOf('foxy.io')            !== -1 ||
+        window.location.hostname === 'secure.thegreendragoncbd.com') return;
 
     markShown();
 
