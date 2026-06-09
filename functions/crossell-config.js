@@ -131,7 +131,11 @@ async function fetchCrossSellProducts(base) {
         regularPrice:  regularPrice,
         image:         r.get('Primary Image Webflow URL') || '',
         url:           slug ? PRODUCT_PAGE_BASE_URL + slug : '',
-        variantsLabel: variantsLabel || (variants[0] && variants[0].label) || '',
+        // Use the parent product's "Variants Label" field only.
+        // Falling back to variants[0].label would use the first variant's
+        // specific name (e.g. "Green Apple") as the option label, making the
+        // cart show "Green Apple: Blue Razz" instead of "Flavor: Blue Razz".
+        variantsLabel: variantsLabel || '',
         variants:      variantsWithDisplay,
       };
     });

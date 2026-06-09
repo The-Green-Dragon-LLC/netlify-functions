@@ -231,20 +231,20 @@
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // On the full-page /cart URL, Foxy's click delegation does not process
-    // programmatic link clicks via AJAX — direct navigation is required.
-    // Foxy processes the add-to-cart parameters on load and reloads the cart.
-    //
-    // On checkout (/checkout path) and the Webflow sidecart, Foxy intercepts
-    // link clicks via AJAX so the item is added without page navigation and
-    // the user stays on the current page.
-    var onFullCartPath = (window.location.hostname === 'secure.thegreendragoncbd.com' ||
-                          window.location.hostname.indexOf('foxycart') !== -1 ||
-                          window.location.hostname.indexOf('foxy.io')  !== -1) &&
-                         window.location.pathname === '/cart';
+    // On the Foxy cart/checkout domain, programmatic link clicks do not work
+    // via AJAX -- direct navigation is required.  On /checkout, append
+    // cart=checkout so Foxy redirects back to checkout after adding the item
+    // instead of dropping the customer on the cart page.
+    var onFoxyDomain = window.location.hostname === 'secure.thegreendragoncbd.com' ||
+                       window.location.hostname.indexOf('foxycart') !== -1 ||
+                       window.location.hostname.indexOf('foxy.io')  !== -1;
 
-    if (onFullCartPath) {
-      window.location.href = cartUrl;
+    if (onFoxyDomain) {
+      var dest = cartUrl;
+      if (window.location.pathname.indexOf('/checkout') === 0) {
+        dest += '&cart=checkout'; // add item and redirect back to checkout
+      }
+      window.location.href = dest;
     } else {
       var link = document.createElement('a');
       link.style.position = 'absolute';
@@ -444,7 +444,8 @@
           return n !== 'restrictedshopping' &&
                  n !== 'restrictedshippingcode' &&
                  n !== 'airtablerecordid' &&
-                 n !== 'heavydrink';
+                 n !== 'heavydrink' &&
+                 n !== 'crossellpromo'; // don't carry promo marker onto overflow
         });
 
         // Use variant image if available, fall back to parent image
@@ -800,49 +801,69 @@
       return;
     }
 
-    // Register FC cart event listeners IMMEDIATELY - before the Airtable config
-    // fetch - so a product added while the fetch is in flight still triggers the
-    // popup (fixes sidecart race condition where loaded.done fired too early).
-    var onCartEvent = function () { checkAndShow(); updatePromoDisclaimer(); };
-    FC.client.on('loaded.done', onCartEvent);
-    try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
-    try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
+    // Track the last known THC item count so the popup only fires when a NEW
+  // THC item is actively added -- not on page-load with pre-existing items
+  // (fixes popup appearing on homepage/any page with leftover cart items).
+  var knownTHCCount = null;
 
-    // Attach cart quantity interceptors IMMEDIATELY — before loadConfig() so
-    // a customer who opens the cart and clicks "+" before the Airtable fetch
-    // completes is still protected.  These listeners read CROSSELL_PRODUCTS at
-    // click time, so they work correctly once the config has loaded.
-    attachCartPlusInterceptor();
-    attachQuantityInputWatcher();
+  // loaded.done fires on initial cart load AND after every cart change.
+  // Only show the popup if the THC count increases from its last known value.
+  var onLoadEvent = function () {
+    var current = countTHCItems();
+    if (knownTHCCount !== null && current > knownTHCCount) {
+      knownTHCCount = current;
+      showPopup();
+    } else {
+      knownTHCCount = current; // establish / update baseline without showing
+    }
+    updatePromoDisclaimer();
+  };
 
-    // Polling fallback - belt-and-suspenders for sidecart setups where FC
-    // events don't fire reliably. Checks every 1 s for up to 60 s after page
-    // load; stops as soon as the popup has been shown.
-    var pollTimer = setInterval(function () {
-      if (alreadyShown()) { clearInterval(pollTimer); return; }
-      checkAndShow();
-    }, 1000);
-    setTimeout(function () { clearInterval(pollTimer); }, 60000);
+  // add.done is an explicit signal that an item was just added -- always show
+  // the popup if THC items are now in the cart (e.g. Foxy's add.done fires
+  // before loaded.done, so knownTHCCount may still be null here).
+  var onAddEvent = function () {
+    var current = countTHCItems();
+    knownTHCCount = current;
+    if (current > 0) showPopup();
+    updatePromoDisclaimer();
+  };
 
-    // Load live config (or session cache), then re-check with accurate
-    // categories/products.
-    loadConfig().then(function (config) {
-      if (config) {
-        if (config.categories && config.categories.length) {
-          THC_CATEGORIES = config.categories;
-        }
-        if (config.products && config.products.length) {
-          CROSSELL_PRODUCTS = config.products;
-        }
+  // Register FC cart event listeners IMMEDIATELY - before the Airtable config
+  // fetch - so a product added while the fetch is in flight still triggers the
+  // popup (fixes sidecart race condition where loaded.done fired too early).
+  FC.client.on('loaded.done', onLoadEvent);
+  try { FC.client.on('add.done',    onAddEvent); } catch (e) {}
+  try { FC.client.on('cart-loaded', onLoadEvent); } catch (e) {}
+
+  // Attach cart quantity interceptors IMMEDIATELY -- before loadConfig() so
+  // a customer who opens the cart and clicks "+" before the Airtable fetch
+  // completes is still protected.  These listeners read CROSSELL_PRODUCTS at
+  // click time, so they work correctly once the config has loaded.
+  attachCartPlusInterceptor();
+  attachQuantityInputWatcher();
+
+  // Polling fallback -- updates the promo disclaimer only; does NOT trigger
+  // the popup (which would show on any page with pre-existing THC items).
+  var pollTimer = setInterval(function () {
+    if (alreadyShown()) { clearInterval(pollTimer); return; }
+    updatePromoDisclaimer();
+  }, 1000);
+  setTimeout(function () { clearInterval(pollTimer); }, 60000);
+
+  // Load live config (or session cache), then update the disclaimer with
+  // accurate categories/products.
+  loadConfig().then(function (config) {
+    if (config) {
+      if (config.categories && config.categories.length) {
+        THC_CATEGORIES = config.categories;
       }
-
-      // Re-check now that we have live data; also handles full-page cart
-      // where THC items were already present on page load.
-      checkAndShow();
-      updatePromoDisclaimer();
-      setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 300);
-      setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 800);
-    });
+      if (config.products && config.products.length) {
+        CROSSELL_PRODUCTS = config.products;
+      }
+    }
+    updatePromoDisclaimer();
+  });
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', attach);
