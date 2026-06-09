@@ -627,6 +627,7 @@
   }
 
   function showPopup() {
+    console.log('[crossell] showPopup() called; alreadyShown:', alreadyShown(), '| hostname:', window.location.hostname);
     if (alreadyShown()) return;
 
     // Never show on the Foxy cart / checkout domain.  sessionStorage is
@@ -743,15 +744,23 @@
    */
   function countTHCItems() {
     var items = window.FC && FC.json && FC.json.items;
-    if (!items) return 0;
+    if (!items) {
+      console.log('[crossell] countTHCItems: FC.json.items not available yet');
+      return 0;
+    }
     var count   = 0;
     var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+    console.log('[crossell] countTHCItems: checking', asArray.length, 'items');
     for (var i = 0; i < asArray.length; i++) {
       var item = asArray[i];
-      if (itemHasTHCOption(item) || isTHCCategory(item.category)) {
+      var hasTHCOpt = itemHasTHCOption(item);
+      var hasTHCCat = isTHCCategory(item.category);
+      console.log('[crossell]   item', i, item.name, '| category:', item.category, '| hasTHCOption:', hasTHCOpt, '| isTHCCategory:', hasTHCCat);
+      if (hasTHCOpt || hasTHCCat) {
         count += (item.quantity || 1);
       }
     }
+    console.log('[crossell] countTHCItems result:', count);
     return count;
   }
 
@@ -800,6 +809,7 @@
       setTimeout(attach, 100); // Poll frequently - Foxy loads async
       return;
     }
+    console.log('[crossell] attach(): FC available, registering listeners');
 
     // lastCartEventTime records when the most recent FC cart event fired.
   // Polling uses this to fire a deferred checkAndShow() 1-second after
@@ -816,10 +826,14 @@
 
   var onCartEvent = function () {
     var sinceLoad = Date.now() - pageLoadTime;
+    console.log('[crossell] onCartEvent fired; sinceLoad:', sinceLoad, 'ms; PAGE_GRACE_MS:', PAGE_GRACE_MS);
+    console.log('[crossell] FC.json.items at event time:', window.FC && FC.json && FC.json.items);
     if (sinceLoad > PAGE_GRACE_MS) {
       // Past grace period -- this is a deliberate user action.
       lastCartEventTime = Date.now();
       checkAndShow(); // Attempt immediately; polling backs this up.
+    } else {
+      console.log('[crossell] onCartEvent: within grace period, skipping checkAndShow');
     }
     updatePromoDisclaimer();
   };
@@ -838,7 +852,9 @@
   // Foxy AJAX completes, after loaded.done has already fired).
   var pollTimer = setInterval(function () {
     if (alreadyShown()) { clearInterval(pollTimer); return; }
+    console.log('[crossell] poll tick; lastCartEventTime:', lastCartEventTime, '| sinceEvent:', lastCartEventTime ? Date.now() - lastCartEventTime : 'n/a');
     if (lastCartEventTime > 0 && Date.now() - lastCartEventTime < 10000) {
+      console.log('[crossell] poll: lastCartEventTime is recent, calling checkAndShow');
       checkAndShow();
     }
     updatePromoDisclaimer();
