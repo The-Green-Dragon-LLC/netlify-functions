@@ -231,17 +231,10 @@
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // FC.client.request() is Foxy's own internal AJAX pipeline — the same call
-    // Foxy makes when it intercepts an add-to-cart link click on the sidecart.
-    // Using it directly works on BOTH the Webflow sidecart and the Foxy
-    // full-page cart without any page navigation or domain branching.
-    if (window.FC && FC.client && typeof FC.client.request === 'function') {
-      FC.client.request(cartUrl);
-      return;
-    }
-
-    // Fallback (FC.client.request unavailable — should not happen after attach()):
-    // Off-screen link click; Foxy's document-level delegation intercepts it.
+    // Off-screen link click — Foxy's document-level event delegation intercepts
+    // it and processes the add-to-cart via AJAX, triggering a full cart refresh
+    // (loaded.done) without any page navigation.  Using position:absolute instead
+    // of display:none because some Foxy builds ignore clicks on hidden elements.
     var link = document.createElement('a');
     link.style.position = 'absolute';
     link.style.top      = '-9999px';
