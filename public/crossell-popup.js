@@ -15,17 +15,17 @@
  *
  *  2. Confirm THC_CATEGORY matches your Foxy product-category code for THC.
  *
- *  3. In Foxy Admin â†’ Products â†’ Categories, create:
+ *  3. In Foxy Admin â†' Products â†' Categories, create:
  *       Code: CROSSELL_PROMO   Name: Cross-sell Promo
  *
- *  4. For every coupon in Foxy Admin â†’ Advanced â†’ Product Category Restrictions:
+ *  4. For every coupon in Foxy Admin â†' Advanced â†' Product Category Restrictions:
  *     whitelist only the categories the coupon should apply to, leaving
  *     CROSSELL_PROMO off the list.
  *
  *  5. Deploy crossell-validate.js as a Netlify function and register its URL
- *     in Foxy Admin â†’ Store â†’ Advanced â†’ Pre-payment webhook URL.
+ *     in Foxy Admin â†' Store â†' Advanced â†' Pre-payment webhook URL.
  *
- *  6. In Webflow Site Settings â†’ Custom Code â†’ Footer Code, paste this file's
+ *  6. In Webflow Site Settings â†' Custom Code â†' Footer Code, paste this file's
  *     contents wrapped in <script>â€¦< / script>.
  *
  * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -231,21 +231,21 @@
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // FC.client.request() is Foxy’s own internal AJAX pipeline — the same call
+    // FC.client.request() is Foxy's own internal AJAX pipeline — the same call
     // Foxy makes when it intercepts an add-to-cart link click on the sidecart.
     // Using it directly works on BOTH the Webflow sidecart and the Foxy
     // full-page cart without any page navigation or domain branching.
-    if (window.FC && FC.client && typeof FC.client.request === ‘function’) {
+    if (window.FC && FC.client && typeof FC.client.request === 'function') {
       FC.client.request(cartUrl);
       return;
     }
 
     // Fallback (FC.client.request unavailable — should not happen after attach()):
-    // Off-screen link click; Foxy’s document-level delegation intercepts it.
-    var link = document.createElement(‘a’);
-    link.style.position = ‘absolute’;
-    link.style.top      = ‘-9999px’;
-    link.style.left     = ‘-9999px’;
+    // Off-screen link click; Foxy's document-level delegation intercepts it.
+    var link = document.createElement('a');
+    link.style.position = 'absolute';
+    link.style.top      = '-9999px';
+    link.style.left     = '-9999px';
     link.href = cartUrl;
     document.body.appendChild(link);
     link.click();
@@ -567,9 +567,9 @@
   /**
    * Handle "Add to Cart" clicks inside the popup.
    * Respects the PROMO_LIMIT:
-   *   - If space remains under the limit â†’ add at promo price (CROSSELL_PROMO)
-   *   - If limit already reached         â†’ add at full price (DEFAULT category)
-   *   - If partially under limit         â†’ add the remaining allowance at promo,
+   *   - If space remains under the limit â†' add at promo price (CROSSELL_PROMO)
+   *   - If limit already reached         â†' add at full price (DEFAULT category)
+   *   - If partially under limit         â†' add the remaining allowance at promo,
    *                                        nothing extra (qty=1 per click)
    */
   function handlePromoAddClick(productCode) {
