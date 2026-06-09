@@ -627,7 +627,6 @@
   }
 
   function showPopup() {
-    console.log('[crossell] showPopup() called; alreadyShown:', alreadyShown(), '| hostname:', window.location.hostname);
     if (alreadyShown()) return;
 
     // Never show on the Foxy cart / checkout domain.  sessionStorage is
@@ -744,23 +743,15 @@
    */
   function countTHCItems() {
     var items = window.FC && FC.json && FC.json.items;
-    if (!items) {
-      console.log('[crossell] countTHCItems: FC.json.items not available yet');
-      return 0;
-    }
+    if (!items) return 0;
     var count   = 0;
     var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
-    console.log('[crossell] countTHCItems: checking', asArray.length, 'items');
     for (var i = 0; i < asArray.length; i++) {
       var item = asArray[i];
-      var hasTHCOpt = itemHasTHCOption(item);
-      var hasTHCCat = isTHCCategory(item.category);
-      console.log('[crossell]   item', i, item.name, '| category:', item.category, '| hasTHCOption:', hasTHCOpt, '| isTHCCategory:', hasTHCCat);
-      if (hasTHCOpt || hasTHCCat) {
+      if (itemHasTHCOption(item) || isTHCCategory(item.category)) {
         count += (item.quantity || 1);
       }
     }
-    console.log('[crossell] countTHCItems result:', count);
     return count;
   }
 
@@ -809,54 +800,54 @@
       setTimeout(attach, 100); // Poll frequently - Foxy loads async
       return;
     }
-    console.log('[crossell] attach(): FC available, registering listeners');
 
-    // lastCartEventTime records when the most recent FC cart event fired.
-  // Polling uses this to fire a deferred checkAndShow() 1-second after
-  // the event -- FC.json.items is populated by then even when loaded.done
-  // fires before the Foxy AJAX has written the new item.
+    // ---- PRIMARY POPUP MECHANISM: count-delta polling ----
   //
-  // PAGE_GRACE_MS: loaded.done fires ~300 ms after page init.  Events
-  // arriving inside this window are page-load events, NOT user actions.
-  // We ignore them so pre-existing cart items do not pop the dialog on
-  // the homepage on every page load.
-  var pageLoadTime    = Date.now();
-  var PAGE_GRACE_MS   = 2000; // ms after page load to ignore cart events
-  var lastCartEventTime = 0;
+  // FC.client.on('loaded.done') is registered below as belt-and-suspenders
+  // but is NOT the primary trigger.  On this Foxy JSONP sidecart setup the
+  // callback is never invoked (confirmed in browser console).  The original
+  // working popup used unconditional polling checkAndShow() every 1 s.
+  //
+  // Count-delta: record the THC item count on the first successful read
+  // (baseline).  Show popup only when the count increases -- that means the
+  // user just added a THC item.  Pre-existing items (homepage, etc.) raise
+  // the baseline without triggering the popup.
 
-  var onCartEvent = function () {
-    var sinceLoad = Date.now() - pageLoadTime;
-    console.log('[crossell] onCartEvent fired; sinceLoad:', sinceLoad, 'ms; PAGE_GRACE_MS:', PAGE_GRACE_MS);
-    console.log('[crossell] FC.json.items at event time:', window.FC && FC.json && FC.json.items);
-    if (sinceLoad > PAGE_GRACE_MS) {
-      // Past grace period -- this is a deliberate user action.
-      lastCartEventTime = Date.now();
-      checkAndShow(); // Attempt immediately; polling backs this up.
-    } else {
-      console.log('[crossell] onCartEvent: within grace period, skipping checkAndShow');
-    }
-    updatePromoDisclaimer();
-  };
+  var prevTHCCount = null; // null = baseline not yet established
 
-  FC.client.on('loaded.done', onCartEvent);
+  // FC events (belt-and-suspenders; not relied on as primary trigger)
+  var onCartEvent = function () { updatePromoDisclaimer(); };
+  try { FC.client.on('loaded.done', onCartEvent); } catch (e) {}
   try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
   try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
 
   attachCartPlusInterceptor();
   attachQuantityInputWatcher();
 
-  // Polling -- the PRIMARY popup trigger.
-  // Calls checkAndShow() every second ONLY when a cart event occurred
-  // in the last 10 s (user just added an item).  This ensures the check
-  // runs once FC.json.items is fully updated (happens ~1 s after the
-  // Foxy AJAX completes, after loaded.done has already fired).
+  // Poll every 1 s.  On each tick:
+  //   1. If FC.json.items not available yet, do nothing.
+  //   2. If baseline not set, set it (captures pre-existing items).
+  //   3. If count went up since baseline, show popup.
+  //   4. Always update prevTHCCount (handles removes + re-adds).
   var pollTimer = setInterval(function () {
     if (alreadyShown()) { clearInterval(pollTimer); return; }
-    console.log('[crossell] poll tick; lastCartEventTime:', lastCartEventTime, '| sinceEvent:', lastCartEventTime ? Date.now() - lastCartEventTime : 'n/a');
-    if (lastCartEventTime > 0 && Date.now() - lastCartEventTime < 10000) {
-      console.log('[crossell] poll: lastCartEventTime is recent, calling checkAndShow');
-      checkAndShow();
+
+    if (!(window.FC && FC.json && FC.json.items)) {
+      updatePromoDisclaimer();
+      return; // FC not ready yet
     }
+
+    var current = countTHCItems();
+
+    if (prevTHCCount === null) {
+      prevTHCCount = current; // first read -- set baseline
+    } else if (current > prevTHCCount) {
+      prevTHCCount = current;
+      checkAndShow(); // count increased: user just added a THC item
+    } else {
+      prevTHCCount = current; // update (handles removes so re-adds trigger popup)
+    }
+
     updatePromoDisclaimer();
   }, 1000);
   setTimeout(function () { clearInterval(pollTimer); }, 60000);
