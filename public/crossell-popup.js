@@ -830,9 +830,12 @@
   }, 1000);
   setTimeout(function () { clearInterval(pollTimer); }, 60000);
 
-  // Load live config (or session cache), then update disclaimer with
-  // accurate categories/products.  No checkAndShow() here -- the FC event
-  // above handles showing the popup when a product is actually added.
+  // Load live config (or session cache), then fire checkAndShow() so the
+  // popup triggers once both (a) the live categories/products are known and
+  // (b) FC.json.items is populated.  Without these deferred calls the popup
+  // is silently swallowed when loaded.done fires before the cart data is
+  // ready (common timing on the Webflow sidecart).
+  // alreadyShown() prevents a double-show if the FC event already showed it.
   loadConfig().then(function (config) {
     if (config) {
       if (config.categories && config.categories.length) {
@@ -842,7 +845,10 @@
         CROSSELL_PRODUCTS = config.products;
       }
     }
+    checkAndShow();
     updatePromoDisclaimer();
+    setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 400);
+    setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 900);
   });
   }
   if (document.readyState === 'loading') {
