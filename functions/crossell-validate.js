@@ -1,5 +1,5 @@
 /**
- * crossell-validate.js  —  Netlify Function
+ * crossell-validate.js  —  Netlify Function  
  * ─────────────────────────────────────────────────────────────────────────────
  * Foxy pre-payment webhook.  Runs before any card is charged and enforces two
  * rules for CROSSELL_PROMO items:
