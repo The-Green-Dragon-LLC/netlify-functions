@@ -311,7 +311,7 @@
       // Also show if someone typed a qty higher than the limit
       if (!hasOverflow && totalPromoQty <= PROMO_LIMIT) return;
 
-      var msg = 'âš ï¸  The promotional price is limited to '
+      var msg = '&#9888;&#65039;  The promotional price is limited to '
               + PROMO_LIMIT + ' units. '
               + 'Additional units have been added to your cart at the regular price.';
 
@@ -554,7 +554,7 @@
       + '<div class="cs-backdrop"></div>'
       + '<div class="cs-box">'
       + '<button class="cs-close" aria-label="Close offer">&times;</button>'
-      + '<p class="cs-eyebrow">ðŸŽ¡ Exclusive One-Time Offer</p>'
+      + '<p class="cs-eyebrow">&#127905; Exclusive One-Time Offer</p>'
       + '<h2 id="cs-title" class="cs-title">Try Our New Euphoric Products &mdash; 40% Off!</h2>'
       + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site. Limited to ' + PROMO_LIMIT + ' units per customer at the discounted price.</p>'
       + '<div class="cs-products">' + CROSSELL_PRODUCTS.map(productCardHTML).join('') + '</div>'
