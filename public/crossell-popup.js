@@ -801,41 +801,51 @@
       return;
     }
 
-    // Register FC cart event listeners IMMEDIATELY -- before the Airtable
-  // config fetch -- so a product added while the fetch is in flight still
-  // triggers the popup (fixes sidecart race condition).
+    // lastCartEventTime records when the most recent FC cart event fired.
+  // Polling uses this to fire a deferred checkAndShow() 1-second after
+  // the event -- FC.json.items is populated by then even when loaded.done
+  // fires before the Foxy AJAX has written the new item.
   //
-  // NOTE: loaded.done fires ONLY when the sidecart is opened / modified,
-  // not silently on every page load.  That is why checkAndShow() here does
-  // NOT cause the popup to appear on the homepage with pre-existing items.
-  // The old polling trigger DID cause that bug -- it is intentionally absent.
-  var onCartEvent = function () { checkAndShow(); updatePromoDisclaimer(); };
+  // PAGE_GRACE_MS: loaded.done fires ~300 ms after page init.  Events
+  // arriving inside this window are page-load events, NOT user actions.
+  // We ignore them so pre-existing cart items do not pop the dialog on
+  // the homepage on every page load.
+  var pageLoadTime    = Date.now();
+  var PAGE_GRACE_MS   = 2000; // ms after page load to ignore cart events
+  var lastCartEventTime = 0;
+
+  var onCartEvent = function () {
+    var sinceLoad = Date.now() - pageLoadTime;
+    if (sinceLoad > PAGE_GRACE_MS) {
+      // Past grace period -- this is a deliberate user action.
+      lastCartEventTime = Date.now();
+      checkAndShow(); // Attempt immediately; polling backs this up.
+    }
+    updatePromoDisclaimer();
+  };
+
   FC.client.on('loaded.done', onCartEvent);
   try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
   try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
 
-  // Attach cart quantity interceptors IMMEDIATELY -- before loadConfig() so
-  // a customer who opens the cart and clicks "+" before the Airtable fetch
-  // completes is still protected.  These listeners read CROSSELL_PRODUCTS at
-  // click time, so they work correctly once the config has loaded.
   attachCartPlusInterceptor();
   attachQuantityInputWatcher();
 
-  // Polling fallback -- updates the promo disclaimer only; does NOT call
-  // checkAndShow() because that was the root cause of the homepage popup bug
-  // (polling fired every second on any page that had THC items in the cart).
+  // Polling -- the PRIMARY popup trigger.
+  // Calls checkAndShow() every second ONLY when a cart event occurred
+  // in the last 10 s (user just added an item).  This ensures the check
+  // runs once FC.json.items is fully updated (happens ~1 s after the
+  // Foxy AJAX completes, after loaded.done has already fired).
   var pollTimer = setInterval(function () {
     if (alreadyShown()) { clearInterval(pollTimer); return; }
+    if (lastCartEventTime > 0 && Date.now() - lastCartEventTime < 10000) {
+      checkAndShow();
+    }
     updatePromoDisclaimer();
   }, 1000);
   setTimeout(function () { clearInterval(pollTimer); }, 60000);
 
-  // Load live config (or session cache), then fire checkAndShow() so the
-  // popup triggers once both (a) the live categories/products are known and
-  // (b) FC.json.items is populated.  Without these deferred calls the popup
-  // is silently swallowed when loaded.done fires before the cart data is
-  // ready (common timing on the Webflow sidecart).
-  // alreadyShown() prevents a double-show if the FC event already showed it.
+  // Load live config (or session cache).
   loadConfig().then(function (config) {
     if (config) {
       if (config.categories && config.categories.length) {
@@ -845,10 +855,7 @@
         CROSSELL_PRODUCTS = config.products;
       }
     }
-    checkAndShow();
     updatePromoDisclaimer();
-    setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 400);
-    setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 900);
   });
   }
   if (document.readyState === 'loading') {
