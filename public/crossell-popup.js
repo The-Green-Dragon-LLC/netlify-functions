@@ -231,18 +231,19 @@
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // On the full-page Foxy cart, Foxy's click delegation does not handle
-    // programmatic link clicks via AJAX the way the sidecart does.
-    // Direct navigation to the cart URL is the reliable mechanism there:
-    // Foxy processes the add-to-cart parameters on load and reloads the page.
+    // On the full-page /cart URL, Foxy's click delegation does not process
+    // programmatic link clicks via AJAX — direct navigation is required.
+    // Foxy processes the add-to-cart parameters on load and reloads the cart.
     //
-    // On the Webflow sidecart, Foxy's event delegation intercepts link clicks
-    // via AJAX so the item is added without any page navigation.
-    var onFullCart = window.location.hostname === 'secure.thegreendragoncbd.com' ||
-                     window.location.hostname.indexOf('foxycart') !== -1 ||
-                     window.location.hostname.indexOf('foxy.io')  !== -1;
+    // On checkout (/checkout path) and the Webflow sidecart, Foxy intercepts
+    // link clicks via AJAX so the item is added without page navigation and
+    // the user stays on the current page.
+    var onFullCartPath = (window.location.hostname === 'secure.thegreendragoncbd.com' ||
+                          window.location.hostname.indexOf('foxycart') !== -1 ||
+                          window.location.hostname.indexOf('foxy.io')  !== -1) &&
+                         window.location.pathname === '/cart';
 
-    if (onFullCart) {
+    if (onFullCartPath) {
       window.location.href = cartUrl;
     } else {
       var link = document.createElement('a');
