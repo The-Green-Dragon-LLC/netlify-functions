@@ -52,10 +52,41 @@ const PROMO_LIMIT = 3;
  * Formula: Math.round(regularPrice * 60) / 100   (= 40% off)
  *
  * Keep in sync with CROSSELL_PRODUCTS in crossell-popup.js.
+ *
+ * Parent codes (fallback for non-variant add-to-cart):
+ *   recKkoAfqQsG0egdL  Ferris Wheel - Kanna Extract Tablets   $19.99 → $11.99
+ *   rechUKdlBzIOr1MLn  Mmelt - Hippie Flip Mushroom Gummies   $34.99 → $20.99
+ *
+ * Ferris Wheel variant codes (all $19.99 → $11.99):
+ *   rechSEXDGj34FT77U  Blue Razz
+ *   recNTLM2EMmGSfU13  Juicy Apple
+ *   recDT1utJwnorlyY8  Pink Stardust
+ *   recGU7TQeCYXziEa9  Citrus Twist
+ *
+ * Mmelt variant codes (all $34.99 → $20.99):
+ *   recOicdAKLK67435n  Cosmic Peach
+ *   recmkGpGL9FRg99kS  Daydream Bliss
+ *   recVvHfnTDHfTbypU  Ego Melter
+ *   recoBtUNdqINTmHHh  Rainbow Drip
+ *   rec7VoOk2wogWYc1v  Stargaze Grape
+ *   recvcqWPwO6zWw2Oi  Trippy Tropic
  */
 const PROMO_PRICES = {
-  'FW-001': 23.99,   // ← UPDATE: Math.round(39.99 * 60) / 100
-  'FW-002': 20.99    // ← UPDATE: Math.round(34.99 * 60) / 100
+  // Ferris Wheel - Kanna Extract Tablets  (regular $19.99 → 40% off = $11.99)
+  'recKkoAfqQsG0egdL': 11.99,  // parent
+  'rechSEXDGj34FT77U': 11.99,  // Blue Razz
+  'recNTLM2EMmGSfU13': 11.99,  // Juicy Apple
+  'recDT1utJwnorlyY8': 11.99,  // Pink Stardust
+  'recGU7TQeCYXziEa9': 11.99,  // Citrus Twist
+
+  // Mmelt - Hippie Flip Mushroom Gummies - 10 count  (regular $34.99 → 40% off = $20.99)
+  'rechUKdlBzIOr1MLn': 20.99,  // parent
+  'recOicdAKLK67435n': 20.99,  // Cosmic Peach
+  'recmkGpGL9FRg99kS': 20.99,  // Daydream Bliss
+  'recVvHfnTDHfTbypU': 20.99,  // Ego Melter
+  'recoBtUNdqINTmHHh': 20.99,  // Rainbow Drip
+  'rec7VoOk2wogWYc1v': 20.99,  // Stargaze Grape
+  'recvcqWPwO6zWw2Oi': 20.99   // Trippy Tropic
 };
 
 /** Floating-point tolerance: reject anything more than 1 cent below expected. */

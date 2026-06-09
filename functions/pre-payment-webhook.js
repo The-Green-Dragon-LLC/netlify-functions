@@ -7,6 +7,64 @@ const {
   FOXY_CLIENT_ID,
 } = process.env;
 
+// ─── Cross-sell promo validation ────────────────────────────────────────────
+const CROSSELL_PROMO_CATEGORY  = "CROSSELL_PROMO";
+const CROSSELL_PROMO_LIMIT     = 3;
+const CROSSELL_PRICE_TOLERANCE = 0.01;
+const CROSSELL_PRODUCTS_TABLE  = "tblkLl9qqg654fWi7";
+const CROSSELL_VARIANTS_TABLE  = "tblEtb1aIH5Xk4Nh9";
+
+/**
+ * Builds a map of { [Foxy code]: regularPrice } for all cross-sell products
+ * AND their variants.  Pricing may live at the variant level (parent product
+ * has no Price), so we fetch both tables.
+ */
+async function fetchCrossSellPriceMap(airtableBase) {
+  const map = {};
+
+  // 1. Fetch parent products and collect any with a parent-level price + variant IDs
+  const allVariantIds = [];
+  await airtableBase(CROSSELL_PRODUCTS_TABLE)
+    .select({
+      fields:          ["Website Product Code", "Price", "Variants"],
+      filterByFormula: "{Cross-sell Promo}",
+    })
+    .eachPage((records, fetchNextPage) => {
+      records.forEach((r) => {
+        const code  = r.get("Website Product Code");
+        const price = r.get("Price");
+        if (code && price) map[code] = price;          // parent has a price
+        const varIds = r.get("Variants") || [];
+        varIds.forEach(id => allVariantIds.push(id));  // collect variant IDs
+      });
+      fetchNextPage();
+    });
+
+  // 2. Fetch all variant prices for those products
+  if (allVariantIds.length > 0) {
+    const formula = allVariantIds.length === 1
+      ? `RECORD_ID() = "${allVariantIds[0]}"`
+      : `OR(${allVariantIds.map(id => `RECORD_ID() = "${id}"`).join(",")})`;
+
+    await airtableBase(CROSSELL_VARIANTS_TABLE)
+      .select({
+        fields:          ["Website Product Code", "Price"],
+        filterByFormula: formula,
+      })
+      .eachPage((records, fetchNextPage) => {
+        records.forEach((r) => {
+          const code  = r.get("Website Product Code");
+          const price = r.get("Price");
+          if (code && price) map[code] = price;        // variant-level price
+        });
+        fetchNextPage();
+      });
+  }
+
+  return map;
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(
   "appWUsGD3byrYcN3l"
 );
@@ -118,6 +176,16 @@ exports.handler = async (event, context) => {
     const insufficientStockStPeters = [];
     const mismatchMembershipPrice = [];
     let hasActiveMembership = false;
+    const crossellPriceMismatch = [];
+
+    // Pre-fetch the cross-sell price map once before processing items,
+    // so we don't hit Airtable per-item inside the Promise.all loop.
+    const hasCrossSellItems = cartItems.some(
+      (item) => item["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
+    );
+    const crossellPriceMap = hasCrossSellItems
+      ? await fetchCrossSellPriceMap(base)
+      : {};
 
     await Promise.all(
       cartItems.map(async (cartItem) => {
@@ -173,6 +241,29 @@ exports.handler = async (event, context) => {
                 `Price for ${cartItem.name} should be ${tablePrice}, but showing ${cartPrice} in cart`
               );
               mismatchMembershipPrice.push(cartItem.name);
+            }
+          }
+        } else if (
+          cartItem["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
+        ) {
+          // Cross-sell promo item: validate price against Airtable's live data.
+          // Quantity limit is checked after this loop where we can sum across all items.
+          const regularPrice = crossellPriceMap[cartItem.code];
+
+          if (regularPrice === undefined) {
+            // Code not found in Airtable's cross-sell products — reject.
+            // This catches items added with a fabricated CROSSELL_PROMO category.
+            console.log(`Unknown cross-sell promo code: ${cartItem.code}`);
+            invalidProductCode.push(cartItem.code);
+          } else {
+            // Expected price = 40% off the regular Airtable price
+            const expectedPrice = Math.round(regularPrice * 60) / 100;
+            if (cartItem.price < expectedPrice - CROSSELL_PRICE_TOLERANCE) {
+              console.log(
+                `Cross-sell price mismatch for ${cartItem.name}: ` +
+                `expected >= ${expectedPrice.toFixed(2)}, got ${cartItem.price}`
+              );
+              crossellPriceMismatch.push(cartItem.name);
             }
           }
         } else {
@@ -235,13 +326,31 @@ exports.handler = async (event, context) => {
       })
     );
 
+    // Cross-sell quantity limit — checked here so we can sum across all items
+    const crossellPromoQty = cartItems
+      .filter(
+        (item) =>
+          item["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
+      )
+      .reduce((sum, item) => sum + item.quantity, 0);
+
+    const crossellQtyExceeded = crossellPromoQty > CROSSELL_PROMO_LIMIT;
+
+    if (crossellQtyExceeded) {
+      console.log(
+        `Cross-sell promo qty exceeded: ${crossellPromoQty} > ${CROSSELL_PROMO_LIMIT}`
+      );
+    }
+
     if (
       invalidProductCode.length > 0 ||
       insufficientStockChesterfield.length > 0 ||
       insufficientStockStPeters.length > 0 ||
       insufficientStock.length > 0 ||
       mismatchMembershipPrice.length > 0 ||
-      hasActiveMembership
+      hasActiveMembership ||
+      crossellPriceMismatch.length > 0 ||
+      crossellQtyExceeded
     ) {
       return {
         statusCode: 200,
@@ -270,6 +379,14 @@ exports.handler = async (event, context) => {
           }${
             hasActiveMembership
               ? "Looks like you already have an active membership."
+              : ""
+          }${
+            crossellPriceMismatch.length > 0
+              ? `The promotional price for ${crossellPriceMismatch.join(", ")} could not be validated. Please remove the item and add it again from the offer.`
+              : ""
+          }${
+            crossellQtyExceeded
+              ? `The promotional price is limited to ${CROSSELL_PROMO_LIMIT} units per order. Please reduce the quantity of the promotional item in your cart.`
               : ""
           }`,
         }),
