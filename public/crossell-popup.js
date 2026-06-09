@@ -801,49 +801,18 @@
       return;
     }
 
-    // Track the last known THC item count so the popup fires only when
-  // a NEW item is added -- not on page load with pre-existing items.
-  var knownTHCCount = null;
-
-  // Seed the baseline 1 s after Foxy loads.  By then FC.json is populated
-  // with whatever was already in the cart (pre-existing items), so we can
-  // distinguish those from items the user adds DURING this page view.
-  // This is the fix for the homepage popup: even if Foxy never fires an
-  // initial loaded.done, FC.json will reflect the pre-existing count.
-  var _baselineTimer = setTimeout(function () {
-    if (knownTHCCount === null) knownTHCCount = countTHCItems();
-  }, 1000);
-
-  // loaded.done fires on initial cart load AND after every cart change.
-  // Only show popup if the THC count increases from the last known value.
-  var onLoadEvent = function () {
-    var current = countTHCItems();
-    if (knownTHCCount !== null && current > knownTHCCount) {
-      knownTHCCount = current;
-      showPopup();
-    } else {
-      knownTHCCount = current; // establish / update baseline without showing
-    }
-    updatePromoDisclaimer();
-  };
-
-  // add.done is an explicit add signal -- always show popup if THC items
-  // present.  Foxy may fire add.done before loaded.done, so knownTHCCount
-  // could still be null; handle that case the same way.
-  var onAddEvent = function () {
-    clearTimeout(_baselineTimer); // baseline no longer needed; we have live data
-    var current = countTHCItems();
-    knownTHCCount = current;
-    if (current > 0) showPopup();
-    updatePromoDisclaimer();
-  };
-
-  // Register FC cart event listeners IMMEDIATELY - before the Airtable config
-  // fetch - so a product added while the fetch is in flight still triggers the
-  // popup (fixes sidecart race condition where loaded.done fired too early).
-  FC.client.on('loaded.done', onLoadEvent);
-  try { FC.client.on('add.done',    onAddEvent); } catch (e) {}
-  try { FC.client.on('cart-loaded', onLoadEvent); } catch (e) {}
+    // Register FC cart event listeners IMMEDIATELY -- before the Airtable
+  // config fetch -- so a product added while the fetch is in flight still
+  // triggers the popup (fixes sidecart race condition).
+  //
+  // NOTE: loaded.done fires ONLY when the sidecart is opened / modified,
+  // not silently on every page load.  That is why checkAndShow() here does
+  // NOT cause the popup to appear on the homepage with pre-existing items.
+  // The old polling trigger DID cause that bug -- it is intentionally absent.
+  var onCartEvent = function () { checkAndShow(); updatePromoDisclaimer(); };
+  FC.client.on('loaded.done', onCartEvent);
+  try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
+  try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
 
   // Attach cart quantity interceptors IMMEDIATELY -- before loadConfig() so
   // a customer who opens the cart and clicks "+" before the Airtable fetch
@@ -852,16 +821,18 @@
   attachCartPlusInterceptor();
   attachQuantityInputWatcher();
 
-  // Polling fallback -- updates the promo disclaimer only; does NOT trigger
-  // the popup (which would show on any page with pre-existing THC items).
+  // Polling fallback -- updates the promo disclaimer only; does NOT call
+  // checkAndShow() because that was the root cause of the homepage popup bug
+  // (polling fired every second on any page that had THC items in the cart).
   var pollTimer = setInterval(function () {
     if (alreadyShown()) { clearInterval(pollTimer); return; }
     updatePromoDisclaimer();
   }, 1000);
   setTimeout(function () { clearInterval(pollTimer); }, 60000);
 
-  // Load live config (or session cache), then update the disclaimer with
-  // accurate categories/products.
+  // Load live config (or session cache), then update disclaimer with
+  // accurate categories/products.  No checkAndShow() here -- the FC event
+  // above handles showing the popup when a product is actually added.
   loadConfig().then(function (config) {
     if (config) {
       if (config.categories && config.categories.length) {
