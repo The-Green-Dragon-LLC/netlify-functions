@@ -247,8 +247,12 @@
     if (onFoxyDomain) {
       window.location.href = cartUrl;
     } else {
+      // Use off-screen positioning instead of display:none — some Foxy builds
+      // ignore click events on invisible (display:none) elements.
       var link = document.createElement('a');
-      link.style.display = 'none';
+      link.style.position = 'absolute';
+      link.style.top      = '-9999px';
+      link.style.left     = '-9999px';
       link.href = cartUrl;
       document.body.appendChild(link);
       link.click();
@@ -787,13 +791,30 @@
 
   function attach() {
     if (!window.FC || !FC.client || typeof FC.client.on !== 'function') {
-      setTimeout(attach, 100); // Poll frequently â€” Foxy loads async
+      setTimeout(attach, 100); // Poll frequently - Foxy loads async
       return;
     }
 
-    // Load config from Airtable (or session cache), then wire up cart listeners
+    // Register FC cart event listeners IMMEDIATELY - before the Airtable config
+    // fetch - so a product added while the fetch is in flight still triggers the
+    // popup (fixes sidecart race condition where loaded.done fired too early).
+    var onCartEvent = function () { checkAndShow(); updatePromoDisclaimer(); };
+    FC.client.on('loaded.done', onCartEvent);
+    try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
+    try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
+
+    // Polling fallback - belt-and-suspenders for sidecart setups where FC
+    // events don't fire reliably. Checks every 1 s for up to 60 s after page
+    // load; stops as soon as the popup has been shown.
+    var pollTimer = setInterval(function () {
+      if (alreadyShown()) { clearInterval(pollTimer); return; }
+      checkAndShow();
+    }, 1000);
+    setTimeout(function () { clearInterval(pollTimer); }, 60000);
+
+    // Load live config (or session cache), then re-check with accurate
+    // categories/products and wire up the cart quantity interceptors.
     loadConfig().then(function (config) {
-      // Apply live data if fetch succeeded; otherwise keep hardcoded fallbacks
       if (config) {
         if (config.categories && config.categories.length) {
           THC_CATEGORIES = config.categories;
@@ -803,12 +824,8 @@
         }
       }
 
-      // Register event listeners (try multiple event names across FC versions)
-      FC.client.on('loaded.done', function () { checkAndShow(); updatePromoDisclaimer(); });
-      try { FC.client.on('add.done',    function () { checkAndShow(); updatePromoDisclaimer(); }); } catch (e) {}
-      try { FC.client.on('cart-loaded', function () { checkAndShow(); updatePromoDisclaimer(); }); } catch (e) {}
-
-      // Immediate checks â€” catches full-page cart where loaded.done already fired
+      // Re-check now that we have live data; also handles full-page cart
+      // where THC items were already present on page load.
       checkAndShow();
       updatePromoDisclaimer();
       setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 300);
@@ -818,7 +835,6 @@
       attachQuantityInputWatcher();
     });
   }
-
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', attach);
   } else {
