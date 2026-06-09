@@ -231,18 +231,29 @@
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // Off-screen link click — Foxy's document-level event delegation intercepts
-    // it and processes the add-to-cart via AJAX, triggering a full cart refresh
-    // (loaded.done) without any page navigation.  Using position:absolute instead
-    // of display:none because some Foxy builds ignore clicks on hidden elements.
-    var link = document.createElement('a');
-    link.style.position = 'absolute';
-    link.style.top      = '-9999px';
-    link.style.left     = '-9999px';
-    link.href = cartUrl;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(function () { document.body.removeChild(link); }, 200);
+    // On the full-page Foxy cart, Foxy's click delegation does not handle
+    // programmatic link clicks via AJAX the way the sidecart does.
+    // Direct navigation to the cart URL is the reliable mechanism there:
+    // Foxy processes the add-to-cart parameters on load and reloads the page.
+    //
+    // On the Webflow sidecart, Foxy's event delegation intercepts link clicks
+    // via AJAX so the item is added without any page navigation.
+    var onFullCart = window.location.hostname === 'secure.thegreendragoncbd.com' ||
+                     window.location.hostname.indexOf('foxycart') !== -1 ||
+                     window.location.hostname.indexOf('foxy.io')  !== -1;
+
+    if (onFullCart) {
+      window.location.href = cartUrl;
+    } else {
+      var link = document.createElement('a');
+      link.style.position = 'absolute';
+      link.style.top      = '-9999px';
+      link.style.left     = '-9999px';
+      link.href = cartUrl;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(function () { document.body.removeChild(link); }, 200);
+    }
   }
 
   /** True if popup has already been shown this browser session. */
