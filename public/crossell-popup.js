@@ -630,6 +630,15 @@
 
   function showPopup() {
     if (alreadyShown()) return;
+
+    // Never show on the Foxy cart / checkout domain.  sessionStorage is
+    // origin-scoped, so the "already shown" flag set on www.thegreendragoncbd.com
+    // (sidecart) is invisible to thegreendragoncbd.foxycart.com (full cart),
+    // causing the popup to fire twice.  The full-page cart is already deep in
+    // the checkout flow — showing a cross-sell popup there would be disruptive.
+    if (window.location.hostname.indexOf('foxycart') !== -1 ||
+        window.location.hostname.indexOf('foxy.io')  !== -1) return;
+
     markShown();
 
     // Inject stylesheet once
@@ -803,6 +812,13 @@
     try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
     try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
 
+    // Attach cart quantity interceptors IMMEDIATELY — before loadConfig() so
+    // a customer who opens the cart and clicks "+" before the Airtable fetch
+    // completes is still protected.  These listeners read CROSSELL_PRODUCTS at
+    // click time, so they work correctly once the config has loaded.
+    attachCartPlusInterceptor();
+    attachQuantityInputWatcher();
+
     // Polling fallback - belt-and-suspenders for sidecart setups where FC
     // events don't fire reliably. Checks every 1 s for up to 60 s after page
     // load; stops as soon as the popup has been shown.
@@ -813,7 +829,7 @@
     setTimeout(function () { clearInterval(pollTimer); }, 60000);
 
     // Load live config (or session cache), then re-check with accurate
-    // categories/products and wire up the cart quantity interceptors.
+    // categories/products.
     loadConfig().then(function (config) {
       if (config) {
         if (config.categories && config.categories.length) {
@@ -830,9 +846,6 @@
       updatePromoDisclaimer();
       setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 300);
       setTimeout(function () { checkAndShow(); updatePromoDisclaimer(); }, 800);
-
-      attachCartPlusInterceptor();
-      attachQuantityInputWatcher();
     });
   }
   if (document.readyState === 'loading') {
