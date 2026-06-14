@@ -1,25 +1,29 @@
 /**
  * restart-subscription.js  —  Netlify Function
  * ─────────────────────────────────────────────────────────────────────────────
- * Clears a FoxyCart subscription's end_date (un-cancels it) and optionally
- * sets next_transaction_date to tomorrow.
+ * Clears a FoxyCart subscription's end_date (un-cancels it) and sets
+ * next_transaction_date to tomorrow.
  *
- * STRATEGY
+ * TWO PATHS
  * ─────────
- *  - Cart cancel page (/cart?sub_token=...): receives sub_token + timestamp;
- *    calls FoxyCart cart API with those values + sub_enddate=0000-00-00.
- *    The HMAC-validated sub_token authorises the modification.
+ *  PATH A — cart cancel page (/cart?sub_token=...)
+ *    Receives sub_token + timestamp + store_domain.
+ *    Calls FoxyCart cart API: the HMAC-validated sub_token authorises
+ *    the modification directly; clears sub_enddate and sets sub_nextdate.
  *
- *  - Checkout cancel page (/checkout.php?fcsid=...): no sub_token in URL;
- *    receives customer_id (foxy_customer_id DOM field, populated after sign-in);
- *    uses FoxyCart REST API via OAuth to find and PATCH the subscription.
+ *  PATH B — checkout cancel page (/checkout.php?fcsid=...)
+ *    Receives store_id + sub_enddate (both from FC.json, available before
+ *    any sign-in).  Uses FoxyCart REST API via OAuth:
+ *      1. Gets access token via refresh_token grant
+ *      2. Queries /subscriptions for this store
+ *      3. Finds the one whose end_date matches sub_enddate
+ *      4. PATCHes end_date to '' and next_transaction_date to tomorrow
  *
- * DEPLOYMENT
- * ──────────
- *  Env vars required:
- *    FOXY_CLIENT_ID      — FoxyCart Admin → Integrations → Get Token
- *    FOXY_CLIENT_SECRET  — same
- *    FOXY_REFRESH_TOKEN  — same
+ * ENV VARS (Netlify → Site Settings → Environment Variables)
+ * ───────────────────────────────────────────────────────────
+ *   FOXY_CLIENT_ID      — FoxyCart Admin → Integrations → Get Token
+ *   FOXY_CLIENT_SECRET  — same
+ *   FOXY_REFRESH_TOKEN  — same
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -80,12 +84,18 @@ async function getAccessToken() {
 
   const res = await httpsReq(
     'https://api.foxycart.com/token',
-    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Basic ${credentials}` } },
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Basic ${credentials}`,
+      },
+    },
     params.toString()
   );
 
   if (!res.ok || !res.json || !res.json.access_token) {
-    throw new Error('FoxyCart token error: ' + res.text);
+    throw new Error('FoxyCart token error: ' + res.text.slice(0, 300));
   }
   return res.json.access_token;
 }
@@ -97,20 +107,18 @@ async function restartViaSubToken({ sub_token, timestamp, sub_nextdate, store_do
   if (timestamp) params.set('timestamp', timestamp);
   const url = `https://${store_domain}/cart?${params.toString()}`;
 
-  console.log('[restart-subscription] PATH A (sub_token) cart URL:', url);
+  console.log('[restart] PATH A cart URL:', url);
   const res = await httpsReq(url, {});
-  console.log('[restart-subscription] PATH A response status:', res.status, 'location:', res.location || '(none)');
+  console.log('[restart] PATH A status:', res.status, 'location:', res.location || '(none)');
 
-  // FoxyCart redirects on success (302/301); it returns 200 for no-session calls
-  if (res.status >= 200 && res.status < 400) {
-    return { success: true };
-  }
+  // FoxyCart returns 302 on success (redirect to checkout), 200 for plain cart calls
+  if (res.status >= 200 && res.status < 400) return { success: true };
   throw new Error(`Cart API returned ${res.status}: ${res.text.slice(0, 200)}`);
 }
 
-/* ─── PATH B: customer_id + OAuth (checkout cancel page) ────────────────────── */
+/* ─── PATH B: store_id + sub_enddate + OAuth (checkout cancel page) ─────────── */
 
-async function restartViaCustomerId({ customer_id, sub_nextdate }) {
+async function restartViaStoreAndEnddate({ store_id, sub_enddate, sub_nextdate }) {
   const token = await getAccessToken();
   const authHeaders = {
     'Authorization': `Bearer ${token}`,
@@ -118,26 +126,44 @@ async function restartViaCustomerId({ customer_id, sub_nextdate }) {
     'Content-Type': 'application/json',
   };
 
-  // List all subscriptions for this customer
-  const subsRes = await httpsReq(
-    `https://api.foxycart.com/subscriptions?customer_id=${encodeURIComponent(customer_id)}&limit=50`,
-    { headers: authHeaders }
-  );
-  if (!subsRes.ok) throw new Error(`Subscriptions API ${subsRes.status}: ${subsRes.text.slice(0, 200)}`);
+  // Page through subscriptions (limit 300 per page, up to 10 pages = 3000 subscriptions)
+  let target = null;
+  let offset = 0;
+  const limit = 300;
+  const maxPages = 10;
 
-  const subs = (subsRes.json && subsRes.json._embedded && subsRes.json._embedded['fx:subscriptions']) || [];
-  console.log('[restart-subscription] PATH B customer', customer_id, ': found', subs.length, 'subscription(s)');
+  for (let page = 0; page < maxPages; page++) {
+    const url = `https://api.foxycart.com/subscriptions?store_id=${encodeURIComponent(store_id)}&limit=${limit}&offset=${offset}`;
+    console.log('[restart] PATH B fetching:', url);
 
-  // Find the one with a pending end_date (not empty, not 0000-00-00)
-  const target = subs.find(s => s.end_date && s.end_date !== '' && !s.end_date.startsWith('0000'));
+    const subsRes = await httpsReq(url, { headers: authHeaders });
+    if (!subsRes.ok) throw new Error(`Subscriptions API ${subsRes.status}: ${subsRes.text.slice(0, 200)}`);
+
+    const subs = (subsRes.json && subsRes.json._embedded && subsRes.json._embedded['fx:subscriptions']) || [];
+    console.log(`[restart] PATH B page ${page + 1}: ${subs.length} subscriptions`);
+
+    // Find one whose end_date starts with sub_enddate (e.g. "2026-06-20" matches "2026-06-20T00:00:00+00:00")
+    target = subs.find(s =>
+      s.end_date &&
+      s.end_date !== '' &&
+      !s.end_date.startsWith('0000') &&
+      s.end_date.startsWith(sub_enddate)
+    );
+
+    if (target) break;
+    if (subs.length < limit) break; // Last page
+    offset += limit;
+  }
+
   if (!target) {
-    throw new Error('No pending-cancel subscription found for this customer (end_date already clear or no subscriptions)');
+    throw new Error(`No subscription found with end_date '${sub_enddate}' in store ${store_id}`);
   }
 
   const subUrl = target._links && target._links.self && target._links.self.href;
   if (!subUrl) throw new Error('Subscription self-link missing from API response');
 
-  console.log('[restart-subscription] PATH B patching:', subUrl, '-> clear end_date, next_transaction_date:', sub_nextdate);
+  console.log('[restart] PATH B patching:', subUrl);
+  console.log('[restart] PATH B payload: end_date="" next_transaction_date=' + sub_nextdate + 'T00:00:00+00:00');
 
   const patchRes = await httpsReq(
     subUrl,
@@ -145,7 +171,7 @@ async function restartViaCustomerId({ customer_id, sub_nextdate }) {
     { end_date: '', next_transaction_date: sub_nextdate + 'T00:00:00+00:00' }
   );
 
-  if (!patchRes.ok) throw new Error(`PATCH ${subUrl} failed (${patchRes.status}): ${patchRes.text.slice(0, 200)}`);
+  if (!patchRes.ok) throw new Error(`PATCH failed (${patchRes.status}): ${patchRes.text.slice(0, 200)}`);
 
   return { success: true };
 }
@@ -156,9 +182,9 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: CORS, body: 'Method Not Allowed' };
 
-  let sub_token, timestamp, customer_id, sub_nextdate, store_domain;
+  let sub_token, timestamp, store_domain, store_id, sub_enddate, sub_nextdate;
   try {
-    ({ sub_token, timestamp, customer_id, sub_nextdate, store_domain } = JSON.parse(event.body || '{}'));
+    ({ sub_token, timestamp, store_domain, store_id, sub_enddate, sub_nextdate } = JSON.parse(event.body || '{}'));
   } catch (_) {
     return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
@@ -171,23 +197,31 @@ exports.handler = async (event) => {
     let result;
 
     if (sub_token && store_domain) {
-      // Path A: cart cancel page — sub_token is in the URL
+      // Path A: cart cancel page — sub_token + timestamp from URL
       result = await restartViaSubToken({ sub_token, timestamp, sub_nextdate, store_domain });
-    } else if (customer_id) {
-      // Path B: checkout cancel page — customer signed in, use OAuth
-      result = await restartViaCustomerId({ customer_id, sub_nextdate });
+    } else if (store_id && sub_enddate) {
+      // Path B: checkout cancel page — store_id + sub_enddate from FC.json
+      result = await restartViaStoreAndEnddate({ store_id, sub_enddate, sub_nextdate });
     } else {
       return {
         statusCode: 400,
         headers: { ...CORS, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'Provide sub_token + store_domain (cart page) or customer_id (checkout page)' }),
+        body: JSON.stringify({ error: 'Provide sub_token + store_domain (cart page) OR store_id + sub_enddate (checkout page)' }),
       };
     }
 
-    return { statusCode: 200, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify(result) };
+    return {
+      statusCode: 200,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+      body: JSON.stringify(result),
+    };
 
   } catch (err) {
-    console.error('[restart-subscription] ERROR:', err.message);
-    return { statusCode: 500, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: err.message }) };
+    console.error('[restart] ERROR:', err.message);
+    return {
+      statusCode: 500,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: err.message }),
+    };
   }
 };
