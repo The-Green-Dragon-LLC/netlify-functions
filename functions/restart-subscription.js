@@ -73,8 +73,8 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
 
-  if (!sub_token || !sub_nextdate || !store_domain) {
-    return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Missing sub_token, sub_nextdate, or store_domain' }) };
+  if (!sub_nextdate || !store_domain || (!sub_token && !fcsid)) {
+    return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Missing sub_nextdate, store_domain, and either sub_token or fcsid' }) };
   }
 
   // Only allow calls to FoxyCart domains — prevents SSRF
@@ -83,14 +83,18 @@ exports.handler = async (event) => {
   }
 
   try {
-    // Build FoxyCart cart update URL
-    // FoxyCart processes sub_enddate=0000-00-00 as "no end date" (clear it)
-    const params = new URLSearchParams({
-      sub_token,
-      sub_enddate: '0000-00-00',
-      sub_nextdate,
-    });
-    if (timestamp) params.append('timestamp', timestamp);
+    // Build FoxyCart cart update URL.
+    // sub_enddate=0000-00-00 means "no end date" (clears pending cancellation).
+    // We have two ways to identify the session:
+    //   sub_token — available on the cart cancel page (/cart?sub_token=...)
+    //   fcsid     — available on the checkout cancel page (/checkout?fcsid=...)
+    const params = new URLSearchParams({ sub_enddate: '0000-00-00', sub_nextdate });
+    if (sub_token) {
+      params.set('sub_token', sub_token);
+      if (timestamp) params.set('timestamp', timestamp);
+    } else {
+      params.set('fcsid', fcsid);
+    }
 
     const cartUrl = `https://${store_domain}/cart?${params.toString()}`;
     console.log('[restart-subscription] Calling:', cartUrl);
