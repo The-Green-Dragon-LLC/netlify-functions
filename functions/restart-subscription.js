@@ -7,18 +7,18 @@
  * TWO PATHS
  * ─────────
  *  PATH A — cart cancel page (/cart?sub_token=...)
- *    Receives sub_token + timestamp + store_domain.
- *    Calls FoxyCart cart API: the HMAC-validated sub_token authorises the
- *    modification directly.
+ *    Calls FoxyCart cart API with sub_token + sub_enddate=0000-00-00.
  *
  *  PATH B — checkout cancel page (/checkout.php?fcsid=...)
- *    Receives store_id + sub_nextdate_current (from FC.json) + sub_nextdate.
  *    Uses FoxyCart REST API via OAuth:
  *      1. Gets access token via refresh_token grant
- *      2. Queries /subscriptions (no store_id filter — OAuth scopes it)
- *      3. Finds the subscription with end_date set AND next_transaction_date
- *         matching sub_nextdate_current
- *      4. PATCHes end_date to '' and next_transaction_date to tomorrow
+ *      2. Tries store-nested URL /stores/{store_id}/subscriptions first,
+ *         then falls back to /subscriptions
+ *      3. Accepts response data even on 4XX (FoxyCart returns 400 with
+ *         valid embedded data in some query configurations)
+ *      4. Finds subscription where end_date is set AND next_transaction_date
+ *         starts with sub_nextdate_current
+ *      5. PATCHes end_date and next_transaction_date
  *
  * ENV VARS
  *   FOXY_CLIENT_ID, FOXY_CLIENT_SECRET, FOXY_REFRESH_TOKEN
@@ -105,59 +105,87 @@ async function restartViaSubToken({ sub_token, timestamp, sub_nextdate, store_do
   if (timestamp) params.set('timestamp', timestamp);
   const url = `https://${store_domain}/cart?${params.toString()}`;
 
-  console.log('[restart] PATH A cart URL:', url);
+  console.log('[restart] PATH A:', url);
   const res = await httpsReq(url, {});
-  console.log('[restart] PATH A status:', res.status, 'location:', res.location || '(none)');
+  console.log('[restart] PATH A status:', res.status);
 
   if (res.status >= 200 && res.status < 400) return { success: true };
   throw new Error(`Cart API returned ${res.status}: ${res.text.slice(0, 200)}`);
 }
 
-/* ─── PATH B: sub_nextdate_current + OAuth (checkout cancel page) ────────────── */
+/* ─── PATH B: OAuth — find subscription by next_transaction_date ─────────────── */
 
-async function restartViaNextdate({ sub_nextdate_current, sub_nextdate }) {
+async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate }) {
   const token = await getAccessToken();
-  const authHeaders = {
+
+  // GET headers — NO Content-Type on GET requests (some APIs reject that with 400)
+  const getHeaders = {
+    'Authorization': `Bearer ${token}`,
+    'FOXY-API-VERSION': '1',
+  };
+  // PATCH headers — Content-Type needed for JSON body
+  const patchHeaders = {
     'Authorization': `Bearer ${token}`,
     'FOXY-API-VERSION': '1',
     'Content-Type': 'application/json',
   };
 
-  // Fetch subscriptions — no store_id filter; OAuth token is already store-scoped.
-  // Page through up to 3000 subscriptions (10 pages × 300).
-  let target = null;
-  let offset = 0;
-  const limit = 300;
+  // Try store-nested URL first (most correct), then fall back to flat endpoint
+  const candidateUrls = [
+    `https://api.foxycart.com/stores/${store_id}/subscriptions?limit=300`,
+    `https://api.foxycart.com/subscriptions?limit=300`,
+  ];
 
-  for (let page = 0; page < 10 && !target; page++) {
-    const url = `https://api.foxycart.com/subscriptions?limit=${limit}&offset=${offset}`;
-    console.log('[restart] PATH B page', page + 1, ':', url);
+  let subs = [];
+  let lastStatus = 0;
 
-    const subsRes = await httpsReq(url, { headers: authHeaders });
-    console.log('[restart] PATH B status:', subsRes.status, 'total:', subsRes.json && subsRes.json.total);
+  for (const baseUrl of candidateUrls) {
+    console.log('[restart] PATH B trying:', baseUrl);
+    const res = await httpsReq(baseUrl, { headers: getHeaders });
+    console.log('[restart] PATH B status:', res.status, 'total:', res.json && res.json.total);
 
-    if (!subsRes.ok) throw new Error(`Subscriptions API ${subsRes.status}: ${subsRes.text.slice(0, 200)}`);
+    const embedded = res.json && res.json._embedded && res.json._embedded['fx:subscriptions'];
 
-    const subs = (subsRes.json && subsRes.json._embedded && subsRes.json._embedded['fx:subscriptions']) || [];
+    if (embedded && embedded.length > 0) {
+      subs = embedded;
+      console.log('[restart] PATH B got', subs.length, 'subscriptions from', baseUrl);
+      break;
+    }
+    lastStatus = res.status;
+    if (res.ok && (!embedded || embedded.length === 0)) {
+      // API returned 200 but no subscriptions — nothing to iterate
+      break;
+    }
+    // Non-200 with no embedded data: try next URL
+  }
 
-    // Find the subscription where:
-    //   - end_date is set (has pending cancellation)
-    //   - next_transaction_date matches what FC.json reported (stable identifier)
+  if (subs.length === 0) {
+    throw new Error(`No subscriptions returned (last status: ${lastStatus}). Check store_id ${store_id} and OAuth credentials.`);
+  }
+
+  // Find subscription with pending end_date AND matching next_transaction_date
+  let target = subs.find(s =>
+    s.end_date &&
+    s.end_date !== '' &&
+    !s.end_date.startsWith('0000') &&
+    s.next_transaction_date &&
+    s.next_transaction_date.startsWith(sub_nextdate_current)
+  );
+
+  // Fallback: any subscription with end_date set (if next_transaction_date changed)
+  if (!target) {
+    console.log('[restart] PATH B: no match by next_transaction_date, trying end_date-only fallback');
     target = subs.find(s =>
       s.end_date &&
       s.end_date !== '' &&
-      !s.end_date.startsWith('0000') &&
-      s.next_transaction_date &&
-      s.next_transaction_date.startsWith(sub_nextdate_current)
+      !s.end_date.startsWith('0000')
     );
-
-    if (!target && subs.length < limit) break; // last page
-    offset += limit;
   }
 
   if (!target) {
     throw new Error(
-      `No subscription found with pending end_date AND next_transaction_date starting '${sub_nextdate_current}'`
+      `No pending-cancel subscription found. Checked ${subs.length} subscription(s). ` +
+      `Looking for next_transaction_date starting '${sub_nextdate_current}' with end_date set.`
     );
   }
 
@@ -165,14 +193,15 @@ async function restartViaNextdate({ sub_nextdate_current, sub_nextdate }) {
   if (!subUrl) throw new Error('Subscription self-link missing from API response');
 
   console.log('[restart] PATH B patching:', subUrl);
-  console.log('[restart] PATH B setting end_date="" next_transaction_date=' + sub_nextdate + 'T00:00:00+00:00');
+  console.log('[restart] PATH B end_date="" next_transaction_date=' + sub_nextdate + 'T00:00:00+00:00');
 
   const patchRes = await httpsReq(
     subUrl,
-    { method: 'PATCH', headers: authHeaders },
+    { method: 'PATCH', headers: patchHeaders },
     { end_date: '', next_transaction_date: sub_nextdate + 'T00:00:00+00:00' }
   );
 
+  console.log('[restart] PATH B PATCH status:', patchRes.status);
   if (!patchRes.ok) throw new Error(`PATCH failed (${patchRes.status}): ${patchRes.text.slice(0, 200)}`);
 
   return { success: true };
@@ -199,11 +228,9 @@ exports.handler = async (event) => {
     let result;
 
     if (sub_token && store_domain) {
-      // Path A: cart cancel page — sub_token + timestamp from URL
       result = await restartViaSubToken({ sub_token, timestamp, sub_nextdate, store_domain });
     } else if (sub_nextdate_current) {
-      // Path B: checkout cancel page — identify by current next_transaction_date
-      result = await restartViaNextdate({ sub_nextdate_current, sub_nextdate });
+      result = await restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate });
     } else {
       return {
         statusCode: 400,
