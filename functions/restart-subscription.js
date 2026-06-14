@@ -66,9 +66,9 @@ exports.handler = async (event) => {
     return { statusCode: 405, headers: CORS, body: 'Method Not Allowed' };
   }
 
-  let sub_token, timestamp, sub_nextdate, store_domain;
+  let sub_token, fcsid, timestamp, sub_nextdate, store_domain;
   try {
-    ({ sub_token, timestamp, sub_nextdate, store_domain } = JSON.parse(event.body || '{}'));
+    ({ sub_token, fcsid, timestamp, sub_nextdate, store_domain } = JSON.parse(event.body || '{}'));
   } catch (_) {
     return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
