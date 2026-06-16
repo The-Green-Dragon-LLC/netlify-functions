@@ -113,55 +113,68 @@ async function restartViaSubToken({ sub_token, timestamp, sub_nextdate, store_do
   throw new Error(`Cart API returned ${res.status}: ${res.text.slice(0, 200)}`);
 }
 
-/* ─── PATH B: OAuth — find subscription by next_transaction_date ─────────────── */
+/* ─── SHARED: fetch subscriptions via OAuth ─────────────────────────────────── */
 
-async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate }) {
-  const token = await getAccessToken();
-
-  // GET headers — NO Content-Type on GET requests (some APIs reject that with 400)
+async function fetchSubscriptions(store_id, token) {
   const getHeaders = {
     'Authorization': `Bearer ${token}`,
     'FOXY-API-VERSION': '1',
   };
-  // PATCH headers — Content-Type needed for JSON body
+  const candidateUrls = [
+    `https://api.foxycart.com/stores/${store_id}/subscriptions?limit=300`,
+    `https://api.foxycart.com/subscriptions?limit=300`,
+  ];
+  let lastStatus = 0;
+  for (const baseUrl of candidateUrls) {
+    console.log('[restart] fetching:', baseUrl);
+    const res = await httpsReq(baseUrl, { headers: getHeaders });
+    console.log('[restart] fetch status:', res.status, 'total:', res.json && res.json.total);
+    const embedded = res.json && res.json._embedded && res.json._embedded['fx:subscriptions'];
+    if (embedded && embedded.length > 0) {
+      console.log('[restart] got', embedded.length, 'subscriptions');
+      return embedded;
+    }
+    lastStatus = res.status;
+    if (res.ok && (!embedded || embedded.length === 0)) return [];
+  }
+  throw new Error(`No subscriptions returned (last status: ${lastStatus}). Check store_id ${store_id} and OAuth credentials.`);
+}
+
+/* ─── CHECK: is subscription actually cancelled right now? ──────────────────── */
+
+async function checkSubscription({ store_id, sub_nextdate_current }) {
+  const token = await getAccessToken();
+  const subs = await fetchSubscriptions(store_id, token);
+
+  // Find by next_transaction_date
+  const target = subs.find(s =>
+    s.next_transaction_date &&
+    s.next_transaction_date.startsWith(sub_nextdate_current)
+  );
+
+  if (!target) {
+    // Fallback: check any subscription with end_date set
+    const anyWithEndDate = subs.find(s =>
+      s.end_date && s.end_date !== '' && !s.end_date.startsWith('0000')
+    );
+    return { cancelled: !!anyWithEndDate, reason: anyWithEndDate ? 'found_by_end_date' : 'not_found' };
+  }
+
+  const hasFutureEndDate = target.end_date && target.end_date !== '' && !target.end_date.startsWith('0000');
+  return { cancelled: !!hasFutureEndDate, end_date: target.end_date || '' };
+}
+
+/* ─── PATH B: OAuth — find subscription by next_transaction_date ─────────────── */
+
+async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate }) {
+  const token = await getAccessToken();
   const patchHeaders = {
     'Authorization': `Bearer ${token}`,
     'FOXY-API-VERSION': '1',
     'Content-Type': 'application/json',
   };
 
-  // Try store-nested URL first (most correct), then fall back to flat endpoint
-  const candidateUrls = [
-    `https://api.foxycart.com/stores/${store_id}/subscriptions?limit=300`,
-    `https://api.foxycart.com/subscriptions?limit=300`,
-  ];
-
-  let subs = [];
-  let lastStatus = 0;
-
-  for (const baseUrl of candidateUrls) {
-    console.log('[restart] PATH B trying:', baseUrl);
-    const res = await httpsReq(baseUrl, { headers: getHeaders });
-    console.log('[restart] PATH B status:', res.status, 'total:', res.json && res.json.total);
-
-    const embedded = res.json && res.json._embedded && res.json._embedded['fx:subscriptions'];
-
-    if (embedded && embedded.length > 0) {
-      subs = embedded;
-      console.log('[restart] PATH B got', subs.length, 'subscriptions from', baseUrl);
-      break;
-    }
-    lastStatus = res.status;
-    if (res.ok && (!embedded || embedded.length === 0)) {
-      // API returned 200 but no subscriptions — nothing to iterate
-      break;
-    }
-    // Non-200 with no embedded data: try next URL
-  }
-
-  if (subs.length === 0) {
-    throw new Error(`No subscriptions returned (last status: ${lastStatus}). Check store_id ${store_id} and OAuth credentials.`);
-  }
+  const subs = await fetchSubscriptions(store_id, token);
 
   // Find subscription with pending end_date AND matching next_transaction_date
   let target = subs.find(s =>
@@ -193,8 +206,6 @@ async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate
   if (!subUrl) throw new Error('Subscription self-link missing from API response');
 
   console.log('[restart] PATH B patching:', subUrl);
-  console.log('[restart] PATH B end_date="" next_transaction_date=' + sub_nextdate + 'T00:00:00+00:00');
-
   const patchRes = await httpsReq(
     subUrl,
     { method: 'PATCH', headers: patchHeaders },
@@ -213,11 +224,26 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: CORS, body: 'Method Not Allowed' };
 
-  let sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate;
+  let action, sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate;
   try {
-    ({ sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate } = JSON.parse(event.body || '{}'));
+    ({ action, sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate } = JSON.parse(event.body || '{}'));
   } catch (_) {
     return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid JSON body' }) };
+  }
+
+  // action: 'check' — live verify whether subscription is actually cancelled right now
+  if (action === 'check') {
+    if (!sub_nextdate_current) {
+      return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Missing sub_nextdate_current' }) };
+    }
+    try {
+      const result = await checkSubscription({ store_id, sub_nextdate_current });
+      return { statusCode: 200, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify(result) };
+    } catch (err) {
+      console.error('[restart] check ERROR:', err.message);
+      // On check failure, return cancelled:true so the UI still shows (safe fallback)
+      return { statusCode: 200, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ cancelled: true, reason: 'check_error' }) };
+    }
   }
 
   if (!sub_nextdate) {
