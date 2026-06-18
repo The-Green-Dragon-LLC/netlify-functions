@@ -635,7 +635,7 @@
       + '<div class="cs-box">'
       + '<button class="cs-close" aria-label="Close offer">&times;</button>'
       + '<p class="cs-eyebrow">&#127905; Exclusive One-Time Offer</p>'
-      + '<h2 id="cs-title" class="cs-title">Try Our New Euphoric Products &mdash; ' + discountPct + '% Off!</h2>'
+      + '<h2 id="cs-title" class="cs-title">Special Limited Time Offer &mdash; ' + discountPct + '% Off!</h2>'
       + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site. Limited to ' + maxQty + ' units per customer at the discounted price.</p>'
       + '<div class="cs-products">' + cs.products.map(function (p) { return productCardHTML(p, discountPct); }).join('') + '</div>'
       + '<p class="cs-disclaimer">This discount cannot be combined with other offers or coupon codes.</p>'
