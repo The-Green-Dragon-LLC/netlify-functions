@@ -791,17 +791,26 @@
    */
   function renderCartCrossSell() {
     setTimeout(function () {
+      console.log('[crossell] renderCartCrossSell — GENERICCROSSSELLS:', GENERICCROSSSELLS.length,
+        '| .fc-cart__items found:', !!document.querySelector('.fc-cart__items'));
+
       // Remove any stale injection
       var existing = document.getElementById('tgd-cart-crossell');
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
 
-      if (!GENERICCROSSSELLS.length) return;
+      if (!GENERICCROSSSELLS.length) {
+        console.log('[crossell] renderCartCrossSell — no generic cross-sells configured');
+        return;
+      }
       var cs = GENERICCROSSSELLS[0];
       if (!cs || !cs.products || !cs.products.length) return;
 
       // Target: after the cart items list, before the order-totals sidebar
       var itemsList = document.querySelector('.fc-cart__items');
-      if (!itemsList || !itemsList.parentNode) return;
+      if (!itemsList || !itemsList.parentNode) {
+        console.log('[crossell] renderCartCrossSell — .fc-cart__items not found in DOM');
+        return;
+      }
 
       // Inject styles once per page load
       if (!document.getElementById('tgd-cart-crossell-styles')) {
@@ -815,6 +824,7 @@
       div.id        = 'tgd-cart-crossell';
       div.innerHTML = cartCrossSellHTML(cs);
       itemsList.parentNode.insertBefore(div, itemsList.nextSibling);
+      console.log('[crossell] renderCartCrossSell — widget injected for:', cs.name || cs.products[0].name);
 
       // Add to Cart button
       div.addEventListener('click', function (e) {
@@ -1054,14 +1064,24 @@
 
       if (prevCount === null) {
         prevCount = current; // establish baseline
+        console.log('[crossell] poll baseline:', current, 'items');
       } else if (current > prevCount) {
         prevCount = current;
+        console.log('[crossell] count delta detected — current:', current, '| configLoaded:', configLoaded);
+        var items    = FC.json && FC.json.items;
+        var asArray  = items ? (Array.isArray(items) ? items : Object.keys(items).map(function(k){return items[k];})) : [];
+        var nonPromo = asArray.filter(function(it){return !isPromoItem(it);});
+        console.log('[crossell] non-promo items:', nonPromo.map(function(it){return it.name + ' [cat:' + it.category + ']';}));
+        console.log('[crossell] CATEGORYCROSSSELLS:', CATEGORYCROSSSELLS.map(function(c){return c.primaryCategory+'('+c.parentCategories.join(',')+')';}).join(' | '));
         var cs = findActiveCrossSell();
+        console.log('[crossell] findActiveCrossSell result:', cs ? cs.primaryCategory || 'generic' : 'null');
         if (cs) {
+          console.log('[crossell] alreadyShownFor:', alreadyShownFor(cs), '| key:', shownKeyFor(cs));
           showPopup(cs); // showPopup checks alreadyShownFor(cs) — safe to call every time
         } else if (!configLoaded) {
           // Config hasn't arrived yet — remember to retry once it does
           pendingShow = true;
+          console.log('[crossell] pendingShow set (config not yet loaded)');
         }
       } else {
         prevCount = current;
