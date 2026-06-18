@@ -816,10 +816,15 @@
       var cs = GENERICCROSSSELLS[0];
       if (!cs || !cs.products || !cs.products.length) return;
 
-      // Target: after the items list, before the order-totals area.
-      // Sidecart uses .fc-cart__items; full-page cart uses .cart-item-blocks.
-      var itemsList = document.querySelector('.fc-cart__items') ||
-                      document.querySelector('.cart-item-blocks');
+      // Locate the items container — behaviour differs by cart type:
+      //   Sidecart   → .fc-cart__items  (inject AFTER: widget appears between items and totals sidebar)
+      //   Full-page  → .cart-item-blocks (inject INSIDE/append: widget appears below items in the left column)
+      var itemsList  = document.querySelector('.fc-cart__items');
+      var appendInside = false;
+      if (!itemsList) {
+        itemsList    = document.querySelector('.cart-item-blocks');
+        appendInside = true; // full-page is two-column flex; append inside keeps widget in left column
+      }
       if (!itemsList || !itemsList.parentNode) {
         console.log('[crossell] renderCartCrossSell — cart items container not found in DOM');
         return;
@@ -836,7 +841,11 @@
       var div       = document.createElement('div');
       div.id        = 'tgd-cart-crossell';
       div.innerHTML = cartCrossSellHTML(cs);
-      itemsList.parentNode.insertBefore(div, itemsList.nextSibling);
+      if (appendInside) {
+        itemsList.appendChild(div);                                    // full-page: bottom of items column
+      } else {
+        itemsList.parentNode.insertBefore(div, itemsList.nextSibling); // sidecart: after items container
+      }
       console.log('[crossell] renderCartCrossSell — widget injected for:', cs.name || cs.products[0].name);
 
       // Add to Cart button
