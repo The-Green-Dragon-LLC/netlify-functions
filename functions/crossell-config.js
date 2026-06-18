@@ -133,9 +133,17 @@ async function fetchCategoryCrossSells(base) {
 
       if (!products.length) return null;
 
+      // Always include the primary category name itself so products whose
+      // Foxy category code IS the primary name (e.g. "CBD") still match,
+      // even if no Parent Category sub-records link to this primary category.
+      const parentCats = parentCatsByPrimary[pc.id] || [];
+      const allParentCats = parentCats.includes(pc.name)
+        ? parentCats
+        : [pc.name, ...parentCats];
+
       return {
         primaryCategory:  pc.name,
-        parentCategories: parentCatsByPrimary[pc.id] || [],
+        parentCategories: allParentCats,
         products,
         discountPct:      pc.discountPct,  // integer or null
         maxQty:           pc.maxQty,        // integer or null

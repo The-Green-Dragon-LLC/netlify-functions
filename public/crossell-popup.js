@@ -852,6 +852,11 @@
         }
       }
       configLoaded = true;
+      console.log('[crossell] config loaded —',
+        CATEGORYCROSSSELLS.length, 'category cross-sell(s):',
+        CATEGORYCROSSSELLS.map(function(c){ return c.primaryCategory + ' (' + c.parentCategories.join(', ') + ')'; }),
+        '|', GENERICCROSSSELLS.length, 'generic cross-sell(s)'
+      );
       if (pendingShow && !alreadyShown()) {
         pendingShow = false;
         var cs = findActiveCrossSell();
