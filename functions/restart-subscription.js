@@ -142,24 +142,37 @@ async function fetchSubscriptions(store_id, token) {
 
 /* ─── CHECK: is subscription actually cancelled right now? ──────────────────── */
 
-async function checkSubscription({ store_id, sub_nextdate_current }) {
+async function checkSubscription({ store_id, sub_nextdate_current, sub_enddate_current }) {
   const token = await getAccessToken();
   const subs = await fetchSubscriptions(store_id, token);
 
-  // Find by next_transaction_date
+  // Primary: find by next_transaction_date
   const target = subs.find(s =>
     s.next_transaction_date &&
     s.next_transaction_date.startsWith(sub_nextdate_current)
   );
 
-  if (!target) {
-    // Could not find this subscription by next_transaction_date — don't guess.
-    // Return cancelled:false so we never show restart on an unrelated subscription.
-    return { cancelled: false, reason: 'not_found' };
+  if (target) {
+    const hasFutureEndDate = target.end_date && target.end_date !== '' && !target.end_date.startsWith('0000');
+    return { cancelled: !!hasFutureEndDate, end_date: target.end_date || '' };
   }
 
-  const hasFutureEndDate = target.end_date && target.end_date !== '' && !target.end_date.startsWith('0000');
-  return { cancelled: !!hasFutureEndDate, end_date: target.end_date || '' };
+  // Fallback: FoxyCart may clear next_transaction_date when cancellation is pending,
+  // so look for a subscription whose end_date matches the FC.json sub_enddate.
+  // This is safe — FC.json sub_enddate would be 0000 for active subscriptions so
+  // the JS never reaches here in that case.
+  if (sub_enddate_current && !sub_enddate_current.startsWith('0000')) {
+    const edc = sub_enddate_current.slice(0, 10); // "YYYY-MM-DD"
+    const byEndDate = subs.find(s =>
+      s.end_date && s.end_date.slice(0, 10) === edc
+    );
+    if (byEndDate) {
+      return { cancelled: true, reason: 'found_by_end_date' };
+    }
+  }
+
+  // Cannot verify — play it safe and hide restart UI
+  return { cancelled: false, reason: 'not_found' };
 }
 
 /* ─── PATH B: OAuth — find subscription by next_transaction_date ─────────────── */
@@ -222,9 +235,9 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: CORS, body: 'Method Not Allowed' };
 
-  let action, sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate;
+  let action, sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate, sub_enddate_current;
   try {
-    ({ action, sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate } = JSON.parse(event.body || '{}'));
+    ({ action, sub_token, timestamp, store_domain, store_id, sub_nextdate_current, sub_nextdate, sub_enddate_current } = JSON.parse(event.body || '{}'));
   } catch (_) {
     return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
@@ -235,7 +248,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Missing sub_nextdate_current' }) };
     }
     try {
-      const result = await checkSubscription({ store_id, sub_nextdate_current });
+      const result = await checkSubscription({ store_id, sub_nextdate_current, sub_enddate_current });
       return { statusCode: 200, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify(result) };
     } catch (err) {
       console.error('[restart] check ERROR:', err.message);
