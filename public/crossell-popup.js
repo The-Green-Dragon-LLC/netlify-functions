@@ -360,6 +360,8 @@
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
+    console.log('[crossell] cart URL:', cartUrl);
+
     // On the Foxy cart/checkout domain use direct navigation
     var onFoxyDomain = window.location.hostname === 'secure.thegreendragoncbd.com' ||
                        window.location.hostname.indexOf('foxycart') !== -1 ||
@@ -645,7 +647,9 @@
    * then at full price (1 unit per click).
    */
   function handlePromoAddClick(productCode) {
+    console.log('[crossell] add clicked — code:', productCode, '| ACTIVE_CONFIG:', ACTIVE_CONFIG ? ACTIVE_CONFIG.primaryCategory || 'generic' : 'null');
     var product = getProductByCode(productCode);
+    console.log('[crossell] product lookup:', product ? product.name : 'NOT FOUND');
     if (!product) return;
 
     var useName    = product.name;
@@ -677,12 +681,11 @@
     }
 
     var spaceLeft = PROMO_LIMIT - getPromoQty();
+    var addPrice  = spaceLeft > 0 ? salePrice(usePrice, activeDiscountPct()) : usePrice;
+    var addCat    = spaceLeft > 0 ? PROMO_CATEGORY : 'DEFAULT';
+    console.log('[crossell] addToCart — name:', useName, '| price:', addPrice, '| code:', useCode, '| category:', addCat, '| price input:', usePrice, '| discountPct:', activeDiscountPct());
 
-    if (spaceLeft > 0) {
-      addToCart(useName, salePrice(usePrice, activeDiscountPct()), useCode, PROMO_CATEGORY, 1, useImage, product.url, customOpts);
-    } else {
-      addToCart(useName, usePrice, useCode, 'DEFAULT', 1, useImage, product.url, customOpts);
-    }
+    addToCart(useName, addPrice, useCode, addCat, 1, useImage, product.url, customOpts.length ? customOpts : undefined);
 
     setTimeout(closePopup, 400);
   }
