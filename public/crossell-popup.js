@@ -802,7 +802,13 @@
     // Count-delta polling — fires popup when a non-promo item is added.
     // prevCount baseline is set on first read so pre-existing cart items
     // don't trigger the popup.
-    var prevCount  = null;
+    //
+    // Race condition guard: if an item is added BEFORE the config fetch
+    // completes, findActiveCrossSell() returns null (empty arrays).
+    // pendingShow is set in that case so we retry the moment config arrives.
+    var prevCount    = null;
+    var configLoaded = false;
+    var pendingShow  = false;
 
     var pollTimer = setInterval(function () {
       if (alreadyShown()) { clearInterval(pollTimer); return; }
@@ -819,7 +825,12 @@
       } else if (current > prevCount) {
         prevCount = current;
         var cs = findActiveCrossSell();
-        if (cs) showPopup(cs);
+        if (cs) {
+          showPopup(cs);
+        } else if (!configLoaded) {
+          // Config hasn't arrived yet — remember to retry once it does
+          pendingShow = true;
+        }
       } else {
         prevCount = current;
       }
@@ -829,7 +840,8 @@
 
     setTimeout(function () { clearInterval(pollTimer); }, 60000);
 
-    // Load live config (or session cache) and populate runtime state
+    // Load live config (or session cache) and populate runtime state.
+    // After loading, retry the popup if an item was added during the fetch.
     loadConfig().then(function (config) {
       if (config) {
         if (config.categoryCrossSells && config.categoryCrossSells.length) {
@@ -838,6 +850,12 @@
         if (config.genericCrossSells && config.genericCrossSells.length) {
           GENERICCROSSSELLS = config.genericCrossSells;
         }
+      }
+      configLoaded = true;
+      if (pendingShow && !alreadyShown()) {
+        pendingShow = false;
+        var cs = findActiveCrossSell();
+        if (cs) showPopup(cs);
       }
       updatePromoDisclaimer();
     });
