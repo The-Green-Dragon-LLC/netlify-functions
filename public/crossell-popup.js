@@ -39,8 +39,27 @@
 
   /**
    * URL of the Netlify function that returns live config from Airtable.
+   * Auto-derived from this script's own src so the correct function is called
+   * on both the develop deploy and production — no manual URL updates needed.
    */
-  var CONFIG_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
+  var CONFIG_URL = (function () {
+    try {
+      var s = document.currentScript;
+      if (!s) {
+        // Fallback for browsers without currentScript support
+        var all = document.getElementsByTagName('script');
+        s = all[all.length - 1];
+      }
+      if (s && s.src) {
+        // Strip the script filename to get the deploy base URL, e.g.
+        // "https://develop--wondrous-bublanina-d440ec.netlify.app"
+        var base = s.src.replace(/\/[^\/]*$/, '');
+        return base + '/.netlify/functions/crossell-config';
+      }
+    } catch (e) { /* ignore */ }
+    // Hard-coded fallback if src detection fails
+    return 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
+  })();
 
   /** sessionStorage key for caching the Airtable config (one fetch per session). */
   var CONFIG_CACHE_KEY = 'tgd_crossell_config';
