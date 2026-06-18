@@ -113,31 +113,56 @@ async function restartViaSubToken({ sub_token, timestamp, sub_nextdate, store_do
   throw new Error(`Cart API returned ${res.status}: ${res.text.slice(0, 200)}`);
 }
 
-/* ─── SHARED: fetch subscriptions via OAuth ─────────────────────────────────── */
+/* ─── SHARED: fetch subscriptions via OAuth (paginated) ─────────────────────── */
 
 async function fetchSubscriptions(store_id, token) {
   const getHeaders = {
     'Authorization': `Bearer ${token}`,
     'FOXY-API-VERSION': '1',
   };
-  const candidateUrls = [
-    `https://api.foxycart.com/stores/${store_id}/subscriptions?limit=300`,
-    `https://api.foxycart.com/subscriptions?limit=300`,
-  ];
-  let lastStatus = 0;
-  for (const baseUrl of candidateUrls) {
-    console.log('[restart] fetching:', baseUrl);
-    const res = await httpsReq(baseUrl, { headers: getHeaders });
-    console.log('[restart] fetch status:', res.status, 'total:', res.json && res.json.total);
-    const embedded = res.json && res.json._embedded && res.json._embedded['fx:subscriptions'];
-    if (embedded && embedded.length > 0) {
-      console.log('[restart] got', embedded.length, 'subscriptions');
-      return embedded;
-    }
-    lastStatus = res.status;
-    if (res.ok && (!embedded || embedded.length === 0)) return [];
+
+  // Paginate through all subscriptions starting from the store-nested URL.
+  // FoxyCart uses total_items / returned_items (not "total"), and _links.next
+  // for the next page URL.
+  let allSubs = [];
+  let nextUrl = `https://api.foxycart.com/stores/${store_id}/subscriptions?limit=300`;
+
+  while (nextUrl) {
+    console.log('[restart] fetching page:', nextUrl);
+    const res = await httpsReq(nextUrl, { headers: getHeaders });
+    const data = res.json || {};
+    const page = data._embedded && data._embedded['fx:subscriptions'];
+    console.log(
+      '[restart] page status:', res.status,
+      'total_items:', data.total_items,
+      'returned_items:', data.returned_items,
+      'page_count:', page ? page.length : 0
+    );
+
+    if (!page || page.length === 0) break;
+    allSubs = allSubs.concat(page);
+
+    // Follow _links.next only if there are more items to retrieve
+    const hasMore = data.total_items && allSubs.length < data.total_items;
+    nextUrl = (hasMore && data._links && data._links.next && data._links.next.href) || null;
   }
-  throw new Error(`No subscriptions returned (last status: ${lastStatus}). Check store_id ${store_id} and OAuth credentials.`);
+
+  if (allSubs.length > 0) {
+    console.log('[restart] total subscriptions fetched:', allSubs.length);
+    return allSubs;
+  }
+
+  // Fallback to /subscriptions (no store_id scope)
+  const fallbackUrl = `https://api.foxycart.com/subscriptions?limit=300`;
+  console.log('[restart] fetching fallback:', fallbackUrl);
+  const res2 = await httpsReq(fallbackUrl, { headers: getHeaders });
+  const fallbackPage = res2.json && res2.json._embedded && res2.json._embedded['fx:subscriptions'];
+  if (fallbackPage && fallbackPage.length > 0) {
+    console.log('[restart] fallback got', fallbackPage.length, 'subscriptions');
+    return fallbackPage;
+  }
+
+  throw new Error(`No subscriptions returned. Check store_id ${store_id} and OAuth credentials.`);
 }
 
 /* ─── CHECK: is subscription actually cancelled right now? ──────────────────── */
@@ -145,6 +170,12 @@ async function fetchSubscriptions(store_id, token) {
 async function checkSubscription({ store_id, sub_nextdate_current, sub_enddate_current }) {
   const token = await getAccessToken();
   const subs = await fetchSubscriptions(store_id, token);
+
+  console.log(
+    '[restart] check: searching', subs.length, 'subs',
+    '| nextdate_current:', sub_nextdate_current,
+    '| enddate_current:', sub_enddate_current
+  );
 
   // Primary: find by next_transaction_date
   const target = subs.find(s =>
@@ -154,8 +185,11 @@ async function checkSubscription({ store_id, sub_nextdate_current, sub_enddate_c
 
   if (target) {
     const hasFutureEndDate = target.end_date && target.end_date !== '' && !target.end_date.startsWith('0000');
+    console.log('[restart] check: found by nextdate — end_date:', target.end_date, '→ cancelled:', !!hasFutureEndDate);
     return { cancelled: !!hasFutureEndDate, end_date: target.end_date || '' };
   }
+
+  console.log('[restart] check: not found by nextdate, trying end_date fallback');
 
   // Fallback: FoxyCart may clear next_transaction_date when cancellation is pending,
   // so look for a subscription whose end_date matches the FC.json sub_enddate.
@@ -167,11 +201,14 @@ async function checkSubscription({ store_id, sub_nextdate_current, sub_enddate_c
       s.end_date && s.end_date.slice(0, 10) === edc
     );
     if (byEndDate) {
+      console.log('[restart] check: found by end_date match:', byEndDate.end_date, '→ cancelled: true');
       return { cancelled: true, reason: 'found_by_end_date' };
     }
+    console.log('[restart] check: no end_date match for', edc);
   }
 
   // Cannot verify — play it safe and hide restart UI
+  console.log('[restart] check: not_found → cancelled: false');
   return { cancelled: false, reason: 'not_found' };
 }
 
