@@ -214,7 +214,7 @@ async function checkSubscription({ store_id, sub_nextdate_current, sub_enddate_c
 
 /* ─── PATH B: OAuth — find subscription by next_transaction_date ─────────────── */
 
-async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate }) {
+async function restartViaNextdate({ store_id, sub_nextdate_current, sub_enddate_current, sub_nextdate }) {
   const token = await getAccessToken();
   const patchHeaders = {
     'Authorization': `Bearer ${token}`,
@@ -224,7 +224,13 @@ async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate
 
   const subs = await fetchSubscriptions(store_id, token);
 
-  // Find subscription with pending end_date AND matching next_transaction_date
+  console.log(
+    '[restart] PATH B: searching', subs.length, 'subs',
+    '| nextdate_current:', sub_nextdate_current,
+    '| enddate_current:', sub_enddate_current
+  );
+
+  // Primary: find by next_transaction_date + end_date set
   let target = subs.find(s =>
     s.end_date &&
     s.end_date !== '' &&
@@ -233,14 +239,18 @@ async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate
     s.next_transaction_date.startsWith(sub_nextdate_current)
   );
 
-  // Fallback: any subscription with end_date set (if next_transaction_date changed)
-  if (!target) {
-    console.log('[restart] PATH B: no match by next_transaction_date, trying end_date-only fallback');
+  // Fallback: FoxyCart may clear next_transaction_date when cancellation is pending.
+  // Match by end_date == sub_enddate_current (same logic as checkSubscription).
+  if (!target && sub_enddate_current && !sub_enddate_current.startsWith('0000')) {
+    console.log('[restart] PATH B: no match by next_transaction_date, trying end_date fallback');
+    const edc = sub_enddate_current.slice(0, 10);
     target = subs.find(s =>
       s.end_date &&
-      s.end_date !== '' &&
-      !s.end_date.startsWith('0000')
+      s.end_date.slice(0, 10) === edc
     );
+    if (target) {
+      console.log('[restart] PATH B: found by end_date match:', target.end_date);
+    }
   }
 
   if (!target) {
@@ -253,14 +263,15 @@ async function restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate
   const subUrl = target._links && target._links.self && target._links.self.href;
   if (!subUrl) throw new Error('Subscription self-link missing from API response');
 
-  console.log('[restart] PATH B patching:', subUrl);
-  const patchRes = await httpsReq(
-    subUrl,
-    { method: 'PATCH', headers: patchHeaders },
-    { end_date: '', next_transaction_date: sub_nextdate + 'T00:00:00+00:00' }
-  );
+  // Use FoxyCart's zero-date to clear end_date — empty string is silently ignored.
+  const patchBody = {
+    end_date: '0000-00-00T00:00:00+00:00',
+    next_transaction_date: sub_nextdate + 'T00:00:00+00:00',
+  };
+  console.log('[restart] PATH B patching:', subUrl, '| body:', JSON.stringify(patchBody));
+  const patchRes = await httpsReq(subUrl, { method: 'PATCH', headers: patchHeaders }, patchBody);
 
-  console.log('[restart] PATH B PATCH status:', patchRes.status);
+  console.log('[restart] PATH B PATCH status:', patchRes.status, patchRes.text && patchRes.text.slice(0, 200));
   if (!patchRes.ok) throw new Error(`PATCH failed (${patchRes.status}): ${patchRes.text.slice(0, 200)}`);
 
   return { success: true };
@@ -304,7 +315,7 @@ exports.handler = async (event) => {
     if (sub_token && store_domain) {
       result = await restartViaSubToken({ sub_token, timestamp, sub_nextdate, store_domain });
     } else if (sub_nextdate_current) {
-      result = await restartViaNextdate({ store_id, sub_nextdate_current, sub_nextdate });
+      result = await restartViaNextdate({ store_id, sub_nextdate_current, sub_enddate_current, sub_nextdate });
     } else {
       return {
         statusCode: 400,
