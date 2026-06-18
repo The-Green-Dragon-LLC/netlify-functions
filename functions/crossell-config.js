@@ -29,9 +29,9 @@ const Airtable = require('airtable');
 const BASE_ID                   = 'appWUsGD3byrYcN3l';
 const PRIMARY_CATEGORIES_TABLE  = 'tbliSkVUbug2MYAW7';
 const PARENT_CATEGORIES_TABLE   = 'tbltqhRcmg8d8zHWE';
+const CROSSELLS_TABLE           = 'tblwkNLyvaTJaGgpD'; // Cross-Sells (generic)
 const PRODUCTS_TABLE            = 'tblkLl9qqg654fWi7';
 const VARIANTS_TABLE            = 'tblEtb1aIH5Xk4Nh9';
-// TODO: add CROSSELL_SETTINGS_TABLE id here once created in Airtable
 const PRODUCT_PAGE_BASE_URL     = 'https://www.thegreendragoncbd.com/products/';
 
 const CORS = {
@@ -48,7 +48,7 @@ exports.handler = async (event) => {
   try {
     const [categoryCrossSells, genericCrossSells] = await Promise.all([
       fetchCategoryCrossSells(base),
-      Promise.resolve([]), // placeholder — wire up once Cross-sell Settings table exists
+      fetchGenericCrossSells(base),
     ]);
     return {
       statusCode: 200,
@@ -139,6 +139,49 @@ async function fetchCategoryCrossSells(base) {
         products,
         discountPct:      pc.discountPct,  // integer or null
         maxQty:           pc.maxQty,        // integer or null
+      };
+    })
+    .filter(Boolean);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   GENERIC CROSS-SELLS
+   Fetches active rows from the Cross-Sells table, sorted by Priority.
+   These are shown when no category cross-sell matches the cart contents.
+   The "Select" field carries the trigger type (e.g. "Any item") for future
+   filtering; all active rows are returned here and the popup handles priority.
+───────────────────────────────────────────────────────────────────────── */
+
+async function fetchGenericCrossSells(base) {
+  const rows = [];
+  await base(CROSSELLS_TABLE)
+    .select({
+      fields:          ['Name', 'Active', 'Product', 'Discount', 'Max Qty', 'Select', 'Priority'],
+      filterByFormula: '{Active} = TRUE()',
+      sort:            [{ field: 'Priority', direction: 'asc' }],
+    })
+    .eachPage((records, next) => { records.forEach(r => rows.push(r)); next(); });
+
+  if (!rows.length) return [];
+
+  // Collect all product IDs referenced across active rows
+  const allProductIds = rows.reduce((acc, r) => acc.concat(r.get('Product') || []), []);
+  const productMap    = await buildProductMap(base, [...new Set(allProductIds)]);
+
+  return rows
+    .map(r => {
+      const productIds  = r.get('Product') || [];
+      const rawDiscount = r.get('Discount'); // percent field: 0.4 = 40%
+      const products    = productIds.map(id => productMap[id]).filter(p => p && p.code);
+
+      if (!products.length) return null;
+
+      return {
+        name:        r.get('Name')     || '',
+        trigger:     r.get('Select')   || 'Any item', // trigger type for future use
+        products,
+        discountPct: rawDiscount != null ? Math.round(rawDiscount * 100) : null,
+        maxQty:      r.get('Max Qty')  || null,
       };
     })
     .filter(Boolean);
