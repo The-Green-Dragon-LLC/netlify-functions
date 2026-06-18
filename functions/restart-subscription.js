@@ -272,9 +272,10 @@ async function restartViaNextdate({ store_id, sub_nextdate_current, sub_enddate_
   const subUrl = target._links && target._links.self && target._links.self.href;
   if (!subUrl) throw new Error('Subscription self-link missing from API response');
 
-  // Use FoxyCart's zero-date to clear end_date — empty string is silently ignored.
+  // FoxyCart's REST API represents "no end_date" as an empty string; the zero-date
+  // format (0000-00-00T...) is silently ignored on PATCH.
   const patchBody = {
-    end_date: '0000-00-00T00:00:00+00:00',
+    end_date: '',
     next_transaction_date: sub_nextdate + 'T00:00:00+00:00',
   };
   console.log('[restart] PATH B patching:', subUrl, '| body:', JSON.stringify(patchBody));
