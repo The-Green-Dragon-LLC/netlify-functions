@@ -153,11 +153,9 @@ async function checkSubscription({ store_id, sub_nextdate_current }) {
   );
 
   if (!target) {
-    // Fallback: check any subscription with end_date set
-    const anyWithEndDate = subs.find(s =>
-      s.end_date && s.end_date !== '' && !s.end_date.startsWith('0000')
-    );
-    return { cancelled: !!anyWithEndDate, reason: anyWithEndDate ? 'found_by_end_date' : 'not_found' };
+    // Could not find this subscription by next_transaction_date — don't guess.
+    // Return cancelled:false so we never show restart on an unrelated subscription.
+    return { cancelled: false, reason: 'not_found' };
   }
 
   const hasFutureEndDate = target.end_date && target.end_date !== '' && !target.end_date.startsWith('0000');
@@ -241,8 +239,8 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify(result) };
     } catch (err) {
       console.error('[restart] check ERROR:', err.message);
-      // On check failure, return cancelled:true so the UI still shows (safe fallback)
-      return { statusCode: 200, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ cancelled: true, reason: 'check_error' }) };
+      // On check failure, hide restart UI — a false positive is worse than a missed button.
+      return { statusCode: 200, headers: { ...CORS, 'Content-Type': 'application/json' }, body: JSON.stringify({ cancelled: false, reason: 'check_error' }) };
     }
   }
 
