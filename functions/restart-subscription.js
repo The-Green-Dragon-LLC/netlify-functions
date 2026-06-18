@@ -177,16 +177,25 @@ async function checkSubscription({ store_id, sub_nextdate_current, sub_enddate_c
     '| enddate_current:', sub_enddate_current
   );
 
-  // Primary: find by next_transaction_date
-  const target = subs.find(s =>
+  // Primary: collect ALL subs with matching next_transaction_date, then check if
+  // any of them has end_date set.  A simple .find() would stop at the first match
+  // even if that match is an *active* sub sharing the same next billing date —
+  // causing a false negative when a cancelled sub comes later in the list.
+  const byNextdate = subs.filter(s =>
     s.next_transaction_date &&
     s.next_transaction_date.startsWith(sub_nextdate_current)
   );
 
-  if (target) {
-    const hasFutureEndDate = target.end_date && target.end_date !== '' && !target.end_date.startsWith('0000');
-    console.log('[restart] check: found by nextdate — end_date:', target.end_date, '→ cancelled:', !!hasFutureEndDate);
-    return { cancelled: !!hasFutureEndDate, end_date: target.end_date || '' };
+  if (byNextdate.length > 0) {
+    const cancelled = byNextdate.find(s =>
+      s.end_date && s.end_date !== '' && !s.end_date.startsWith('0000')
+    );
+    console.log(
+      '[restart] check: found', byNextdate.length, 'sub(s) by nextdate —',
+      cancelled ? 'cancelled end_date: ' + cancelled.end_date : 'none cancelled'
+    );
+    if (cancelled) return { cancelled: true, end_date: cancelled.end_date };
+    return { cancelled: false, end_date: '' };
   }
 
   console.log('[restart] check: not found by nextdate, trying end_date fallback');
