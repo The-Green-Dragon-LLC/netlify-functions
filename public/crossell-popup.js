@@ -285,6 +285,17 @@
   }
 
   /**
+   * Normalise a Foxy category code or Airtable category name for comparison.
+   * Strips ALL non-alphanumeric characters so that:
+   *   "CBD Topicals" === "cbd-topicals"
+   *   "CBD Oils / Tinctures" === "cbd-oils-tinctures"
+   *   "Full Spectrum CBD" === "full-spectrum-cbd"
+   */
+  function normaliseCategory(s) {
+    return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  /**
    * Returns true if the cart item has the hidden Foxy option
    * "Restricted Shipping Code" set to "thc".
    */
@@ -329,13 +340,13 @@
       var cs          = CATEGORYCROSSSELLS[c];
       if (!cs.products || !cs.products.length) continue;
 
-      var lowerParents = (cs.parentCategories || []).map(function (p) { return p.toLowerCase(); });
-      var isPrimTHC    = cs.primaryCategory && cs.primaryCategory.toLowerCase() === 'thc';
+      var normParents = (cs.parentCategories || []).map(normaliseCategory);
+      var isPrimTHC   = cs.primaryCategory && cs.primaryCategory.toLowerCase() === 'thc';
 
       for (var i = 0; i < nonPromo.length; i++) {
-        var item = nonPromo[i];
-        var cat  = (item.category || '').toLowerCase();
-        if (lowerParents.indexOf(cat) !== -1) return cs;
+        var item    = nonPromo[i];
+        var normCat = normaliseCategory(item.category);
+        if (normParents.indexOf(normCat) !== -1) return cs;
         if (isPrimTHC && itemHasTHCOption(item)) return cs;
       }
     }
@@ -1062,6 +1073,13 @@
 
       var current = countNonPromoItems();
 
+      // Re-inject cart widget if cart is now open but widget isn't there yet
+      if (GENERICCROSSSELLS.length &&
+          document.querySelector('.fc-cart__items') &&
+          !document.getElementById('tgd-cart-crossell')) {
+        renderCartCrossSell();
+      }
+
       if (prevCount === null) {
         prevCount = current; // establish baseline
         console.log('[crossell] poll baseline:', current, 'items');
@@ -1071,7 +1089,7 @@
         var items    = FC.json && FC.json.items;
         var asArray  = items ? (Array.isArray(items) ? items : Object.keys(items).map(function(k){return items[k];})) : [];
         var nonPromo = asArray.filter(function(it){return !isPromoItem(it);});
-        console.log('[crossell] non-promo items:', nonPromo.map(function(it){return it.name + ' [cat:' + it.category + ']';}));
+        console.log('[crossell] non-promo items:', nonPromo.map(function(it){return it.name + ' [cat:' + it.category + ' → norm:' + normaliseCategory(it.category) + ']';}));
         console.log('[crossell] CATEGORYCROSSSELLS:', CATEGORYCROSSSELLS.map(function(c){return c.primaryCategory+'('+c.parentCategories.join(',')+')';}).join(' | '));
         var cs = findActiveCrossSell();
         console.log('[crossell] findActiveCrossSell result:', cs ? cs.primaryCategory || 'generic' : 'null');
@@ -1110,11 +1128,15 @@
         CATEGORYCROSSSELLS.map(function(c){ return c.primaryCategory + ' (' + c.parentCategories.join(', ') + ')'; }),
         '|', GENERICCROSSSELLS.length, 'generic cross-sell(s)'
       );
-      if (pendingShow) {
-        pendingShow = false;
-        var cs = findActiveCrossSell();
-        if (cs) showPopup(cs);
-      }
+      // Always check for a matching cart item after config loads.
+      // Covers two cases:
+      //   (a) pendingShow — item was added before config fetch completed
+      //   (b) pre-existing cart items — items were already in cart on page load
+      // showPopup() guards against re-showing via alreadyShownFor(cs).
+      pendingShow = false;
+      var cs = findActiveCrossSell();
+      if (cs) showPopup(cs);
+
       updatePromoDisclaimer();
       renderCartCrossSell(); // show in-cart widget now that generic config is loaded
     });
