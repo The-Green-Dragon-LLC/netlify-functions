@@ -816,10 +816,12 @@
       var cs = GENERICCROSSSELLS[0];
       if (!cs || !cs.products || !cs.products.length) return;
 
-      // Target: after the cart items list, before the order-totals sidebar
-      var itemsList = document.querySelector('.fc-cart__items');
+      // Target: after the items list, before the order-totals area.
+      // Sidecart uses .fc-cart__items; full-page cart uses .cart-item-blocks.
+      var itemsList = document.querySelector('.fc-cart__items') ||
+                      document.querySelector('.cart-item-blocks');
       if (!itemsList || !itemsList.parentNode) {
-        console.log('[crossell] renderCartCrossSell — .fc-cart__items not found in DOM');
+        console.log('[crossell] renderCartCrossSell — cart items container not found in DOM');
         return;
       }
 
@@ -1073,9 +1075,10 @@
 
       var current = countNonPromoItems();
 
-      // Re-inject cart widget if cart is now open but widget isn't there yet
+      // Re-inject cart widget if cart is now visible but widget isn't there yet.
+      // Sidecart uses .fc-cart__items; full-page cart uses .cart-item-blocks.
       if (GENERICCROSSSELLS.length &&
-          document.querySelector('.fc-cart__items') &&
+          (document.querySelector('.fc-cart__items') || document.querySelector('.cart-item-blocks')) &&
           !document.getElementById('tgd-cart-crossell')) {
         renderCartCrossSell();
       }
