@@ -835,7 +835,9 @@
         console.log('[crossell] renderCartCrossSell — no generic cross-sells configured');
         return;
       }
-      var cs = GENERICCROSSSELLS[0];
+      // Randomly pick from all active generic cross-sell rows so different
+      // products surface across cart renders and sessions.
+      var cs = GENERICCROSSSELLS[Math.floor(Math.random() * GENERICCROSSSELLS.length)];
       if (!cs || !cs.products || !cs.products.length) return;
 
       // Locate the items container — behaviour differs by cart type:
