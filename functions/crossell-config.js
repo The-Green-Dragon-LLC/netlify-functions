@@ -55,7 +55,7 @@ exports.handler = async (event) => {
       headers: {
         ...CORS,
         'Content-Type':  'application/json',
-        'Cache-Control': 'public, max-age=60, s-maxage=300',
+        'Cache-Control': 'no-store',
       },
       body: JSON.stringify({ categoryCrossSells, genericCrossSells }),
     };
