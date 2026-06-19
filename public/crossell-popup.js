@@ -701,7 +701,9 @@
     var maxQty      = cs.maxQty || DEFAULT_MAX_QTY;
 
     // Pick one product at random so the widget stays compact and varies across sessions
-    var randomProduct = cs.products[Math.floor(Math.random() * cs.products.length)];
+    var pIdx = Math.floor(Math.random() * cs.products.length);
+    var randomProduct = cs.products[pIdx];
+    console.log('[crossell] cartCrossSellHTML — picking product', pIdx, 'of', cs.products.length, ':', randomProduct ? randomProduct.name : 'undefined');
     var productsHTML  = [randomProduct].map(function (p) {
       var sale    = salePrice(p.regularPrice, discountPct);
       var hasVars = p.variants && p.variants.length > 0;
@@ -837,7 +839,10 @@
       }
       // Randomly pick from all active generic cross-sell rows so different
       // products surface across cart renders and sessions.
-      var cs = GENERICCROSSSELLS[Math.floor(Math.random() * GENERICCROSSSELLS.length)];
+      var csIdx = Math.floor(Math.random() * GENERICCROSSSELLS.length);
+      var cs = GENERICCROSSSELLS[csIdx];
+      console.log('[crossell] renderCartCrossSell — picking row', csIdx, 'of', GENERICCROSSSELLS.length,
+        '| row products:', cs ? cs.products.map(function(p){return p.name+'('+p.code+')';}) : 'none');
       if (!cs || !cs.products || !cs.products.length) return;
 
       // Locate the items container — behaviour differs by cart type:
@@ -1181,6 +1186,14 @@
         CATEGORYCROSSSELLS.length, 'category cross-sell(s):',
         CATEGORYCROSSSELLS.map(function(c){ return c.primaryCategory + ' (' + c.parentCategories.join(', ') + ')'; }),
         '|', GENERICCROSSSELLS.length, 'generic cross-sell(s)'
+      );
+      console.log('[crossell] GENERICCROSSSELLS detail:',
+        GENERICCROSSSELLS.map(function(cs, i){
+          return 'row[' + i + '] "' + (cs.name || 'unnamed') + '" — '
+            + cs.products.length + ' product(s): ['
+            + cs.products.map(function(p){ return p.name + ' (' + p.code + ')'; }).join(', ')
+            + ']';
+        })
       );
       // Always check for a matching cart item after config loads.
       // Covers two cases:
