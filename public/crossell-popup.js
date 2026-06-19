@@ -1187,6 +1187,14 @@
         CATEGORYCROSSSELLS.map(function(c){ return c.primaryCategory + ' (' + c.parentCategories.join(', ') + ')'; }),
         '|', GENERICCROSSSELLS.length, 'generic cross-sell(s)'
       );
+      console.log('[crossell] CATEGORYCROSSSELLS products:',
+        CATEGORYCROSSSELLS.map(function(cs, i){
+          return 'row[' + i + '] "' + cs.primaryCategory + '" — '
+            + cs.products.length + ' product(s): ['
+            + cs.products.map(function(p){ return p.name + ' (' + p.code + ')'; }).join(', ')
+            + ']';
+        })
+      );
       console.log('[crossell] GENERICCROSSSELLS detail:',
         GENERICCROSSSELLS.map(function(cs, i){
           return 'row[' + i + '] "' + (cs.name || 'unnamed') + '" — '
