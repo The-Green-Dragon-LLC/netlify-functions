@@ -615,6 +615,11 @@
     '#tgd-cart-crossell .cs-cart-price-sale{font-size:14px;font-weight:800;color:#207348;}',
     '#tgd-cart-crossell .cs-cart-badge{font-size:10px;font-weight:700;background:#e07b00;color:#fff;border-radius:4px;padding:2px 5px;white-space:nowrap;}',
     '#tgd-cart-crossell .cs-cart-variant-select{width:100%;padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:12px;font-family:Lato,sans-serif;color:#333;background:#fff;margin-bottom:7px;cursor:pointer;-webkit-appearance:auto;appearance:auto;}',
+    '#tgd-cart-crossell .cs-cart-qty-wrap{display:flex;align-items:center;gap:5px;margin-bottom:8px;}',
+    '#tgd-cart-crossell .cs-cart-qty-btn{width:26px;height:26px;border:1px solid #c8c8c8;border-radius:4px;background:#fff;color:#333;font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;}',
+    '#tgd-cart-crossell .cs-cart-qty-btn:hover{background:#f0f0f0;}',
+    '#tgd-cart-crossell .cs-cart-qty-input{width:34px;text-align:center;border:1px solid #c8c8c8;border-radius:4px;font-size:13px;padding:3px 0;color:#333;font-family:Lato,sans-serif;-moz-appearance:textfield;}',
+    '#tgd-cart-crossell .cs-cart-qty-input::-webkit-outer-spin-button,#tgd-cart-crossell .cs-cart-qty-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}',
     '#tgd-cart-crossell .cs-cart-add-btn{display:block;width:100%;text-align:center;padding:7px 10px;background:linear-gradient(142deg,#48d88d,#2fa264);color:#fff!important;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:opacity .15s;}',
     '#tgd-cart-crossell .cs-cart-add-btn:hover{opacity:.88;}',
     '#tgd-cart-crossell .cs-cart-add-btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none;}',
@@ -693,6 +698,7 @@
   /** Build the inner HTML for the in-cart cross-sell widget. */
   function cartCrossSellHTML(cs) {
     var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
+    var maxQty      = cs.maxQty || DEFAULT_MAX_QTY;
 
     var productsHTML = cs.products.map(function (p) {
       var sale    = salePrice(p.regularPrice, discountPct);
@@ -719,6 +725,13 @@
           + '</select>';
       }
 
+      var qtyWrap = '<div class="cs-cart-qty-wrap">'
+        + '<button class="cs-cart-qty-btn" data-action="minus" data-product-code="' + p.code + '">&#8722;</button>'
+        + '<input class="cs-cart-qty-input" type="number" min="1" max="' + maxQty + '" value="1"'
+        + ' data-product-code="' + p.code + '" readonly/>'
+        + '<button class="cs-cart-qty-btn" data-action="plus" data-product-code="' + p.code + '">+</button>'
+        + '</div>';
+
       return '<div class="cs-cart-product">'
         + '<img src="' + p.image + '" alt="' + p.name + '" class="cs-cart-img" loading="lazy"/>'
         + '<div class="cs-cart-details">'
@@ -729,6 +742,7 @@
         + '<span class="cs-cart-badge">' + discountPct + '% OFF</span>'
         + '</div>'
         + variantSelect
+        + qtyWrap
         + '<button class="cs-cart-add-btn" data-product-code="' + p.code + '"'
         + (hasVars ? ' disabled' : '') + '>Add to Cart</button>'
         + '</div></div>';
@@ -741,9 +755,10 @@
   /**
    * Handle "Add to Cart" inside the in-cart widget.
    * Adds at promo price while under the generic cross-sell maxQty limit;
-   * falls back to full price once the limit is hit.
+   * any units beyond the limit are added at full price in a second cart call.
    */
-  function handleCartCrossSellAdd(productCode, cs) {
+  function handleCartCrossSellAdd(productCode, cs, qty) {
+    qty = (qty && qty > 0) ? Math.floor(qty) : 1;
     // Find the parent product (productCode may be a variant code)
     var product = null;
     for (var i = 0; i < cs.products.length; i++) {
@@ -783,16 +798,21 @@
       }
     }
 
+    // Split qty across promo and full-price buckets
     var alreadyPromo = getPromoQtyForProduct(useCode);
-    var addCat       = alreadyPromo < maxQty ? PROMO_CATEGORY : 'DEFAULT';
-    var addPrice     = alreadyPromo < maxQty ? salePrice(usePrice, discountPct) : Number(usePrice).toFixed(2);
+    var promoSpace   = Math.max(0, maxQty - alreadyPromo);
+    var promoQty     = Math.min(qty, promoSpace);
+    var overflowQty  = qty - promoQty;
+    var opts         = customOpts.length ? customOpts : undefined;
 
-    addToCart(useName, addPrice, useCode, addCat, 1, useImage, product.url,
-              customOpts.length ? customOpts : undefined);
-
-    // Keep PROMO_LIMIT in sync so the limit notice reflects this cross-sell
-    if (addCat === PROMO_CATEGORY && maxQty > PROMO_LIMIT) {
-      PROMO_LIMIT = maxQty;
+    if (promoQty > 0) {
+      addToCart(useName, salePrice(usePrice, discountPct), useCode, PROMO_CATEGORY,
+                promoQty, useImage, product.url, opts);
+      if (maxQty > PROMO_LIMIT) PROMO_LIMIT = maxQty;
+    }
+    if (overflowQty > 0) {
+      addToCart(useName, Number(usePrice).toFixed(2), useCode, 'DEFAULT',
+                overflowQty, useImage, product.url, opts);
     }
   }
 
@@ -848,11 +868,29 @@
       }
       console.log('[crossell] renderCartCrossSell — widget injected for:', cs.name || cs.products[0].name);
 
-      // Add to Cart button
+      // Stepper +/− and Add to Cart button
       div.addEventListener('click', function (e) {
+        // Quantity stepper
+        var qtyBtn = e.target.closest ? e.target.closest('.cs-cart-qty-btn') : null;
+        if (qtyBtn) {
+          var code   = qtyBtn.getAttribute('data-product-code');
+          var input  = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
+          if (!input) return;
+          var val    = parseInt(input.value, 10) || 1;
+          var maxVal = parseInt(input.getAttribute('max'), 10) || DEFAULT_MAX_QTY;
+          if (qtyBtn.getAttribute('data-action') === 'minus') val = Math.max(1, val - 1);
+          if (qtyBtn.getAttribute('data-action') === 'plus')  val = Math.min(maxVal, val + 1);
+          input.value = val;
+          return;
+        }
+
+        // Add to Cart button — read quantity from the stepper
         var btn = e.target.closest ? e.target.closest('.cs-cart-add-btn') : null;
         if (!btn || btn.disabled) return;
-        handleCartCrossSellAdd(btn.getAttribute('data-product-code'), cs);
+        var code     = btn.getAttribute('data-product-code');
+        var qtyInput = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
+        var qty      = qtyInput ? (parseInt(qtyInput.value, 10) || 1) : 1;
+        handleCartCrossSellAdd(code, cs, qty);
       });
 
       // Variant select — enable button and update displayed prices/image
