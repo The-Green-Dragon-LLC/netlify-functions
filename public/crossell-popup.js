@@ -700,7 +700,9 @@
     var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
     var maxQty      = cs.maxQty || DEFAULT_MAX_QTY;
 
-    var productsHTML = cs.products.map(function (p) {
+    // Pick one product at random so the widget stays compact and varies across sessions
+    var randomProduct = cs.products[Math.floor(Math.random() * cs.products.length)];
+    var productsHTML  = [randomProduct].map(function (p) {
       var sale    = salePrice(p.regularPrice, discountPct);
       var hasVars = p.variants && p.variants.length > 0;
 
