@@ -83,6 +83,16 @@
    */
   var PROMO_LIMIT = DEFAULT_MAX_QTY;
 
+  /**
+   * Resolve the effective promo unit limit for a cross-sell config.
+   * A null/undefined maxQty (e.g. Airtable "Max Qty" left blank) means
+   * "no maximum" → Infinity. The hardcoded fallback config supplies
+   * DEFAULT_MAX_QTY explicitly, so it still enforces a limit.
+   */
+  function effectiveMaxQty(cs) {
+    return (cs && cs.maxQty != null) ? cs.maxQty : Infinity;
+  }
+
   /** Fallback Foxy store domain (auto-detected from FC.json when available). */
   var STORE_DOMAIN = 'thegreendragoncbd.foxycart.com';
 
@@ -673,7 +683,10 @@
 
   function popupHTML(cs) {
     var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
-    var maxQty      = cs.maxQty || DEFAULT_MAX_QTY;
+    var maxQty      = effectiveMaxQty(cs);
+    var limitText   = isFinite(maxQty)
+      ? ' Limited to ' + maxQty + ' units per customer at the discounted price.'
+      : '';
 
     return '<div id="tgd-crossell" role="dialog" aria-modal="true" aria-labelledby="cs-title" style="display:none;">'
       + '<div class="cs-backdrop"></div>'
@@ -681,7 +694,7 @@
       + '<button class="cs-close" aria-label="Close offer">&times;</button>'
       + '<p class="cs-eyebrow">&#127905; Exclusive One-Time Offer</p>'
       + '<h2 id="cs-title" class="cs-title">Special Limited Time Offer &mdash; ' + discountPct + '% Off!</h2>'
-      + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site. Limited to ' + maxQty + ' units per customer at the discounted price.</p>'
+      + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site.' + limitText + '</p>'
       + '<div class="cs-products">' + cs.products.map(function (p) { return productCardHTML(p, discountPct); }).join('') + '</div>'
       + '<p class="cs-disclaimer">This discount cannot be combined with other offers or coupon codes.</p>'
       + '<button class="cs-decline">No thanks, I\'ll skip this offer</button>'
@@ -698,7 +711,7 @@
   /** Build the inner HTML for the in-cart cross-sell widget. */
   function cartCrossSellHTML(cs) {
     var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
-    var maxQty      = cs.maxQty || DEFAULT_MAX_QTY;
+    var maxQty      = effectiveMaxQty(cs);
 
     // Pick one product at random so the widget stays compact and varies across sessions
     var pIdx = Math.floor(Math.random() * cs.products.length);
@@ -731,7 +744,7 @@
 
       var qtyWrap = '<div class="cs-cart-qty-wrap">'
         + '<button class="cs-cart-qty-btn" data-action="minus" data-product-code="' + p.code + '">&#8722;</button>'
-        + '<input class="cs-cart-qty-input" type="number" min="1" max="' + maxQty + '" value="1"'
+        + '<input class="cs-cart-qty-input" type="number" min="1"' + (isFinite(maxQty) ? ' max="' + maxQty + '"' : '') + ' value="1"'
         + ' data-product-code="' + p.code + '" readonly/>'
         + '<button class="cs-cart-qty-btn" data-action="plus" data-product-code="' + p.code + '">+</button>'
         + '</div>';
@@ -776,7 +789,7 @@
     if (!product) return;
 
     var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
-    var maxQty      = cs.maxQty || DEFAULT_MAX_QTY;
+    var maxQty      = effectiveMaxQty(cs);
 
     var useCode = productCode;
     var useName = product.name;
@@ -886,7 +899,8 @@
           var input  = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
           if (!input) return;
           var val    = parseInt(input.value, 10) || 1;
-          var maxVal = parseInt(input.getAttribute('max'), 10) || DEFAULT_MAX_QTY;
+          var maxAttr = input.getAttribute('max');
+          var maxVal  = maxAttr ? (parseInt(maxAttr, 10) || Infinity) : Infinity; // no max attr = unlimited
           if (qtyBtn.getAttribute('data-action') === 'minus') val = Math.max(1, val - 1);
           if (qtyBtn.getAttribute('data-action') === 'plus')  val = Math.min(maxVal, val + 1);
           input.value = val;
@@ -1011,7 +1025,7 @@
 
     // Lock in this session's config for the popup that just fired
     ACTIVE_CONFIG = cs;
-    PROMO_LIMIT   = (cs.maxQty != null) ? cs.maxQty : DEFAULT_MAX_QTY;
+    PROMO_LIMIT   = effectiveMaxQty(cs);
 
     markShownFor(cs);
 
