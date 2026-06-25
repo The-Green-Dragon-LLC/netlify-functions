@@ -244,6 +244,15 @@
     return found ? effectiveMaxQty(found.cs) : Infinity;
   }
 
+  /**
+   * Quantity of a cart item as a Number. Foxy sometimes reports item.quantity
+   * as a string, so a bare `total += item.quantity` concatenates instead of
+   * adding (e.g. 0 + "1" → "01"). Always coerce before doing arithmetic.
+   */
+  function itemQty(item) {
+    return parseInt(item && item.quantity, 10) || 0;
+  }
+
   /** Returns true if a cart item was added as a cross-sell promo item. */
   function isPromoItem(item) {
     // Primary: check for the hidden marker option (reliable regardless of Foxy category)
@@ -263,7 +272,7 @@
     var total   = 0;
     var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
     for (var i = 0; i < asArray.length; i++) {
-      if (isPromoItem(asArray[i])) total += (asArray[i].quantity || 0);
+      if (isPromoItem(asArray[i])) total += itemQty(asArray[i]);
     }
     return total;
   }
@@ -276,7 +285,7 @@
     var total   = 0;
     for (var i = 0; i < asArray.length; i++) {
       if (isPromoItem(asArray[i]) && asArray[i].code === code) {
-        total += (asArray[i].quantity || 0);
+        total += itemQty(asArray[i]);
       }
     }
     return total;
@@ -303,7 +312,7 @@
     var total   = 0;
     var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
     for (var i = 0; i < asArray.length; i++) {
-      if (!isPromoItem(asArray[i])) total += (asArray[i].quantity || 1);
+      if (!isPromoItem(asArray[i])) total += (itemQty(asArray[i]) || 1);
     }
     return total;
   }
@@ -356,20 +365,31 @@
   }
 
   /**
-   * Scan the cart and return the first matching CATEGORY cross-sell config.
-   * Generic cross-sells are handled separately via the in-cart widget (renderCartCrossSell).
+   * Return the first matching CATEGORY cross-sell config for a set of cart
+   * items. Generic cross-sells are handled separately via the in-cart widget
+   * (renderCartCrossSell).
    *
    *   1. Category cross-sells — matched by Foxy category code or THC shipping option
    *   2. Hardcoded fallback   — used when config fetch failed (legacy behaviour)
    *
+   * @param {Array} [candidateItems] Items to match against — typically the
+   *   item(s) JUST added, so the popup reflects the new product rather than
+   *   whatever already sits in the cart (e.g. adding CBD while THC is in the
+   *   cart should surface the CBD cross-sell, not THC). Defaults to all
+   *   non-promo cart items (used when checking pre-existing items on load).
    * Returns a config object or null.
    */
-  function findActiveCrossSell() {
+  function findActiveCrossSell(candidateItems) {
     var items = window.FC && FC.json && FC.json.items;
     if (!items) return null;
 
-    var asArray  = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
-    var nonPromo = asArray.filter(function (it) { return !isPromoItem(it); });
+    var nonPromo;
+    if (candidateItems) {
+      nonPromo = candidateItems.filter(function (it) { return !isPromoItem(it); });
+    } else {
+      var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+      nonPromo = asArray.filter(function (it) { return !isPromoItem(it); });
+    }
 
     // 1. Category cross-sells (popup only)
     for (var c = 0; c < CATEGORYCROSSSELLS.length; c++) {
@@ -533,7 +553,7 @@
       var limit = maxQtyForCode(cartItem.code);
       if (!isFinite(limit)) return; // no maximum for this product — let Foxy handle it
 
-      var otherPromoQty = getPromoQtyForProduct(cartItem.code) - (cartItem.quantity || 0);
+      var otherPromoQty = getPromoQtyForProduct(cartItem.code) - itemQty(cartItem);
       var maxAllowed    = Math.max(1, limit - otherPromoQty);
       if (newQty <= maxAllowed) return;
 
@@ -1167,9 +1187,36 @@
     // Race condition guard: if an item is added BEFORE the config fetch
     // completes, findActiveCrossSell() returns null (empty arrays).
     // pendingShow is set in that case so we retry the moment config arrives.
-    var prevCount    = null;
-    var configLoaded = false;
-    var pendingShow  = false;
+    var prevCount     = null;
+    var prevQtyByCode = {};   // snapshot of non-promo qty per product code, to spot what was just added
+    var pendingItems  = null; // items added before config loaded — retried once config arrives
+    var configLoaded  = false;
+    var pendingShow   = false;
+
+    // Build a { code: totalQty } map of the current non-promo cart items.
+    function snapshotNonPromoQty() {
+      var items   = window.FC && FC.json && FC.json.items;
+      var map     = {};
+      if (!items) return map;
+      var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+      for (var i = 0; i < asArray.length; i++) {
+        var it = asArray[i];
+        if (isPromoItem(it)) continue;
+        map[it.code] = (map[it.code] || 0) + itemQty(it);
+      }
+      return map;
+    }
+
+    // Return the non-promo items whose quantity increased vs the previous
+    // snapshot — i.e. what the customer just added.
+    function newlyAddedItems(curMap) {
+      var items   = window.FC && FC.json && FC.json.items;
+      if (!items) return [];
+      var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+      return asArray.filter(function (it) {
+        return !isPromoItem(it) && (curMap[it.code] || 0) > (prevQtyByCode[it.code] || 0);
+      });
+    }
 
     var pollTimer = setInterval(function () {
       if (!(window.FC && FC.json && FC.json.items)) {
@@ -1187,29 +1234,35 @@
         renderCartCrossSell();
       }
 
+      var curMap = snapshotNonPromoQty();
+
       if (prevCount === null) {
-        prevCount = current; // establish baseline
+        prevCount     = current; // establish baseline
+        prevQtyByCode = curMap;
         console.log('[crossell] poll baseline:', current, 'items');
       } else if (current > prevCount) {
-        prevCount = current;
         console.log('[crossell] count delta detected — current:', current, '| configLoaded:', configLoaded);
-        var items    = FC.json && FC.json.items;
-        var asArray  = items ? (Array.isArray(items) ? items : Object.keys(items).map(function(k){return items[k];})) : [];
-        var nonPromo = asArray.filter(function(it){return !isPromoItem(it);});
-        console.log('[crossell] non-promo items:', nonPromo.map(function(it){return it.name + ' [cat:' + it.category + ' → norm:' + normaliseCategory(it.category) + ']';}));
+        // Match the cross-sell against only the item(s) just added, so the
+        // popup reflects the new product rather than anything already in cart.
+        var added = newlyAddedItems(curMap);
+        prevCount     = current;
+        prevQtyByCode = curMap;
+        console.log('[crossell] newly added:', added.map(function(it){return it.name + ' [cat:' + it.category + ' → norm:' + normaliseCategory(it.category) + ']';}));
         console.log('[crossell] CATEGORYCROSSSELLS:', CATEGORYCROSSSELLS.map(function(c){return c.primaryCategory+'('+c.parentCategories.join(',')+')';}).join(' | '));
-        var cs = findActiveCrossSell();
+        var cs = findActiveCrossSell(added.length ? added : null);
         console.log('[crossell] findActiveCrossSell result:', cs ? cs.primaryCategory || 'generic' : 'null');
         if (cs) {
           console.log('[crossell] alreadyShownFor:', alreadyShownFor(cs), '| key:', shownKeyFor(cs));
           showPopup(cs); // showPopup checks alreadyShownFor(cs) — safe to call every time
         } else if (!configLoaded) {
-          // Config hasn't arrived yet — remember to retry once it does
-          pendingShow = true;
+          // Config hasn't arrived yet — remember the new items and retry once it does
+          pendingShow  = true;
+          pendingItems = added.length ? added : null;
           console.log('[crossell] pendingShow set (config not yet loaded)');
         }
       } else {
-        prevCount = current;
+        prevCount     = current;
+        prevQtyByCode = curMap;
       }
 
       updatePromoDisclaimer();
@@ -1253,11 +1306,15 @@
       );
       // Always check for a matching cart item after config loads.
       // Covers two cases:
-      //   (a) pendingShow — item was added before config fetch completed
-      //   (b) pre-existing cart items — items were already in cart on page load
+      //   (a) pendingShow — item was added before config fetch completed: match
+      //       only those just-added items so the popup reflects the new product.
+      //   (b) pre-existing cart items — items were already in cart on page load:
+      //       match against the whole cart.
       // showPopup() guards against re-showing via alreadyShownFor(cs).
-      pendingShow = false;
-      var cs = findActiveCrossSell();
+      var retryItems = (pendingShow && pendingItems) ? pendingItems : null;
+      pendingShow  = false;
+      pendingItems = null;
+      var cs = findActiveCrossSell(retryItems);
       if (cs) showPopup(cs);
 
       updatePromoDisclaimer();
