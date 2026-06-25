@@ -187,20 +187,40 @@
   }
 
   /**
-   * Look up a product config by its Foxy product code, searching
-   * parent codes and variant codes so variant cart items are found.
-   * Returns the parent product object in both cases.
+   * Find the cross-sell a Foxy product code belongs to, searching EVERY
+   * loaded config (category + generic) plus the hardcoded fallback — not
+   * just ACTIVE_CONFIG. This matters on the cart page, where no popup has
+   * fired, so cart-side logic (limits, overflow) can still resolve the
+   * product and its true max qty.
+   * Returns { cs, product, variant } (product is always the parent;
+   * variant is null when the code is a parent code) or null.
    */
-  function getProductByCode(code) {
-    var prods = activeProducts();
-    for (var i = 0; i < prods.length; i++) {
-      if (prods[i].code === code) return prods[i];
-      var vars = prods[i].variants || [];
-      for (var j = 0; j < vars.length; j++) {
-        if (vars[j].code === code) return prods[i];
+  function findCrossSellByCode(code) {
+    var configs = CATEGORYCROSSSELLS.concat(GENERICCROSSSELLS);
+    if (CROSSELL_PRODUCTS_FALLBACK.length) {
+      configs = configs.concat([{ products: CROSSELL_PRODUCTS_FALLBACK, maxQty: DEFAULT_MAX_QTY }]);
+    }
+    for (var c = 0; c < configs.length; c++) {
+      var prods = configs[c].products || [];
+      for (var i = 0; i < prods.length; i++) {
+        if (prods[i].code === code) return { cs: configs[c], product: prods[i], variant: null };
+        var vars = prods[i].variants || [];
+        for (var j = 0; j < vars.length; j++) {
+          if (vars[j].code === code) return { cs: configs[c], product: prods[i], variant: vars[j] };
+        }
       }
     }
     return null;
+  }
+
+  /**
+   * Look up a product config by its Foxy product code, searching parent
+   * codes and variant codes so variant cart items are found.
+   * Returns the parent product object in both cases.
+   */
+  function getProductByCode(code) {
+    var found = findCrossSellByCode(code);
+    return found ? found.product : null;
   }
 
   /**
@@ -208,14 +228,20 @@
    * variant object or null.
    */
   function getVariantByCode(code) {
-    var prods = activeProducts();
-    for (var i = 0; i < prods.length; i++) {
-      var vars = prods[i].variants || [];
-      for (var j = 0; j < vars.length; j++) {
-        if (vars[j].code === code) return vars[j];
-      }
-    }
-    return null;
+    var found = findCrossSellByCode(code);
+    return (found && found.variant) ? found.variant : null;
+  }
+
+  /**
+   * The promo unit limit that applies to a given Foxy product code, taken
+   * from the cross-sell config that owns it. Returns Infinity when the code
+   * isn't found in any loaded config (don't enforce a limit we can't justify).
+   * Used by cart-side enforcement/disclaimer so the correct per-product limit
+   * applies even on a fresh page load where the global PROMO_LIMIT is stale.
+   */
+  function maxQtyForCode(code) {
+    var found = findCrossSellByCode(code);
+    return found ? effectiveMaxQty(found.cs) : Infinity;
   }
 
   /** Returns true if a cart item was added as a cross-sell promo item. */
@@ -451,20 +477,23 @@
       var promoItems = asArray.filter(isPromoItem);
       if (!promoItems.length) return;
 
-      var totalPromoQty = promoItems.reduce(function (sum, it) { return sum + (it.quantity || 0); }, 0);
-
-      var hasOverflow = asArray.some(function (it) {
-        if (isPromoItem(it)) return false;
-        return promoItems.some(function (p) { return p.code === it.code; });
-      });
-
-      if (!hasOverflow && totalPromoQty <= PROMO_LIMIT) return;
-
-      var msg = '⚠️  The promotional price is limited to '
-              + PROMO_LIMIT + ' units. '
-              + 'Additional units have been added to your cart at the regular price.';
-
+      // Evaluate each promo item against the limit for ITS OWN product code,
+      // resolved from the loaded config — not the stale global PROMO_LIMIT.
       promoItems.forEach(function (it) {
+        var limit = maxQtyForCode(it.code);
+        if (!isFinite(limit)) return; // no maximum for this product — never warn
+
+        var promoQtyForCode = getPromoQtyForProduct(it.code);
+        var hasOverflow = asArray.some(function (other) {
+          return !isPromoItem(other) && other.code === it.code;
+        });
+
+        if (!hasOverflow && promoQtyForCode <= limit) return;
+
+        var msg = '⚠️  The promotional price is limited to '
+                + limit + ' units. '
+                + 'Additional units have been added to your cart at the regular price.';
+
         var el = document.querySelector('[data-fc-item-id="' + it.id + '"]');
         if (!el) return;
         el.insertAdjacentHTML('afterend',
@@ -501,8 +530,11 @@
       var newQty = parseInt(input.value, 10);
       if (isNaN(newQty) || newQty <= 0) return;
 
-      var otherPromoQty = getPromoQty() - (cartItem.quantity || 0);
-      var maxAllowed    = Math.max(1, PROMO_LIMIT - otherPromoQty);
+      var limit = maxQtyForCode(cartItem.code);
+      if (!isFinite(limit)) return; // no maximum for this product — let Foxy handle it
+
+      var otherPromoQty = getPromoQtyForProduct(cartItem.code) - (cartItem.quantity || 0);
+      var maxAllowed    = Math.max(1, limit - otherPromoQty);
       if (newQty <= maxAllowed) return;
 
       var overflowQty = newQty - maxAllowed;
@@ -547,7 +579,9 @@
       var cartItem = getCartItemByFcId(fcItemId);
       if (!cartItem) return;
       if (!isPromoItem(cartItem)) return;
-      if (getPromoQty() < PROMO_LIMIT) return; // still under limit — let Foxy handle it
+      // Compare against this product's own limit, resolved from the loaded
+      // config (the global PROMO_LIMIT is stale on a fresh cart page).
+      if (getPromoQtyForProduct(cartItem.code) < maxQtyForCode(cartItem.code)) return; // under limit — let Foxy increment at promo price
 
       e.stopPropagation();
       e.preventDefault();
