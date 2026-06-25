@@ -554,9 +554,6 @@
 
       var asArray    = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
       var promoItems = asArray.filter(isPromoItem);
-      console.log('[crossell] disclaimer — cart items:', asArray.map(function (x) {
-        return x.name + ' {id:' + x.id + ', code:' + x.code + ', qty:' + x.quantity + ', cat:' + x.category + ', promo:' + isPromoItem(x) + '}';
-      }));
       if (!promoItems.length) return;
 
       var unanchored = []; // notices we couldn't place next to a line item (e.g. sidecart markup)
@@ -568,10 +565,6 @@
           return !isPromoItem(other) && other.code === it.code;
         });
         var limit = maxQtyForCode(it.code);
-        console.log('[crossell] disclaimer check — code:', it.code, '| promoQty:', promoQtyForCode,
-          '| limit:', limit, '| hasOverflow:', hasOverflow,
-          '| willShow:', !(!hasOverflow && (!isFinite(limit) || promoQtyForCode <= limit)),
-          '| anchorFound:', !!document.querySelector('[data-fc-item-id="' + it.id + '"]'));
 
         // Warn when full-price overflow units were actually added, OR when the
         // promo quantity exceeds a known finite limit. If neither holds (no
