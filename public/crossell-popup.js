@@ -483,6 +483,14 @@
      6.  PROMO LIMIT DISCLAIMER
      ══════════════════════════════════════════════════════════════════════════ */
 
+  function promoNoticeHTML(msg) {
+    return '<div class="cs-promo-limit-notice" style="'
+      + 'font-size:11px;line-height:1.4;color:#7a3c00;'
+      + 'background:#fff8f0;border:1px solid #f5cba0;border-radius:5px;'
+      + 'padding:5px 10px;margin:2px 0 8px;font-family:Lato,sans-serif;'
+      + '">' + msg + '</div>';
+  }
+
   function updatePromoDisclaimer() {
     setTimeout(function () {
       var old = document.querySelectorAll('.cs-promo-limit-notice');
@@ -497,33 +505,52 @@
       var promoItems = asArray.filter(isPromoItem);
       if (!promoItems.length) return;
 
-      // Evaluate each promo item against the limit for ITS OWN product code,
-      // resolved from the loaded config — not the stale global PROMO_LIMIT.
-      promoItems.forEach(function (it) {
-        var limit = maxQtyForCode(it.code);
-        if (!isFinite(limit)) return; // no maximum for this product — never warn
+      var unanchored = []; // notices we couldn't place next to a line item (e.g. sidecart markup)
 
+      // Evaluate each promo item against the limit for ITS OWN product code.
+      promoItems.forEach(function (it) {
         var promoQtyForCode = getPromoQtyForProduct(it.code);
         var hasOverflow = asArray.some(function (other) {
           return !isPromoItem(other) && other.code === it.code;
         });
+        var limit = maxQtyForCode(it.code);
 
-        if (!hasOverflow && promoQtyForCode <= limit) return;
+        // Warn when full-price overflow units were actually added, OR when the
+        // promo quantity exceeds a known finite limit. If neither holds (no
+        // overflow and either no limit or still within it), there's nothing to
+        // say. Note: we do NOT bail just because the limit is Infinity — if
+        // overflow exists the customer needs the notice regardless of whether
+        // the code resolves back to a config row.
+        if (!hasOverflow && (!isFinite(limit) || promoQtyForCode <= limit)) return;
 
-        var msg = '⚠️  The promotional price is limited to '
-                + limit + ' units. '
+        // The cap that was actually applied: the resolved finite limit, or —
+        // when the limit can't be resolved but overflow happened — the promo
+        // quantity in the cart (which equals the cap handleCartCrossSellAdd used).
+        var shownLimit = isFinite(limit) ? limit : promoQtyForCode;
+
+        var msg = '⚠️  The promotional price is limited to ' + shownLimit + ' units. '
                 + 'Additional units have been added to your cart at the regular price.';
 
         var el = document.querySelector('[data-fc-item-id="' + it.id + '"]');
-        if (!el) return;
-        el.insertAdjacentHTML('afterend',
-          '<div class="cs-promo-limit-notice" style="'
-          + 'font-size:11px;line-height:1.4;color:#7a3c00;'
-          + 'background:#fff8f0;border:1px solid #f5cba0;border-radius:5px;'
-          + 'padding:5px 10px;margin:2px 0 8px;font-family:Lato,sans-serif;'
-          + '">' + msg + '</div>'
-        );
+        if (el) {
+          el.insertAdjacentHTML('afterend', promoNoticeHTML(msg));
+        } else {
+          unanchored.push(msg);
+        }
       });
+
+      // Fallback: if any notice couldn't be anchored to its line item, show it
+      // once at the top of the cart items container so it's still visible.
+      // Sidecart uses .fc-cart__items; full-page cart uses .cart-item-blocks.
+      if (unanchored.length) {
+        var container = document.querySelector('.fc-cart__items') || document.querySelector('.cart-item-blocks');
+        if (container) {
+          var seen = {};
+          var html = unanchored.filter(function (m) { if (seen[m]) return false; seen[m] = 1; return true; })
+                               .map(promoNoticeHTML).join('');
+          container.insertAdjacentHTML('afterbegin', html);
+        }
+      }
     }, 300);
   }
 
