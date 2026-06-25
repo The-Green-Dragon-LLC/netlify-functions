@@ -743,10 +743,10 @@
       }
 
       var qtyWrap = '<div class="cs-cart-qty-wrap">'
-        + '<button class="cs-cart-qty-btn" data-action="minus" data-product-code="' + p.code + '">&#8722;</button>'
+        + '<button type="button" class="cs-cart-qty-btn" data-action="minus" data-product-code="' + p.code + '">&#8722;</button>'
         + '<input class="cs-cart-qty-input" type="number" min="1"' + (isFinite(maxQty) ? ' max="' + maxQty + '"' : '') + ' value="1"'
         + ' data-product-code="' + p.code + '" readonly/>'
-        + '<button class="cs-cart-qty-btn" data-action="plus" data-product-code="' + p.code + '">+</button>'
+        + '<button type="button" class="cs-cart-qty-btn" data-action="plus" data-product-code="' + p.code + '">+</button>'
         + '</div>';
 
       return '<div class="cs-cart-product">'
@@ -760,7 +760,7 @@
         + '</div>'
         + variantSelect
         + qtyWrap
-        + '<button class="cs-cart-add-btn" data-product-code="' + p.code + '"'
+        + '<button type="button" class="cs-cart-add-btn" data-product-code="' + p.code + '"'
         + (hasVars ? ' disabled' : '') + '>Add to Cart</button>'
         + '</div></div>';
     }).join('');
