@@ -479,6 +479,57 @@
     }
   }
 
+  /**
+   * Set an existing cart item's quantity — a Foxy "update" request keyed by the
+   * FC.json item id (the documented way to modify an item already in the cart).
+   * Used to reliably cap a promo line on BOTH the full-page cart and the
+   * sidecart, where writing input.value does not commit. Prefers Foxy's AJAX
+   * client; falls back to the same hidden-link navigation addToCart uses.
+   * Returns a promise that resolves once the request has been issued, so the
+   * caller can add overflow afterward without racing the cap.
+   */
+  function updateCartItemQty(itemId, qty) {
+    var json     = window.FC && FC.json;
+    var domain   = (json && json.config && json.config.store_domain) || STORE_DOMAIN;
+    var sessName = (json && json.session_name) || '';
+    var sessId   = (json && json.session_id)   || '';
+
+    var query = 'id=' + encodeURIComponent(itemId) + '&quantity=' + encodeURIComponent(qty);
+    if (sessName && sessId) {
+      query += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
+    }
+    var url = 'https://' + domain + '/cart?' + query;
+    console.log('[crossell] update cart item', itemId, '→ qty', qty);
+
+    // Preferred: Foxy's AJAX client updates the cart in place (no navigation),
+    // which is what the sidecart relies on.
+    if (window.FC && FC.client && typeof FC.client.request === 'function') {
+      try {
+        var p = FC.client.request(url);
+        if (p && typeof p.then === 'function') return p;
+        return Promise.resolve();
+      } catch (e) {
+        console.warn('[crossell] FC.client.request failed, falling back to link', e);
+      }
+    }
+
+    // Fallback: same hidden-link technique as addToCart.
+    return new Promise(function (resolve) {
+      var onFoxyDomain = window.location.hostname === 'secure.thegreendragoncbd.com' ||
+                         window.location.hostname.indexOf('foxycart') !== -1 ||
+                         window.location.hostname.indexOf('foxy.io')  !== -1;
+      if (onFoxyDomain) { window.location.href = url; resolve(); return; }
+      var link = document.createElement('a');
+      link.style.position = 'absolute';
+      link.style.top      = '-9999px';
+      link.style.left     = '-9999px';
+      link.href = url;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(function () { if (link.parentNode) link.parentNode.removeChild(link); resolve(); }, 250);
+    });
+  }
+
   /* ══════════════════════════════════════════════════════════════════════════
      6.  PROMO LIMIT DISCLAIMER
      ══════════════════════════════════════════════════════════════════════════ */
@@ -585,7 +636,7 @@
       if (newQty <= maxAllowed) return;
 
       var overflowQty = newQty - maxAllowed;
-      input.value     = maxAllowed; // cap before Foxy reads it
+      input.value     = maxAllowed; // immediate cap — commits on the full-page cart
 
       var product      = getProductByCode(cartItem.code);
       var variant      = getVariantByCode(cartItem.code);
@@ -599,11 +650,16 @@
                n !== 'airtablerecordid'   && n !== 'heavydrink' && n !== 'crossellpromo';
       });
 
-      addToCart(
-        cartItem.name, overflowPrice, cartItem.code, 'DEFAULT',
-        overflowQty, overflowImage, product.url,
-        overflowOpts.length ? overflowOpts : undefined
-      );
+      // Reliably cap the promo line (input.value alone doesn't commit in the
+      // sidecart), THEN add the excess at full price once the cap is issued so
+      // the two cart writes don't race.
+      updateCartItemQty(cartItem.id, maxAllowed).then(function () {
+        addToCart(
+          cartItem.name, overflowPrice, cartItem.code, 'DEFAULT',
+          overflowQty, overflowImage, product.url,
+          overflowOpts.length ? overflowOpts : undefined
+        );
+      });
     }, true);
   }
 
@@ -647,11 +703,22 @@
                  n !== 'crossellpromo';
         });
 
-        addToCart(
-          cartItem.name, overflowPrice, cartItem.code, 'DEFAULT',
-          1, overflowImage, product.url,
-          overflowOpts.length ? overflowOpts : undefined
-        );
+        var doAdd = function () {
+          addToCart(
+            cartItem.name, overflowPrice, cartItem.code, 'DEFAULT',
+            1, overflowImage, product.url,
+            overflowOpts.length ? overflowOpts : undefined
+          );
+        };
+
+        // preventDefault may not stop the sidecart's own increment, so force
+        // the promo line back to its limit, then add one full-price unit.
+        var limit = maxQtyForCode(cartItem.code);
+        if (isFinite(limit)) {
+          updateCartItemQty(cartItem.id, limit).then(doAdd);
+        } else {
+          doAdd();
+        }
       }
     }, true);
   }
