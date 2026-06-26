@@ -4,6 +4,17 @@
 [functions]
   node_bundler = "esbuild"
 
+# Always revalidate the cross-sell script so a new deploy takes effect
+# immediately. Without this, browsers and the Netlify CDN cache the static
+# JS aggressively and keep serving a stale copy after each update.
+# "max-age=0, must-revalidate" lets the browser keep the file but check the
+# ETag on every load — it gets a fast 304 when unchanged, the new file when
+# it changed. No version query string needed in the Webflow <script src>.
+[[headers]]
+  for = "/crossell-popup.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
 # Production — deploys from main branch
 [context.production]
   # Production function URL: https://YOUR-SITE-NAME.netlify.app/.netlify/functions/

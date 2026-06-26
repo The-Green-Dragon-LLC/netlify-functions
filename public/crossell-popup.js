@@ -1,99 +1,121 @@
-﻿/**
+/**
  * crossell-popup.js
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- * Green Dragon CBD â€” THC Cross-Sell Popup (Ferris Wheel Euphoric)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Green Dragon CBD — Cross-Sell Popup
  *
- * â€¢ Shows a one-time-per-session popup when a THC-category item is added.
- * â€¢ Offers Ferris Wheel Euphoric products at 40% off, up to 3 units total.
- * â€¢ Units 4+ are automatically added as a separate line item at full price.
- * â€¢ Price tampering is blocked server-side by the pre-payment webhook
+ * • Shows a one-time-per-session popup when a triggering item is added to cart.
+ * • Trigger and offer are driven by Airtable via the crossell-config endpoint:
+ *     – Category cross-sells: per Primary Category popup (e.g. THC → specific product)
+ *     – Generic cross-sells:  shown as an in-cart widget (never in the popup)
+ * • Discount % and max promo qty are configurable per cross-sell in Airtable.
+ * • Units over the promo limit are added at full price automatically.
+ * • Price tampering is blocked server-side by the pre-payment webhook
  *   (crossell-validate.js) before any card is ever charged.
  *
- * â”€â”€â”€ SETUP CHECKLIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ * ─── SETUP CHECKLIST ──────────────────────────────────────────────────────────
  *
- *  1. Fill in CROSSELL_PRODUCTS below (name, code, regularPrice, image, url).
- *
- *  2. Confirm THC_CATEGORY matches your Foxy product-category code for THC.
- *
- *  3. In Foxy Admin â†' Products â†' Categories, create:
+ *  1. In Foxy Admin → Products → Categories, create:
  *       Code: CROSSELL_PROMO   Name: Cross-sell Promo
  *
- *  4. For every coupon in Foxy Admin â†' Advanced â†' Product Category Restrictions:
+ *  2. For every coupon in Foxy Admin → Advanced → Product Category Restrictions:
  *     whitelist only the categories the coupon should apply to, leaving
  *     CROSSELL_PROMO off the list.
  *
- *  5. Deploy crossell-validate.js as a Netlify function and register its URL
- *     in Foxy Admin â†' Store â†' Advanced â†' Pre-payment webhook URL.
+ *  3. Deploy crossell-validate.js as a Netlify function and register its URL
+ *     in Foxy Admin → Store → Advanced → Pre-payment webhook URL.
  *
- *  6. In Webflow Site Settings â†' Custom Code â†' Footer Code, paste this file's
- *     contents wrapped in <script>â€¦< / script>.
+ *  4. In Webflow Site Settings → Custom Code → Footer Code, paste this file's
+ *     contents wrapped in <script>…</script>.
  *
- * â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 (function () {
   'use strict';
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     1.  CONFIGURATION â€” update these values
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ══════════════════════════════════════════════════════════════════════════
+     1.  CONFIGURATION — update these values
+     ══════════════════════════════════════════════════════════════════════════ */
 
   /**
    * URL of the Netlify function that returns live config from Airtable.
-   * Update to your production URL when going live.
+   * Auto-derived from this script's own src so the correct function is called
+   * on both the develop deploy and production — no manual URL updates needed.
    */
-  var CONFIG_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
+  var CONFIG_URL = (function () {
+    try {
+      var s = document.currentScript;
+      if (!s) {
+        // Fallback for browsers without currentScript support
+        var all = document.getElementsByTagName('script');
+        s = all[all.length - 1];
+      }
+      if (s && s.src) {
+        // Strip the script filename to get the deploy base URL, e.g.
+        // "https://develop--wondrous-bublanina-d440ec.netlify.app"
+        var base = s.src.replace(/\/[^\/]*$/, '');
+        return base + '/.netlify/functions/crossell-config';
+      }
+    } catch (e) { /* ignore */ }
+    // Hard-coded fallback if src detection fails
+    return 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
+  })();
 
-  /**
-   * sessionStorage key for caching the Airtable config so it's only
-   * fetched once per browser session.
-   */
+  /** sessionStorage key for caching the Airtable config (one fetch per session). */
   var CONFIG_CACHE_KEY = 'tgd_crossell_config';
 
   /**
-   * Fallback THC categories used if the Airtable config fetch fails.
-   * These are the Foxy product-category codes â€” comparisons are case-insensitive.
-   */
-  var THC_CATEGORIES = [
-    'Vape Kits',
-    'Delta 8',
-    'Delta 9',
-    'THCa',
-    'Delta 10',
-    'Delta 11 (HXY-11)',
-    'Delta 6',
-    'Live Resin',
-    'THCP',
-    'THC-V',
-    'THCh',
-    'THCjd'
-  ];
-
-  /**
    * Foxy product-category code for cross-sell promo items.
-   * Used to exclude items from coupon codes and to validate pricing in the
-   * pre-payment webhook (crossell-validate.js â€” keep both files in sync).
+   * Keep in sync with crossell-validate.js.
    */
   var PROMO_CATEGORY = 'CROSSELL_PROMO';
 
-  /** Maximum units any customer can purchase at the promotional price. */
-  var PROMO_LIMIT = 3;
+  /**
+   * Default discount percentage (40% off) and promo limit used when
+   * the Airtable config does not specify values for a cross-sell.
+   */
+  var DEFAULT_DISCOUNT_PCT = 40;
+  var DEFAULT_MAX_QTY      = 3;
+
+  /**
+   * Runtime promo limit — updated to activeConfig.maxQty when the popup fires.
+   * All cart enforcement logic reads this variable so the limit is always in sync.
+   */
+  var PROMO_LIMIT = DEFAULT_MAX_QTY;
+
+  /**
+   * Resolve the effective promo unit limit for a cross-sell config.
+   * A null/undefined maxQty (e.g. Airtable "Max Qty" left blank) means
+   * "no maximum" → Infinity. The hardcoded fallback config supplies
+   * DEFAULT_MAX_QTY explicitly, so it still enforces a limit.
+   */
+  function effectiveMaxQty(cs) {
+    return (cs && cs.maxQty != null) ? cs.maxQty : Infinity;
+  }
 
   /** Fallback Foxy store domain (auto-detected from FC.json when available). */
   var STORE_DOMAIN = 'thegreendragoncbd.foxycart.com';
 
   /**
-   * sessionStorage key â€” popup shows only once per browser session.
-   * Clears automatically when the user closes their browser or tab.
+   * sessionStorage key prefix — popup shows once per primary category per session.
+   * e.g. tgd_crossell_shown_thc, tgd_crossell_shown_cbd
    */
-  var SESSION_KEY = 'tgd_crossell_shown';
+  var SESSION_KEY_PREFIX = 'tgd_crossell_shown_';
 
   /**
-   * Fallback cross-sell products used if the Airtable config fetch fails.
-   * In normal operation these are replaced by live data from Airtable
-   * (products with the "Cross-sell Promo" checkbox checked).
+   * Fallback THC categories — used only when the Airtable config fetch fails
+   * AND the categoryCrossSells array is empty.
    */
-  var CROSSELL_PRODUCTS = [
+  var THC_CATEGORIES_FALLBACK = [
+    'Vape Kits', 'Delta 8', 'Delta 9', 'THCa', 'Delta 10',
+    'Delta 11 (HXY-11)', 'Delta 6', 'Live Resin', 'THCP', 'THC-V', 'THCh', 'THCjd'
+  ];
+
+  /**
+   * Fallback cross-sell products — used only when the Airtable config fetch
+   * fails AND the categoryCrossSells array is empty.
+   */
+  var CROSSELL_PRODUCTS_FALLBACK = [
     {
       name:         'Ferris Wheel - Kanna Extract Tablets',
       code:         'recKkoAfqQsG0egdL',
@@ -110,44 +132,125 @@
     }
   ];
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     2.  HELPERS
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ══════════════════════════════════════════════════════════════════════════
+     2.  LIVE CONFIG STATE
+         Populated by loadConfig() once per session.
+     ══════════════════════════════════════════════════════════════════════════ */
 
-  /** 40% off = pay 60%.  Returns a string like "23.99". */
-  function salePrice(regular) {
-    return (Math.round(regular * 60) / 100).toFixed(2);
+  /** Array of category cross-sell configs fetched from Airtable. */
+  var CATEGORYCROSSSELLS = [];
+
+  /** Array of generic cross-sell configs fetched from Airtable. */
+  var GENERICCROSSSELLS  = [];
+
+  /**
+   * The category cross-sell config most recently shown as a popup.
+   * Set when showPopup() is called; read by cart enforcement helpers for
+   * promo-limit tracking on popup-originated promo items.
+   *
+   * Shape: { primaryCategory, parentCategories, products, discountPct, maxQty }
+   */
+  var ACTIVE_CONFIG = null;
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     3.  HELPERS
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Apply discountPct to a regular price and return a formatted string like "23.99".
+   * Rounds to the nearest cent.
+   */
+  function salePrice(regular, discountPct) {
+    var off     = (discountPct != null) ? discountPct : DEFAULT_DISCOUNT_PCT;
+    var payFrac = (100 - off) / 100;
+    return (Math.round(regular * payFrac * 100) / 100).toFixed(2);
   }
 
   /**
-   * Look up a product config by its Foxy product code.
-   * Searches both parent codes and variant codes so variant cart items
-   * (whose code is the variant record ID) are still found.
-   * Returns the parent product object in both cases.
+   * The discount % to apply right now (from ACTIVE_CONFIG, or default).
+   * Used by cart handlers after the popup has fired.
    */
-  function getProductByCode(code) {
-    for (var i = 0; i < CROSSELL_PRODUCTS.length; i++) {
-      if (CROSSELL_PRODUCTS[i].code === code) return CROSSELL_PRODUCTS[i];
-      var vars = CROSSELL_PRODUCTS[i].variants || [];
-      for (var j = 0; j < vars.length; j++) {
-        if (vars[j].code === code) return CROSSELL_PRODUCTS[i];
+  function activeDiscountPct() {
+    return (ACTIVE_CONFIG && ACTIVE_CONFIG.discountPct != null)
+      ? ACTIVE_CONFIG.discountPct
+      : DEFAULT_DISCOUNT_PCT;
+  }
+
+  /**
+   * The products relevant to the current session's active cross-sell.
+   * Falls back to CROSSELL_PRODUCTS_FALLBACK if no config loaded.
+   */
+  function activeProducts() {
+    return (ACTIVE_CONFIG && ACTIVE_CONFIG.products && ACTIVE_CONFIG.products.length)
+      ? ACTIVE_CONFIG.products
+      : CROSSELL_PRODUCTS_FALLBACK;
+  }
+
+  /**
+   * Find the cross-sell a Foxy product code belongs to, searching EVERY
+   * loaded config (category + generic) plus the hardcoded fallback — not
+   * just ACTIVE_CONFIG. This matters on the cart page, where no popup has
+   * fired, so cart-side logic (limits, overflow) can still resolve the
+   * product and its true max qty.
+   * Returns { cs, product, variant } (product is always the parent;
+   * variant is null when the code is a parent code) or null.
+   */
+  function findCrossSellByCode(code) {
+    var configs = CATEGORYCROSSSELLS.concat(GENERICCROSSSELLS);
+    if (CROSSELL_PRODUCTS_FALLBACK.length) {
+      configs = configs.concat([{ products: CROSSELL_PRODUCTS_FALLBACK, maxQty: DEFAULT_MAX_QTY }]);
+    }
+    for (var c = 0; c < configs.length; c++) {
+      var prods = configs[c].products || [];
+      for (var i = 0; i < prods.length; i++) {
+        if (prods[i].code === code) return { cs: configs[c], product: prods[i], variant: null };
+        var vars = prods[i].variants || [];
+        for (var j = 0; j < vars.length; j++) {
+          if (vars[j].code === code) return { cs: configs[c], product: prods[i], variant: vars[j] };
+        }
       }
     }
     return null;
+  }
+
+  /**
+   * Look up a product config by its Foxy product code, searching parent
+   * codes and variant codes so variant cart items are found.
+   * Returns the parent product object in both cases.
+   */
+  function getProductByCode(code) {
+    var found = findCrossSellByCode(code);
+    return found ? found.product : null;
   }
 
   /**
    * Given a cart item code (may be a variant code), return the matching
-   * variant object or null if it's a parent code or not found.
+   * variant object or null.
    */
   function getVariantByCode(code) {
-    for (var i = 0; i < CROSSELL_PRODUCTS.length; i++) {
-      var vars = CROSSELL_PRODUCTS[i].variants || [];
-      for (var j = 0; j < vars.length; j++) {
-        if (vars[j].code === code) return vars[j];
-      }
-    }
-    return null;
+    var found = findCrossSellByCode(code);
+    return (found && found.variant) ? found.variant : null;
+  }
+
+  /**
+   * The promo unit limit that applies to a given Foxy product code, taken
+   * from the cross-sell config that owns it. Returns Infinity when the code
+   * isn't found in any loaded config (don't enforce a limit we can't justify).
+   * Used by cart-side enforcement/disclaimer so the correct per-product limit
+   * applies even on a fresh page load where the global PROMO_LIMIT is stale.
+   */
+  function maxQtyForCode(code) {
+    var found = findCrossSellByCode(code);
+    return found ? effectiveMaxQty(found.cs) : Infinity;
+  }
+
+  /**
+   * Quantity of a cart item as a Number. Foxy sometimes reports item.quantity
+   * as a string, so a bare `total += item.quantity` concatenates instead of
+   * adding (e.g. 0 + "1" → "01"). Always coerce before doing arithmetic.
+   */
+  function itemQty(item) {
+    return parseInt(item && item.quantity, 10) || 0;
   }
 
   /** Returns true if a cart item was added as a cross-sell promo item. */
@@ -156,11 +259,9 @@
     var opts = item.options || [];
     for (var i = 0; i < opts.length; i++) {
       var n = (opts[i].name || '').toLowerCase().replace(/^h:/, '');
-      if (n === 'crossell_promo' && opts[i].value === 'true') {
-        return true;
-      }
+      if (n === 'crossell_promo' && opts[i].value === 'true') return true;
     }
-    // Fallback: category check (works when Foxy correctly assigns CROSSELL_PROMO)
+    // Fallback: category check
     return (item.category || '').toUpperCase() === PROMO_CATEGORY.toUpperCase();
   }
 
@@ -171,12 +272,26 @@
     var total   = 0;
     var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
     for (var i = 0; i < asArray.length; i++) {
-      if (isPromoItem(asArray[i])) total += (asArray[i].quantity || 0);
+      if (isPromoItem(asArray[i])) total += itemQty(asArray[i]);
     }
     return total;
   }
 
-  /** Find a cart item from FC.json by its Foxy item ID (the data-fc-item-id value). */
+  /** Sum of promo-category quantities for a specific Foxy product code. */
+  function getPromoQtyForProduct(code) {
+    var items = window.FC && FC.json && FC.json.items;
+    if (!items) return 0;
+    var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+    var total   = 0;
+    for (var i = 0; i < asArray.length; i++) {
+      if (isPromoItem(asArray[i]) && asArray[i].code === code) {
+        total += itemQty(asArray[i]);
+      }
+    }
+    return total;
+  }
+
+  /** Find a cart item from FC.json by its Foxy item ID. */
   function getCartItemByFcId(fcItemId) {
     var items = window.FC && FC.json && FC.json.items;
     if (!items) return null;
@@ -189,21 +304,133 @@
   }
 
   /**
+   * Count all non-promo items in the cart (used for change-detection polling).
+   */
+  function countNonPromoItems() {
+    var items = window.FC && FC.json && FC.json.items;
+    if (!items) return 0;
+    var total   = 0;
+    var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+    for (var i = 0; i < asArray.length; i++) {
+      if (!isPromoItem(asArray[i])) total += (itemQty(asArray[i]) || 1);
+    }
+    return total;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     4.  CROSS-SELL MATCHING
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Normalise an option name for loose comparison — removes spaces, underscores,
+   * hyphens and lowercases so variant spellings all compare equal.
+   */
+  function normaliseOptionName(s) {
+    return (s || '').toLowerCase().replace(/[\s_\-]/g, '');
+  }
+
+  /**
+   * Normalise a Foxy category code or Airtable category name for comparison.
+   * Strips ALL non-alphanumeric characters so that:
+   *   "CBD Topicals" === "cbd-topicals"
+   *   "CBD Oils / Tinctures" === "cbd-oils-tinctures"
+   *   "Full Spectrum CBD" === "full-spectrum-cbd"
+   */
+  function normaliseCategory(s) {
+    return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  /**
+   * Returns true if the cart item has the hidden Foxy option
+   * "Restricted Shipping Code" set to "thc".
+   */
+  function itemHasTHCOption(item) {
+    var options = item.options || [];
+    for (var i = 0; i < options.length; i++) {
+      if (normaliseOptionName(options[i].name) === 'restrictedshippingcode' &&
+          (options[i].value || '').toLowerCase() === 'thc') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns true if the given Foxy category code is in the fallback THC list. */
+  function isTHCCategoryFallback(category) {
+    var cat = (category || '').toLowerCase();
+    for (var i = 0; i < THC_CATEGORIES_FALLBACK.length; i++) {
+      if (THC_CATEGORIES_FALLBACK[i].toLowerCase() === cat) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Return the first matching CATEGORY cross-sell config for a set of cart
+   * items. Generic cross-sells are handled separately via the in-cart widget
+   * (renderCartCrossSell).
+   *
+   *   1. Category cross-sells — matched by Foxy category code or THC shipping option
+   *   2. Hardcoded fallback   — used when config fetch failed (legacy behaviour)
+   *
+   * @param {Array} [candidateItems] Items to match against — typically the
+   *   item(s) JUST added, so the popup reflects the new product rather than
+   *   whatever already sits in the cart (e.g. adding CBD while THC is in the
+   *   cart should surface the CBD cross-sell, not THC). Defaults to all
+   *   non-promo cart items (used when checking pre-existing items on load).
+   * Returns a config object or null.
+   */
+  function findActiveCrossSell(candidateItems) {
+    var items = window.FC && FC.json && FC.json.items;
+    if (!items) return null;
+
+    var nonPromo;
+    if (candidateItems) {
+      nonPromo = candidateItems.filter(function (it) { return !isPromoItem(it); });
+    } else {
+      var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+      nonPromo = asArray.filter(function (it) { return !isPromoItem(it); });
+    }
+
+    // 1. Category cross-sells (popup only)
+    for (var c = 0; c < CATEGORYCROSSSELLS.length; c++) {
+      var cs          = CATEGORYCROSSSELLS[c];
+      if (!cs.products || !cs.products.length) continue;
+
+      var normParents = (cs.parentCategories || []).map(normaliseCategory);
+      var isPrimTHC   = cs.primaryCategory && cs.primaryCategory.toLowerCase() === 'thc';
+
+      for (var i = 0; i < nonPromo.length; i++) {
+        var item    = nonPromo[i];
+        var normCat = normaliseCategory(item.category);
+        if (normParents.indexOf(normCat) !== -1) return cs;
+        if (isPrimTHC && itemHasTHCOption(item)) return cs;
+      }
+    }
+
+    // 2. Hardcoded fallback (no Airtable config loaded, legacy THC detection)
+    if (!CATEGORYCROSSSELLS.length && CROSSELL_PRODUCTS_FALLBACK.length) {
+      for (var f = 0; f < nonPromo.length; f++) {
+        if (itemHasTHCOption(nonPromo[f]) || isTHCCategoryFallback(nonPromo[f].category)) {
+          return {
+            products:    CROSSELL_PRODUCTS_FALLBACK,
+            discountPct: DEFAULT_DISCOUNT_PCT,
+            maxQty:      DEFAULT_MAX_QTY,
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     5.  CART — ADD TO CART
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /**
    * Add an item to the Foxy cart without page navigation.
    *
-   * FC.client.request() is FoxyCart's own internal AJAX method â€” the same one
-   * it uses when intercepting add-to-cart link clicks for the sidecart.
-   * Calling it directly works in ALL contexts (sidecart, full-page cart, test,
-   * production) because it goes through Foxy's JSONP request pipeline and
-   * triggers a cart refresh via the 'loaded.done' event without navigating.
-   *
-   * Falls back to direct link navigation only if FC.client is somehow
-   * unavailable (should never happen once attach() has confirmed it exists).
-   */
-  /**
    * @param {Array} [customOptions]  e.g. [{name:'Flavor', value:'Watermelon Pucker'}]
-   *   Appended to the cart URL as &Flavor=Watermelon+Pucker so Foxy stores
-   *   them as item options visible in the cart.
    */
   function addToCart(name, price, code, category, qty, image, url, customOptions) {
     var json     = window.FC && FC.json;
@@ -222,28 +449,21 @@
       + (customOptions ? customOptions.map(function (o) {
           return '&' + encodeURIComponent(o.name) + '=' + encodeURIComponent(o.value);
         }).join('') : '')
-      // Hidden marker that travels with the item regardless of Foxy's category assignment.
-      // Used by getPromoQty() and attachCartPlusInterceptor() for reliable detection.
+      // Hidden marker travels with the item for reliable detection in getPromoQty()
       + (category === PROMO_CATEGORY ? '&h:crossell_promo=true' : '');
 
-    // Always include the session ID so the item attaches to the existing cart.
     if (sessName && sessId) {
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    // On the Foxy cart/checkout domain, programmatic link clicks do not work
-    // via AJAX -- direct navigation is required.  On /checkout, append
-    // cart=checkout so Foxy redirects back to checkout after adding the item
-    // instead of dropping the customer on the cart page.
+    // On the Foxy cart/checkout domain use direct navigation
     var onFoxyDomain = window.location.hostname === 'secure.thegreendragoncbd.com' ||
                        window.location.hostname.indexOf('foxycart') !== -1 ||
                        window.location.hostname.indexOf('foxy.io')  !== -1;
 
     if (onFoxyDomain) {
       var dest = cartUrl;
-      if (window.location.pathname.indexOf('/checkout') === 0) {
-        dest += '&cart=checkout'; // add item and redirect back to checkout
-      }
+      if (window.location.pathname.indexOf('/checkout') === 0) dest += '&cart=checkout';
       window.location.href = dest;
     } else {
       var link = document.createElement('a');
@@ -257,31 +477,68 @@
     }
   }
 
-  /** True if popup has already been shown this browser session. */
-  function alreadyShown() {
-    try { return !!sessionStorage.getItem(SESSION_KEY); } catch (e) { return false; }
-  }
-
-  function markShown() {
-    try { sessionStorage.setItem(SESSION_KEY, '1'); } catch (e) { /* ignore */ }
-  }
-
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     3.  PROMO LIMIT DISCLAIMER
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
-
   /**
-   * Inserts a small notice under each promo item in the cart when either:
-   *  a) A full-price overflow line exists for the same product (the customer
-   *     clicked + past the limit), or
-   *  b) The promo item's qty was set above the limit by typing directly.
-   *
-   * The notice is re-evaluated on every FC loaded.done event so it stays
-   * accurate as the cart changes.
+   * Set an existing cart item's quantity — a Foxy "update" request keyed by the
+   * FC.json item id (the documented way to modify an item already in the cart).
+   * Used to reliably cap a promo line on BOTH the full-page cart and the
+   * sidecart, where writing input.value does not commit. Prefers Foxy's AJAX
+   * client; falls back to the same hidden-link navigation addToCart uses.
+   * Returns a promise that resolves once the request has been issued, so the
+   * caller can add overflow afterward without racing the cap.
    */
+  function updateCartItemQty(itemId, qty) {
+    var json     = window.FC && FC.json;
+    var domain   = (json && json.config && json.config.store_domain) || STORE_DOMAIN;
+    var sessName = (json && json.session_name) || '';
+    var sessId   = (json && json.session_id)   || '';
+
+    var query = 'id=' + encodeURIComponent(itemId) + '&quantity=' + encodeURIComponent(qty);
+    if (sessName && sessId) {
+      query += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
+    }
+    var url = 'https://' + domain + '/cart?' + query;
+
+    // Preferred: Foxy's AJAX client updates the cart in place (no navigation),
+    // which is what the sidecart relies on.
+    if (window.FC && FC.client && typeof FC.client.request === 'function') {
+      try {
+        var p = FC.client.request(url);
+        if (p && typeof p.then === 'function') return p;
+        return Promise.resolve();
+      } catch (e) { /* fall back to link navigation below */ }
+    }
+
+    // Fallback: same hidden-link technique as addToCart.
+    return new Promise(function (resolve) {
+      var onFoxyDomain = window.location.hostname === 'secure.thegreendragoncbd.com' ||
+                         window.location.hostname.indexOf('foxycart') !== -1 ||
+                         window.location.hostname.indexOf('foxy.io')  !== -1;
+      if (onFoxyDomain) { window.location.href = url; resolve(); return; }
+      var link = document.createElement('a');
+      link.style.position = 'absolute';
+      link.style.top      = '-9999px';
+      link.style.left     = '-9999px';
+      link.href = url;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(function () { if (link.parentNode) link.parentNode.removeChild(link); resolve(); }, 250);
+    });
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     6.  PROMO LIMIT DISCLAIMER
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  function promoNoticeHTML(msg) {
+    return '<div class="cs-promo-limit-notice" style="'
+      + 'font-size:11px;line-height:1.4;color:#7a3c00;'
+      + 'background:#fff8f0;border:1px solid #f5cba0;border-radius:5px;'
+      + 'padding:5px 10px;margin:2px 0 8px;font-family:Lato,sans-serif;'
+      + '">' + msg + '</div>';
+  }
+
   function updatePromoDisclaimer() {
     setTimeout(function () {
-      // Remove stale notices first
       var old = document.querySelectorAll('.cs-promo-limit-notice');
       for (var i = 0; i < old.length; i++) {
         if (old[i].parentNode) old[i].parentNode.removeChild(old[i]);
@@ -290,52 +547,66 @@
       var items = window.FC && FC.json && FC.json.items;
       if (!items) return;
 
-      var asArray = Array.isArray(items)
-        ? items
-        : Object.keys(items).map(function (k) { return items[k]; });
-
+      var asArray    = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
       var promoItems = asArray.filter(isPromoItem);
       if (!promoItems.length) return;
 
-      var totalPromoQty = promoItems.reduce(function (sum, it) { return sum + (it.quantity || 0); }, 0);
+      var unanchored = []; // notices we couldn't place next to a line item (e.g. sidecart markup)
 
-      // Show if any overflow full-price item exists (same variant code, no marker)
-      var hasOverflow = asArray.some(function (it) {
-        if (isPromoItem(it)) return false;
-        return promoItems.some(function (p) { return p.code === it.code; });
-      });
-
-      // Also show if someone typed a qty higher than the limit
-      if (!hasOverflow && totalPromoQty <= PROMO_LIMIT) return;
-
-      var msg = '&#9888;&#65039;  The promotional price is limited to '
-              + PROMO_LIMIT + ' units. '
-              + 'Additional units have been added to your cart at the regular price.';
-
+      // Evaluate each promo item against the limit for ITS OWN product code.
       promoItems.forEach(function (it) {
+        var promoQtyForCode = getPromoQtyForProduct(it.code);
+        var hasOverflow = asArray.some(function (other) {
+          return !isPromoItem(other) && other.code === it.code;
+        });
+        var limit = maxQtyForCode(it.code);
+
+        // Warn when full-price overflow units were actually added, OR when the
+        // promo quantity exceeds a known finite limit. If neither holds (no
+        // overflow and either no limit or still within it), there's nothing to
+        // say. Note: we do NOT bail just because the limit is Infinity — if
+        // overflow exists the customer needs the notice regardless of whether
+        // the code resolves back to a config row.
+        if (!hasOverflow && (!isFinite(limit) || promoQtyForCode <= limit)) return;
+
+        // The cap that was actually applied: the resolved finite limit, or —
+        // when the limit can't be resolved but overflow happened — the promo
+        // quantity in the cart (which equals the cap handleCartCrossSellAdd used).
+        var shownLimit = isFinite(limit) ? limit : promoQtyForCode;
+
+        var msg = '⚠️  The promotional price is limited to ' + shownLimit + ' units. '
+                + 'Additional units have been added to your cart at the regular price.';
+
         var el = document.querySelector('[data-fc-item-id="' + it.id + '"]');
-        if (!el) return;
-        el.insertAdjacentHTML('afterend',
-          '<div class="cs-promo-limit-notice" style="'
-          + 'font-size:11px;line-height:1.4;color:#7a3c00;'
-          + 'background:#fff8f0;border:1px solid #f5cba0;border-radius:5px;'
-          + 'padding:5px 10px;margin:2px 0 8px;font-family:Lato,sans-serif;'
-          + '">' + msg + '</div>'
-        );
+        if (el) {
+          el.insertAdjacentHTML('afterend', promoNoticeHTML(msg));
+        } else {
+          unanchored.push(msg);
+        }
       });
-    }, 300); // short delay to let Foxy finish re-rendering the cart DOM
+
+      // Fallback: if any notice couldn't be anchored to its line item, show it
+      // once at the top of the cart items container so it's still visible.
+      // Sidecart uses .fc-cart__items; full-page cart uses .cart-item-blocks.
+      if (unanchored.length) {
+        var container = document.querySelector('.fc-cart__items') || document.querySelector('.cart-item-blocks');
+        if (container) {
+          var seen = {};
+          var html = unanchored.filter(function (m) { if (seen[m]) return false; seen[m] = 1; return true; })
+                               .map(promoNoticeHTML).join('');
+          container.insertAdjacentHTML('afterbegin', html);
+        }
+      }
+    }, 300);
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     4.  CART QUANTITY LIMIT ENFORCEMENT
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ══════════════════════════════════════════════════════════════════════════
+     7.  CART QUANTITY LIMIT ENFORCEMENT
+     ══════════════════════════════════════════════════════════════════════════ */
 
   /**
-   * Watches the Foxy quantity input for direct edits (mobile keyboard, desktop
-   * typing).  Runs in capture phase so we can cap the value before Foxy reads
-   * it.  If the typed qty would push promo units over PROMO_LIMIT we:
-   *   1. Set input.value to the allowed max (Foxy then submits with that value)
-   *   2. Add the overflow units at full price via addToCart
+   * Watches the Foxy quantity input for direct edits. Caps promo items at
+   * PROMO_LIMIT and adds overflow at full price.
    */
   function attachQuantityInputWatcher() {
     document.addEventListener('change', function (e) {
@@ -352,20 +623,18 @@
       var newQty = parseInt(input.value, 10);
       if (isNaN(newQty) || newQty <= 0) return;
 
-      // Max promo units this one item is allowed to have
-      var otherPromoQty = getPromoQty() - (cartItem.quantity || 0);
-      var maxAllowed    = Math.max(1, PROMO_LIMIT - otherPromoQty);
-      if (newQty <= maxAllowed) return; // still within limit â€” allow
+      var limit = maxQtyForCode(cartItem.code);
+      if (!isFinite(limit)) return; // no maximum for this product — let Foxy handle it
+
+      var otherPromoQty = getPromoQtyForProduct(cartItem.code) - itemQty(cartItem);
+      var maxAllowed    = Math.max(1, limit - otherPromoQty);
+      if (newQty <= maxAllowed) return;
 
       var overflowQty = newQty - maxAllowed;
+      input.value     = maxAllowed; // immediate cap — commits on the full-page cart
 
-      // Cap the input â€” Foxy reads input.value in the bubble phase, so it
-      // will submit with the capped value rather than the typed value.
-      input.value = maxAllowed;
-
-      // Add overflow at full price
-      var product = getProductByCode(cartItem.code);
-      var variant  = getVariantByCode(cartItem.code);
+      var product      = getProductByCode(cartItem.code);
+      var variant      = getVariantByCode(cartItem.code);
       if (!product) return;
 
       var overflowPrice = (variant && variant.price) ? variant.price : product.regularPrice;
@@ -376,98 +645,82 @@
                n !== 'airtablerecordid'   && n !== 'heavydrink' && n !== 'crossellpromo';
       });
 
-      addToCart(
-        cartItem.name,
-        overflowPrice,
-        cartItem.code,
-        'DEFAULT',
-        overflowQty,
-        overflowImage,
-        product.url,
-        overflowOpts.length ? overflowOpts : undefined
-      );
-
-    }, true); // useCapture â€” runs before Foxy's listeners
+      // Reliably cap the promo line (input.value alone doesn't commit in the
+      // sidecart), THEN add the excess at full price once the cap is issued so
+      // the two cart writes don't race.
+      updateCartItemQty(cartItem.id, maxAllowed).then(function () {
+        addToCart(
+          cartItem.name, overflowPrice, cartItem.code, 'DEFAULT',
+          overflowQty, overflowImage, product.url,
+          overflowOpts.length ? overflowOpts : undefined
+        );
+      });
+    }, true);
   }
 
   /**
-   * Called when a shopper clicks the "+" button on a CROSSELL_PROMO item in the
-   * cart and the promo limit has already been reached.
-   *
-   * Strategy: prevent Foxy from incrementing the promo item's quantity and
-   * instead add one unit of the same product at full price as a new line item.
-   *
-   * Attached in capture phase (useCapture=true) so our handler runs before
-   * Foxy's delegated click listeners.
+   * Intercepts the "+" button on promo cart items once the limit is reached,
+   * adding one unit at full price instead.
    */
   function attachCartPlusInterceptor() {
     document.addEventListener('click', function (e) {
-      // Only care about clicks on the "+" add-item button
       var target = e.target;
       var addBtn = (target.classList && target.classList.contains('add-item-sign'))
         ? target
         : (target.closest ? target.closest('.add-item-sign') : null);
-
       if (!addBtn) return;
 
-      // Walk up to find the cart item's data-fc-item-id
-      var itemContainer = addBtn.closest
-        ? addBtn.closest('[data-fc-item-id]')
-        : null;
+      var itemContainer = addBtn.closest ? addBtn.closest('[data-fc-item-id]') : null;
       if (!itemContainer) return;
 
       var fcItemId = itemContainer.getAttribute('data-fc-item-id');
       var cartItem = getCartItemByFcId(fcItemId);
       if (!cartItem) return;
-
-      // Only intercept cross-sell promo items (detected by marker option or category)
       if (!isPromoItem(cartItem)) return;
+      // Compare against this product's own limit, resolved from the loaded
+      // config (the global PROMO_LIMIT is stale on a fresh cart page).
+      if (getPromoQtyForProduct(cartItem.code) < maxQtyForCode(cartItem.code)) return; // under limit — let Foxy increment at promo price
 
-      // If still under the limit, let Foxy handle it normally
-      if (getPromoQty() < PROMO_LIMIT) return;
-
-      // AT LIMIT â€” intercept and add 1 at full price instead
       e.stopPropagation();
       e.preventDefault();
 
       var product = getProductByCode(cartItem.code);
       if (product) {
-        // Determine the correct price â€” variant price if this is a variant item
-        var variant      = getVariantByCode(cartItem.code);
+        var variant       = getVariantByCode(cartItem.code);
         var overflowPrice = (variant && variant.price) ? variant.price : product.regularPrice;
-        var overflowCode  = cartItem.code; // keep the exact variant code already in cart
-
-        // Carry through visible cart options (e.g. Flavor) so the overflow
-        // line item shows the same variant. Filter out hidden system options.
-        var overflowOpts = (cartItem.options || []).filter(function (o) {
+        var overflowImage = (variant && variant.image) ? variant.image : product.image;
+        var overflowOpts  = (cartItem.options || []).filter(function (o) {
           var n = normaliseOptionName(o.name);
           return n !== 'restrictedshopping' &&
                  n !== 'restrictedshippingcode' &&
                  n !== 'airtablerecordid' &&
                  n !== 'heavydrink' &&
-                 n !== 'crossellpromo'; // don't carry promo marker onto overflow
+                 n !== 'crossellpromo';
         });
 
-        // Use variant image if available, fall back to parent image
-        var overflowImage = (variant && variant.image) ? variant.image : product.image;
+        var doAdd = function () {
+          addToCart(
+            cartItem.name, overflowPrice, cartItem.code, 'DEFAULT',
+            1, overflowImage, product.url,
+            overflowOpts.length ? overflowOpts : undefined
+          );
+        };
 
-        addToCart(
-          cartItem.name,   // already includes variant (e.g. "Ferris Wheelâ€¦-   Blue Razz")
-          overflowPrice,
-          overflowCode,
-          'DEFAULT',
-          1,
-          overflowImage,
-          product.url,
-          overflowOpts.length ? overflowOpts : undefined
-        );
+        // preventDefault may not stop the sidecart's own increment, so force
+        // the promo line back to its limit, then add one full-price unit.
+        var limit = maxQtyForCode(cartItem.code);
+        if (isFinite(limit)) {
+          updateCartItemQty(cartItem.id, limit).then(doAdd);
+        } else {
+          doAdd();
+        }
       }
-    }, true); // capture phase â€” runs before Foxy's bubble-phase listeners
+    }, true);
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     4.  STYLES
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ══════════════════════════════════════════════════════════════════════════
+     8.  STYLES
+     ══════════════════════════════════════════════════════════════════════════ */
 
   var STYLES = [
     '#tgd-crossell{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;font-family:Lato,sans-serif;}',
@@ -501,32 +754,56 @@
     '@media(max-width:479px){#tgd-crossell .cs-product{flex:1 1 100%;}#tgd-crossell .cs-box{padding:22px 14px 18px;}#tgd-crossell .cs-title{font-size:18px;}}'
   ].join('');
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     5.  POPUP HTML
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /** Styles for the in-cart generic cross-sell widget (#tgd-cart-crossell). */
+  var CART_STYLES = [
+    '#tgd-cart-crossell{padding:14px 16px;background:#f0fbf5;border-top:2px solid #d4eddf;font-family:Lato,sans-serif;}',
+    '#tgd-cart-crossell .cs-cart-eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#207348;margin:0 0 10px;}',
+    '#tgd-cart-crossell .cs-cart-products{display:flex;flex-direction:column;gap:10px;}',
+    '#tgd-cart-crossell .cs-cart-product{display:flex;gap:10px;align-items:flex-start;}',
+    '#tgd-cart-crossell .cs-cart-img{width:68px;height:68px;object-fit:contain;background:#fff;border-radius:6px;flex-shrink:0;border:1px solid #e0e0e0;}',
+    '#tgd-cart-crossell .cs-cart-details{flex:1;min-width:0;}',
+    '#tgd-cart-crossell .cs-cart-name{font-size:12px;font-weight:600;color:#222;margin:0 0 5px;line-height:1.4;}',
+    '#tgd-cart-crossell .cs-cart-prices{display:flex;align-items:center;gap:5px;margin-bottom:7px;flex-wrap:wrap;}',
+    '#tgd-cart-crossell .cs-cart-price-orig{font-size:11px;color:#bbb;text-decoration:line-through;}',
+    '#tgd-cart-crossell .cs-cart-price-sale{font-size:14px;font-weight:800;color:#207348;}',
+    '#tgd-cart-crossell .cs-cart-badge{font-size:10px;font-weight:700;background:#e07b00;color:#fff;border-radius:4px;padding:2px 5px;white-space:nowrap;}',
+    '#tgd-cart-crossell .cs-cart-variant-select{width:100%;padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:12px;font-family:Lato,sans-serif;color:#333;background:#fff;margin-bottom:7px;cursor:pointer;-webkit-appearance:auto;appearance:auto;}',
+    '#tgd-cart-crossell .cs-cart-qty-wrap{display:flex;align-items:center;gap:5px;margin-bottom:8px;}',
+    '#tgd-cart-crossell .cs-cart-qty-btn{width:26px;height:26px;border:1px solid #c8c8c8;border-radius:4px;background:#fff;color:#333;font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;}',
+    '#tgd-cart-crossell .cs-cart-qty-btn:hover{background:#f0f0f0;}',
+    '#tgd-cart-crossell .cs-cart-qty-input{width:34px;text-align:center;border:1px solid #c8c8c8;border-radius:4px;font-size:13px;padding:3px 0;color:#333;font-family:Lato,sans-serif;-moz-appearance:textfield;}',
+    '#tgd-cart-crossell .cs-cart-qty-input::-webkit-outer-spin-button,#tgd-cart-crossell .cs-cart-qty-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}',
+    '#tgd-cart-crossell .cs-cart-add-btn{display:block;width:100%;text-align:center;padding:7px 10px;background:linear-gradient(142deg,#48d88d,#2fa264);color:#fff!important;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:opacity .15s;}',
+    '#tgd-cart-crossell .cs-cart-add-btn:hover{opacity:.88;}',
+    '#tgd-cart-crossell .cs-cart-add-btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none;}',
+  ].join('');
 
-  function productCardHTML(p) {
-    var sale      = salePrice(p.regularPrice);
+  /* ══════════════════════════════════════════════════════════════════════════
+     9.  POPUP HTML
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  function productCardHTML(p, discountPct) {
+    var sale      = salePrice(p.regularPrice, discountPct);
     var hasVars   = p.variants && p.variants.length > 0;
     var varLabel  = p.variantsLabel || 'Option';
 
-    // Build variant dropdown (disabled Add to Cart until selection is made)
     var variantSelect = '';
     if (hasVars) {
       variantSelect = '<select class="cs-variant-select" data-product-code="' + p.code + '">'
         + '<option value="" selected disabled>Select</option>'
         + p.variants.map(function (v) {
-            var vSale    = salePrice(v.price || p.regularPrice);
-            var vOrig    = Number(v.price || p.regularPrice).toFixed(2);
-            var dispName = v.displayName || v.name; // short: "Blue Razz"
-            var fullName = v.name;                  // full: "Ferris Wheelâ€¦-   Blue Razz"
+            var vPrice   = v.price || p.regularPrice;
+            var vSale    = salePrice(vPrice, discountPct);
+            var vOrig    = Number(vPrice).toFixed(2);
+            var dispName = v.displayName || v.name;
+            var fullName = v.name;
             return '<option value="' + v.code + '"'
               + ' data-displayname="' + dispName.replace(/"/g, '&quot;') + '"'
               + ' data-fullname="'    + fullName.replace(/"/g, '&quot;') + '"'
               + ' data-image="'       + (v.image || '').replace(/"/g, '&quot;') + '"'
-              + ' data-price="'       + (v.price || p.regularPrice) + '"'
-              + ' data-sale="'        + vSale + '"'
-              + ' data-orig="'        + vOrig + '">'
+              + ' data-price="'       + vPrice + '"'
+              + ' data-sale="'        + vSale  + '"'
+              + ' data-orig="'        + vOrig  + '">'
               + dispName + '</option>';
           }).join('')
         + '</select>';
@@ -539,7 +816,7 @@
       + '<div class="cs-prices">'
       + '<span class="cs-price-orig">$' + Number(p.regularPrice).toFixed(2) + '</span>'
       + '<span class="cs-price-sale">$' + sale + '</span>'
-      + '<span class="cs-badge">40% OFF</span>'
+      + '<span class="cs-badge">' + discountPct + '% OFF</span>'
       + '</div>'
       + variantSelect
       + '<button class="cs-add-btn" data-product-code="' + p.code + '"'
@@ -547,23 +824,272 @@
       + '</div></div>';
   }
 
-  function popupHTML() {
+  function popupHTML(cs) {
+    var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
+    var maxQty      = effectiveMaxQty(cs);
+    var limitText   = isFinite(maxQty)
+      ? ' Limited to ' + maxQty + ' units per customer at the discounted price.'
+      : '';
+
     return '<div id="tgd-crossell" role="dialog" aria-modal="true" aria-labelledby="cs-title" style="display:none;">'
       + '<div class="cs-backdrop"></div>'
       + '<div class="cs-box">'
       + '<button class="cs-close" aria-label="Close offer">&times;</button>'
       + '<p class="cs-eyebrow">&#127905; Exclusive One-Time Offer</p>'
-      + '<h2 id="cs-title" class="cs-title">Try Our New Euphoric Products &mdash; 40% Off!</h2>'
-      + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site. Limited to ' + PROMO_LIMIT + ' units per customer at the discounted price.</p>'
-      + '<div class="cs-products">' + CROSSELL_PRODUCTS.map(productCardHTML).join('') + '</div>'
+      + '<h2 id="cs-title" class="cs-title">Special Limited Time Offer &mdash; ' + discountPct + '% Off!</h2>'
+      + '<p class="cs-subtitle">This special price is available <strong>today only</strong> and won\'t appear anywhere else on our site.' + limitText + '</p>'
+      + '<div class="cs-products">' + cs.products.map(function (p) { return productCardHTML(p, discountPct); }).join('') + '</div>'
       + '<p class="cs-disclaimer">This discount cannot be combined with other offers or coupon codes.</p>'
       + '<button class="cs-decline">No thanks, I\'ll skip this offer</button>'
       + '</div></div>';
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     6.  SHOW / CLOSE
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ══════════════════════════════════════════════════════════════════════════
+     10. IN-CART GENERIC CROSS-SELL
+         Injected after .fc-cart__items on every cart render event.
+         Generic cross-sells from Airtable appear here; they never show
+         in the popup (popup is category cross-sells only).
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /** Build the inner HTML for the in-cart cross-sell widget. */
+  function cartCrossSellHTML(cs) {
+    var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
+    var maxQty      = effectiveMaxQty(cs);
+
+    // Pick one product at random so the widget stays compact and varies across sessions
+    var pIdx = Math.floor(Math.random() * cs.products.length);
+    var randomProduct = cs.products[pIdx];
+    var productsHTML  = [randomProduct].map(function (p) {
+      var sale    = salePrice(p.regularPrice, discountPct);
+      var hasVars = p.variants && p.variants.length > 0;
+
+      var variantSelect = '';
+      if (hasVars) {
+        variantSelect = '<select class="cs-cart-variant-select" data-product-code="' + p.code + '">'
+          + '<option value="" selected disabled>Select ' + (p.variantsLabel || 'option') + '&hellip;</option>'
+          + p.variants.map(function (v) {
+              var vPrice   = v.price || p.regularPrice;
+              var vSale    = salePrice(vPrice, discountPct);
+              var vOrig    = Number(vPrice).toFixed(2);
+              var dispName = v.displayName || v.name;
+              return '<option value="' + v.code + '"'
+                + ' data-displayname="' + dispName.replace(/"/g, '&quot;') + '"'
+                + ' data-fullname="'    + (v.name || '').replace(/"/g, '&quot;') + '"'
+                + ' data-image="'       + (v.image || '').replace(/"/g, '&quot;') + '"'
+                + ' data-price="'       + vPrice + '"'
+                + ' data-sale="'        + vSale  + '"'
+                + ' data-orig="'        + vOrig  + '">'
+                + dispName + '</option>';
+            }).join('')
+          + '</select>';
+      }
+
+      var qtyWrap = '<div class="cs-cart-qty-wrap">'
+        + '<button type="button" class="cs-cart-qty-btn" data-action="minus" data-product-code="' + p.code + '">&#8722;</button>'
+        + '<input class="cs-cart-qty-input" type="number" min="1"' + (isFinite(maxQty) ? ' max="' + maxQty + '"' : '') + ' value="1"'
+        + ' data-product-code="' + p.code + '" readonly/>'
+        + '<button type="button" class="cs-cart-qty-btn" data-action="plus" data-product-code="' + p.code + '">+</button>'
+        + '</div>';
+
+      return '<div class="cs-cart-product">'
+        + '<img src="' + p.image + '" alt="' + p.name + '" class="cs-cart-img" loading="lazy"/>'
+        + '<div class="cs-cart-details">'
+        + '<p class="cs-cart-name">' + p.name + '</p>'
+        + '<div class="cs-cart-prices">'
+        + '<span class="cs-cart-price-orig">$' + Number(p.regularPrice).toFixed(2) + '</span>'
+        + '<span class="cs-cart-price-sale">$' + sale + '</span>'
+        + '<span class="cs-cart-badge">' + discountPct + '% OFF</span>'
+        + '</div>'
+        + variantSelect
+        + qtyWrap
+        + '<button type="button" class="cs-cart-add-btn" data-product-code="' + p.code + '"'
+        + (hasVars ? ' disabled' : '') + '>Add to Cart</button>'
+        + '</div></div>';
+    }).join('');
+
+    return '<p class="cs-cart-eyebrow">&#10024; You might also like &mdash; ' + discountPct + '% off today!</p>'
+      + '<div class="cs-cart-products">' + productsHTML + '</div>';
+  }
+
+  /**
+   * Handle "Add to Cart" inside the in-cart widget.
+   * Adds at promo price while under the generic cross-sell maxQty limit;
+   * any units beyond the limit are added at full price in a second cart call.
+   */
+  function handleCartCrossSellAdd(productCode, cs, qty) {
+    qty = (qty && qty > 0) ? Math.floor(qty) : 1;
+    // Find the parent product (productCode may be a variant code)
+    var product = null;
+    for (var i = 0; i < cs.products.length; i++) {
+      if (cs.products[i].code === productCode) { product = cs.products[i]; break; }
+      var vars = cs.products[i].variants || [];
+      for (var j = 0; j < vars.length; j++) {
+        if (vars[j].code === productCode) { product = cs.products[i]; break; }
+      }
+      if (product) break;
+    }
+    if (!product) return;
+
+    var discountPct = (cs.discountPct != null) ? cs.discountPct : DEFAULT_DISCOUNT_PCT;
+    var maxQty      = effectiveMaxQty(cs);
+
+    var useCode = productCode;
+    var useName = product.name;
+    var usePrice = product.regularPrice;
+    var useImage = product.image;
+    var customOpts = [];
+
+    // Resolve variant selection
+    if (product.variants && product.variants.length > 0) {
+      var sel = document.querySelector('.cs-cart-variant-select[data-product-code="' + productCode + '"]');
+      if (!sel || !sel.value) return; // require variant selection
+      var opt          = sel.options[sel.selectedIndex];
+      useCode          = sel.value;
+      var varFullName  = opt.getAttribute('data-fullname')    || opt.text;
+      var varDispName  = opt.getAttribute('data-displayname') || varFullName;
+      var varImg       = opt.getAttribute('data-image')       || '';
+      var varPrice     = parseFloat(opt.getAttribute('data-price') || '0');
+      if (varImg)       useImage = varImg;
+      if (varPrice > 0) usePrice = varPrice;
+      if (varFullName)  useName  = varFullName;
+      if (product.variantsLabel && varDispName) {
+        customOpts.push({ name: product.variantsLabel, value: varDispName });
+      }
+    }
+
+    // Split qty across promo and full-price buckets
+    var alreadyPromo = getPromoQtyForProduct(useCode);
+    var promoSpace   = Math.max(0, maxQty - alreadyPromo);
+    var promoQty     = Math.min(qty, promoSpace);
+    var overflowQty  = qty - promoQty;
+    var opts         = customOpts.length ? customOpts : undefined;
+
+    if (promoQty > 0) {
+      addToCart(useName, salePrice(usePrice, discountPct), useCode, PROMO_CATEGORY,
+                promoQty, useImage, product.url, opts);
+      if (maxQty > PROMO_LIMIT) PROMO_LIMIT = maxQty;
+    }
+    if (overflowQty > 0) {
+      addToCart(useName, Number(usePrice).toFixed(2), useCode, 'DEFAULT',
+                overflowQty, useImage, product.url, opts);
+    }
+  }
+
+  /**
+   * Inject (or refresh) the in-cart generic cross-sell widget.
+   * Called on every FC cart-render event so it survives Foxy's full re-renders.
+   */
+  function renderCartCrossSell() {
+    setTimeout(function () {
+      // Remove any stale injection
+      var existing = document.getElementById('tgd-cart-crossell');
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+
+      if (!GENERICCROSSSELLS.length) {
+        return;
+      }
+      // Randomly pick from all active generic cross-sell rows so different
+      // products surface across cart renders and sessions.
+      var csIdx = Math.floor(Math.random() * GENERICCROSSSELLS.length);
+      var cs = GENERICCROSSSELLS[csIdx];
+      if (!cs || !cs.products || !cs.products.length) return;
+
+      // Locate the items container — behaviour differs by cart type:
+      //   Sidecart   → .fc-cart__items  (inject AFTER: widget appears between items and totals sidebar)
+      //   Full-page  → .cart-item-blocks (inject INSIDE/append: widget appears below items in the left column)
+      var itemsList  = document.querySelector('.fc-cart__items');
+      var appendInside = false;
+      if (!itemsList) {
+        itemsList    = document.querySelector('.cart-item-blocks');
+        appendInside = true; // full-page is two-column flex; append inside keeps widget in left column
+      }
+      if (!itemsList || !itemsList.parentNode) {
+        return;
+      }
+
+      // Inject styles once per page load
+      if (!document.getElementById('tgd-cart-crossell-styles')) {
+        var s = document.createElement('style');
+        s.id  = 'tgd-cart-crossell-styles';
+        s.textContent = CART_STYLES;
+        document.head.appendChild(s);
+      }
+
+      var div       = document.createElement('div');
+      div.id        = 'tgd-cart-crossell';
+      div.innerHTML = cartCrossSellHTML(cs);
+      if (appendInside) {
+        itemsList.appendChild(div);                                    // full-page: bottom of items column
+      } else {
+        itemsList.parentNode.insertBefore(div, itemsList.nextSibling); // sidecart: after items container
+      }
+
+      // Stepper +/− and Add to Cart button
+      div.addEventListener('click', function (e) {
+        // Quantity stepper
+        var qtyBtn = e.target.closest ? e.target.closest('.cs-cart-qty-btn') : null;
+        if (qtyBtn) {
+          var code   = qtyBtn.getAttribute('data-product-code');
+          var input  = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
+          if (!input) return;
+          var val    = parseInt(input.value, 10) || 1;
+          var maxAttr = input.getAttribute('max');
+          var maxVal  = maxAttr ? (parseInt(maxAttr, 10) || Infinity) : Infinity; // no max attr = unlimited
+          if (qtyBtn.getAttribute('data-action') === 'minus') val = Math.max(1, val - 1);
+          if (qtyBtn.getAttribute('data-action') === 'plus')  val = Math.min(maxVal, val + 1);
+          input.value = val;
+          return;
+        }
+
+        // Add to Cart button — read quantity from the stepper
+        var btn = e.target.closest ? e.target.closest('.cs-cart-add-btn') : null;
+        if (!btn || btn.disabled) return;
+        var code     = btn.getAttribute('data-product-code');
+        var qtyInput = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
+        var qty      = qtyInput ? (parseInt(qtyInput.value, 10) || 1) : 1;
+        handleCartCrossSellAdd(code, cs, qty);
+      });
+
+      // Variant select — enable button and update displayed prices/image
+      div.addEventListener('change', function (e) {
+        var sel = e.target.closest ? e.target.closest('.cs-cart-variant-select') : null;
+        if (!sel) return;
+        var card = sel.closest ? sel.closest('.cs-cart-product') : sel.parentNode;
+        if (!card) return;
+        var btn = card.querySelector('.cs-cart-add-btn');
+        if (btn) btn.disabled = !sel.value;
+        if (sel.value) {
+          var opt   = sel.options[sel.selectedIndex];
+          var oOrig = card.querySelector('.cs-cart-price-orig');
+          var oSale = card.querySelector('.cs-cart-price-sale');
+          var oImg  = card.querySelector('.cs-cart-img');
+          if (oOrig) oOrig.textContent = '$' + opt.getAttribute('data-orig');
+          if (oSale) oSale.textContent = '$' + opt.getAttribute('data-sale');
+          if (oImg  && opt.getAttribute('data-image')) oImg.src = opt.getAttribute('data-image');
+        }
+      });
+    }, 300);
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     11. POPUP — SHOW / CLOSE
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /** Returns the per-category sessionStorage key for the given cross-sell config. */
+  function shownKeyFor(cs) {
+    var cat = (cs && cs.primaryCategory)
+      ? cs.primaryCategory.toLowerCase().replace(/\s+/g, '_')
+      : 'generic';
+    return SESSION_KEY_PREFIX + cat;
+  }
+
+  function alreadyShownFor(cs) {
+    try { return !!sessionStorage.getItem(shownKeyFor(cs)); } catch (e) { return false; }
+  }
+
+  function markShownFor(cs) {
+    try { sessionStorage.setItem(shownKeyFor(cs), '1'); } catch (e) { /* ignore */ }
+  }
 
   function closePopup() {
     var el = document.getElementById('tgd-crossell');
@@ -572,17 +1098,13 @@
 
   /**
    * Handle "Add to Cart" clicks inside the popup.
-   * Respects the PROMO_LIMIT:
-   *   - If space remains under the limit â†' add at promo price (CROSSELL_PROMO)
-   *   - If limit already reached         â†' add at full price (DEFAULT category)
-   *   - If partially under limit         â†' add the remaining allowance at promo,
-   *                                        nothing extra (qty=1 per click)
+   * Respects PROMO_LIMIT: adds at promo price while space remains,
+   * then at full price (1 unit per click).
    */
   function handlePromoAddClick(productCode) {
     var product = getProductByCode(productCode);
     if (!product) return;
 
-    // Resolve which name / code / image / price / options to use
     var useName    = product.name;
     var useCode    = product.code;
     var useImage   = product.image;
@@ -593,184 +1115,106 @@
       var select = document.querySelector(
         '.cs-variant-select[data-product-code="' + productCode + '"]'
       );
-      if (!select || !select.value) return; // button should be disabled, but safety check
+      if (!select || !select.value) return;
 
-      var selectedOpt  = select.options[select.selectedIndex];
-      useCode = select.value;
+      var selectedOpt     = select.options[select.selectedIndex];
+      useCode             = select.value;
+      var variantFullName = selectedOpt.getAttribute('data-fullname')    || selectedOpt.text;
+      var variantDispName = selectedOpt.getAttribute('data-displayname') || variantFullName;
+      var variantImg      = selectedOpt.getAttribute('data-image')       || '';
+      var variantPrice    = parseFloat(selectedOpt.getAttribute('data-price') || '0');
 
-      // Full name used as cart item name (e.g. "Ferris Wheelâ€¦-   Blue Razz")
-      var variantFullName  = selectedOpt.getAttribute('data-fullname')    || selectedOpt.text;
-      // Display name used as option value (e.g. "Blue Razz")
-      var variantDispName  = selectedOpt.getAttribute('data-displayname') || variantFullName;
-      var variantImg       = selectedOpt.getAttribute('data-image')       || '';
-      var variantPrice     = parseFloat(selectedOpt.getAttribute('data-price') || '0');
+      if (variantImg)       useImage = variantImg;
+      if (variantPrice > 0) usePrice = variantPrice;
+      if (variantFullName)  useName  = variantFullName;
 
-      if (variantImg)          useImage = variantImg;
-      if (variantPrice > 0)    usePrice = variantPrice;
-      if (variantFullName)     useName  = variantFullName; // show "Ferris Wheelâ€¦- Blue Razz" in cart
-
-      // Add the option so it appears in cart details (e.g. Flavor: Blue Razz)
       if (product.variantsLabel && variantDispName) {
         customOpts.push({ name: product.variantsLabel, value: variantDispName });
       }
     }
 
     var spaceLeft = PROMO_LIMIT - getPromoQty();
+    var addPrice  = spaceLeft > 0 ? salePrice(usePrice, activeDiscountPct()) : usePrice;
+    var addCat    = spaceLeft > 0 ? PROMO_CATEGORY : 'DEFAULT';
 
-    if (spaceLeft > 0) {
-      addToCart(useName, salePrice(usePrice), useCode, PROMO_CATEGORY, 1, useImage, product.url, customOpts);
-    } else {
-      addToCart(useName, usePrice, useCode, 'DEFAULT', 1, useImage, product.url, customOpts);
-    }
+    addToCart(useName, addPrice, useCode, addCat, 1, useImage, product.url, customOpts.length ? customOpts : undefined);
 
     setTimeout(closePopup, 400);
   }
 
-  function showPopup() {
-    if (alreadyShown()) return;
+  /**
+   * Show the popup for the given cross-sell config.
+   * Sets ACTIVE_CONFIG and updates PROMO_LIMIT for the session.
+   */
+  function showPopup(cs) {
+    if (alreadyShownFor(cs)) return;
 
-    // Never show on the Foxy cart / checkout domain.  sessionStorage is
-    // origin-scoped, so the "already shown" flag set on www.thegreendragoncbd.com
-    // (sidecart) is invisible here (full cart), causing the popup to fire twice.
-    if (window.location.hostname.indexOf('foxycart')          !== -1 ||
-        window.location.hostname.indexOf('foxy.io')            !== -1 ||
+    // Never show on the Foxy cart / checkout domain
+    if (window.location.hostname.indexOf('foxycart')    !== -1 ||
+        window.location.hostname.indexOf('foxy.io')      !== -1 ||
         window.location.hostname === 'secure.thegreendragoncbd.com') return;
 
-    markShown();
+    // Lock in this session's config for the popup that just fired
+    ACTIVE_CONFIG = cs;
+    PROMO_LIMIT   = effectiveMaxQty(cs);
 
-    // Inject stylesheet once
+    markShownFor(cs);
+
     if (!document.getElementById('tgd-crossell-styles')) {
       var s = document.createElement('style');
-      s.id = 'tgd-crossell-styles';
+      s.id  = 'tgd-crossell-styles';
       s.textContent = STYLES;
       document.head.appendChild(s);
     }
 
-    // Inject HTML once
     if (!document.getElementById('tgd-crossell')) {
-      document.body.insertAdjacentHTML('beforeend', popupHTML());
+      document.body.insertAdjacentHTML('beforeend', popupHTML(cs));
     }
 
     var popup = document.getElementById('tgd-crossell');
     popup.style.display = 'flex';
 
-    // Wire up close triggers
     popup.querySelector('.cs-backdrop').addEventListener('click', closePopup);
     popup.querySelector('.cs-close').addEventListener('click', closePopup);
     popup.querySelector('.cs-decline').addEventListener('click', closePopup);
 
-    // Wire up Add to Cart buttons (skip if button is disabled)
     popup.addEventListener('click', function (e) {
       var btn = e.target.closest ? e.target.closest('.cs-add-btn') : null;
       if (btn && !btn.disabled) handlePromoAddClick(btn.getAttribute('data-product-code'));
     });
 
-    // Variant dropdown: enable Add to Cart when a variant is selected,
-    // and swap the product card image to the variant-specific image.
+    // Variant dropdown: enable button and swap image/price on selection
     popup.addEventListener('change', function (e) {
       var select = e.target.closest ? e.target.closest('.cs-variant-select') : null;
       if (!select) return;
       var card = select.closest('.cs-product');
       if (!card) return;
 
-      // Enable / disable the Add to Cart button
       var btn = card.querySelector('.cs-add-btn');
       if (btn) btn.disabled = !select.value;
 
-      // Swap product image and update price display when a variant is selected
       if (select.value) {
         var opt    = select.options[select.selectedIndex];
-        var varImg = opt.getAttribute('data-image');
+        var varImg  = opt.getAttribute('data-image');
         var varSale = opt.getAttribute('data-sale');
         var varOrig = opt.getAttribute('data-orig');
 
-        var cardImg = card.querySelector('.cs-product-img');
-        if (varImg && cardImg) cardImg.src = varImg;
-
+        var cardImg   = card.querySelector('.cs-product-img');
         var priceOrig = card.querySelector('.cs-price-orig');
         var priceSale = card.querySelector('.cs-price-sale');
+
+        if (varImg  && cardImg)   cardImg.src           = varImg;
         if (varOrig && priceOrig) priceOrig.textContent = '$' + varOrig;
         if (varSale && priceSale) priceSale.textContent = '$' + varSale;
       }
     });
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     7.  FOXY EVENT HOOK
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ══════════════════════════════════════════════════════════════════════════
+     12. AIRTABLE CONFIG LOADER
+     ══════════════════════════════════════════════════════════════════════════ */
 
-  /**
-   * Normalise an option name for loose comparison â€” removes spaces, underscores,
-   * hyphens and lowercases so "Restricted Shipping Code", "restricted_shipping_code"
-   * and "restricted-shipping-code" all compare equal.
-   */
-  function normaliseOptionName(s) {
-    return (s || '').toLowerCase().replace(/[\s_\-]/g, '');
-  }
-
-  /**
-   * Returns true if the cart item has the hidden Foxy option
-   * "Restricted Shipping Code" set to "thc".
-   * This option is applied to every THC product via Airtable/Foxy and is
-   * more reliable than matching Foxy category codes, which differ between
-   * products (e.g. "THCa" vs "thc-p" vs "delta-8").
-   */
-  function itemHasTHCOption(item) {
-    var options = item.options || [];
-    for (var i = 0; i < options.length; i++) {
-      if (normaliseOptionName(options[i].name) === 'restrictedshippingcode' &&
-          (options[i].value || '').toLowerCase() === 'thc') {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** Returns true if the given Foxy category code is in the THC category list. */
-  function isTHCCategory(category) {
-    var cat = (category || '').toLowerCase();
-    for (var i = 0; i < THC_CATEGORIES.length; i++) {
-      if (THC_CATEGORIES[i].toLowerCase() === cat) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Count THC items in the cart.
-   * Primarily uses the "Restricted Shipping Code = thc" option (set on every
-   * THC product regardless of its Foxy category code).  Falls back to
-   * category-name matching for items that lack that option.
-   */
-  function countTHCItems() {
-    var items = window.FC && FC.json && FC.json.items;
-    if (!items) return 0;
-    var count   = 0;
-    var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
-    for (var i = 0; i < asArray.length; i++) {
-      var item = asArray[i];
-      if (itemHasTHCOption(item) || isTHCCategory(item.category)) {
-        count += (item.quantity || 1);
-      }
-    }
-    return count;
-  }
-
-  function checkAndShow() {
-    if (countTHCItems() > 0) showPopup();
-  }
-
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     8.  AIRTABLE CONFIG LOADER
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
-
-  /**
-   * Fetches live category and product config from the crossell-config Netlify
-   * function.  Result is cached in sessionStorage so Airtable is only hit
-   * once per browser session.  Falls back to the hardcoded arrays if the
-   * fetch fails.
-   */
   function loadConfig() {
-    // Return cached config if available
     try {
       var cached = sessionStorage.getItem(CONFIG_CACHE_KEY);
       if (cached) return Promise.resolve(JSON.parse(cached));
@@ -785,86 +1229,147 @@
         try { sessionStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
         return data;
       })
-      .catch(function (err) {
-        console.warn('[crossell] Config fetch failed, using fallback:', err.message);
-        return null;
+      .catch(function () {
+        return null; // fall back to hardcoded defaults
       });
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-     9.  FOXY EVENT HOOK
-     â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ══════════════════════════════════════════════════════════════════════════
+     13. FOXY EVENT HOOK + POLLING
+     ══════════════════════════════════════════════════════════════════════════ */
 
   function attach() {
     if (!window.FC || !FC.client || typeof FC.client.on !== 'function') {
-      setTimeout(attach, 100); // Poll frequently - Foxy loads async
+      setTimeout(attach, 100);
       return;
     }
 
-    // ---- PRIMARY POPUP MECHANISM: count-delta polling ----
-  //
-  // FC.client.on('loaded.done') is registered below as belt-and-suspenders
-  // but is NOT the primary trigger.  On this Foxy JSONP sidecart setup the
-  // callback is never invoked (confirmed in browser console).  The original
-  // working popup used unconditional polling checkAndShow() every 1 s.
-  //
-  // Count-delta: record the THC item count on the first successful read
-  // (baseline).  Show popup only when the count increases -- that means the
-  // user just added a THC item.  Pre-existing items (homepage, etc.) raise
-  // the baseline without triggering the popup.
+    // FC events — re-render promo disclaimer and in-cart cross-sell on every cart update
+    var onCartEvent = function () { updatePromoDisclaimer(); renderCartCrossSell(); };
+    try { FC.client.on('loaded.done', onCartEvent); } catch (e) {}
+    try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
+    try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
 
-  var prevTHCCount = null; // null = baseline not yet established
+    attachCartPlusInterceptor();
+    attachQuantityInputWatcher();
 
-  // FC events (belt-and-suspenders; not relied on as primary trigger)
-  var onCartEvent = function () { updatePromoDisclaimer(); };
-  try { FC.client.on('loaded.done', onCartEvent); } catch (e) {}
-  try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
-  try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
+    // Count-delta polling — fires popup when a non-promo item is added.
+    // prevCount baseline is set on first read so pre-existing cart items
+    // don't trigger the popup.
+    //
+    // Per-category tracking: we don't stop the poll early when one category's
+    // popup fires — a different category may be added later in the same session.
+    //
+    // Race condition guard: if an item is added BEFORE the config fetch
+    // completes, findActiveCrossSell() returns null (empty arrays).
+    // pendingShow is set in that case so we retry the moment config arrives.
+    var prevCount     = null;
+    var prevQtyByCode = {};   // snapshot of non-promo qty per product code, to spot what was just added
+    var pendingItems  = null; // items added before config loaded — retried once config arrives
+    var configLoaded  = false;
+    var pendingShow   = false;
 
-  attachCartPlusInterceptor();
-  attachQuantityInputWatcher();
+    // Build a { code: totalQty } map of the current non-promo cart items.
+    function snapshotNonPromoQty() {
+      var items   = window.FC && FC.json && FC.json.items;
+      var map     = {};
+      if (!items) return map;
+      var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+      for (var i = 0; i < asArray.length; i++) {
+        var it = asArray[i];
+        if (isPromoItem(it)) continue;
+        map[it.code] = (map[it.code] || 0) + itemQty(it);
+      }
+      return map;
+    }
 
-  // Poll every 1 s.  On each tick:
-  //   1. If FC.json.items not available yet, do nothing.
-  //   2. If baseline not set, set it (captures pre-existing items).
-  //   3. If count went up since baseline, show popup.
-  //   4. Always update prevTHCCount (handles removes + re-adds).
-  var pollTimer = setInterval(function () {
-    if (alreadyShown()) { clearInterval(pollTimer); return; }
+    // Return the non-promo items whose quantity increased vs the previous
+    // snapshot — i.e. what the customer just added.
+    function newlyAddedItems(curMap) {
+      var items   = window.FC && FC.json && FC.json.items;
+      if (!items) return [];
+      var asArray = Array.isArray(items) ? items : Object.keys(items).map(function (k) { return items[k]; });
+      return asArray.filter(function (it) {
+        return !isPromoItem(it) && (curMap[it.code] || 0) > (prevQtyByCode[it.code] || 0);
+      });
+    }
 
-    if (!(window.FC && FC.json && FC.json.items)) {
+    var pollTimer = setInterval(function () {
+      if (!(window.FC && FC.json && FC.json.items)) {
+        updatePromoDisclaimer();
+        return;
+      }
+
+      var current = countNonPromoItems();
+
+      // Re-inject cart widget if cart is now visible but widget isn't there yet.
+      // Sidecart uses .fc-cart__items; full-page cart uses .cart-item-blocks.
+      if (GENERICCROSSSELLS.length &&
+          (document.querySelector('.fc-cart__items') || document.querySelector('.cart-item-blocks')) &&
+          !document.getElementById('tgd-cart-crossell')) {
+        renderCartCrossSell();
+      }
+
+      var curMap = snapshotNonPromoQty();
+
+      if (prevCount === null) {
+        prevCount     = current; // establish baseline
+        prevQtyByCode = curMap;
+      } else if (current > prevCount) {
+        // Match the cross-sell against only the item(s) just added, so the
+        // popup reflects the new product rather than anything already in cart.
+        var added = newlyAddedItems(curMap);
+        prevCount     = current;
+        prevQtyByCode = curMap;
+        var cs = findActiveCrossSell(added.length ? added : null);
+        if (cs) {
+          showPopup(cs); // showPopup checks alreadyShownFor(cs) — safe to call every time
+        } else if (!configLoaded) {
+          // Config hasn't arrived yet — remember the new items and retry once it does
+          pendingShow  = true;
+          pendingItems = added.length ? added : null;
+        }
+      } else {
+        prevCount     = current;
+        prevQtyByCode = curMap;
+      }
+
       updatePromoDisclaimer();
-      return; // FC not ready yet
-    }
+    }, 1000);
 
-    var current = countTHCItems();
+    setTimeout(function () { clearInterval(pollTimer); }, 60000);
 
-    if (prevTHCCount === null) {
-      prevTHCCount = current; // first read -- set baseline
-    } else if (current > prevTHCCount) {
-      prevTHCCount = current;
-      checkAndShow(); // count increased: user just added a THC item
-    } else {
-      prevTHCCount = current; // update (handles removes so re-adds trigger popup)
-    }
-
-    updatePromoDisclaimer();
-  }, 1000);
-  setTimeout(function () { clearInterval(pollTimer); }, 60000);
-
-  // Load live config (or session cache).
-  loadConfig().then(function (config) {
-    if (config) {
-      if (config.categories && config.categories.length) {
-        THC_CATEGORIES = config.categories;
+    // Load live config (or session cache) and populate runtime state.
+    // After loading, retry the popup if an item was added during the fetch,
+    // and render the in-cart cross-sell widget now that generic config is available.
+    loadConfig().then(function (config) {
+      if (config) {
+        if (config.categoryCrossSells && config.categoryCrossSells.length) {
+          CATEGORYCROSSSELLS = config.categoryCrossSells;
+        }
+        if (config.genericCrossSells && config.genericCrossSells.length) {
+          GENERICCROSSSELLS = config.genericCrossSells;
+        }
       }
-      if (config.products && config.products.length) {
-        CROSSELL_PRODUCTS = config.products;
-      }
-    }
-    updatePromoDisclaimer();
-  });
+      configLoaded = true;
+      // Always check for a matching cart item after config loads.
+      // Covers two cases:
+      //   (a) pendingShow — item was added before config fetch completed: match
+      //       only those just-added items so the popup reflects the new product.
+      //   (b) pre-existing cart items — items were already in cart on page load:
+      //       match against the whole cart.
+      // showPopup() guards against re-showing via alreadyShownFor(cs).
+      var retryItems = (pendingShow && pendingItems) ? pendingItems : null;
+      pendingShow  = false;
+      pendingItems = null;
+      var cs = findActiveCrossSell(retryItems);
+      if (cs) showPopup(cs);
+
+      updatePromoDisclaimer();
+      renderCartCrossSell(); // show in-cart widget now that generic config is loaded
+    });
   }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', attach);
   } else {
