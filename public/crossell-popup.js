@@ -456,8 +456,6 @@
       cartUrl += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
 
-    console.log('[crossell] cart URL:', cartUrl);
-
     // On the Foxy cart/checkout domain use direct navigation
     var onFoxyDomain = window.location.hostname === 'secure.thegreendragoncbd.com' ||
                        window.location.hostname.indexOf('foxycart') !== -1 ||
@@ -499,7 +497,6 @@
       query += '&' + encodeURIComponent(sessName) + '=' + encodeURIComponent(sessId);
     }
     var url = 'https://' + domain + '/cart?' + query;
-    console.log('[crossell] update cart item', itemId, '→ qty', qty);
 
     // Preferred: Foxy's AJAX client updates the cart in place (no navigation),
     // which is what the sidecart relies on.
@@ -508,9 +505,7 @@
         var p = FC.client.request(url);
         if (p && typeof p.then === 'function') return p;
         return Promise.resolve();
-      } catch (e) {
-        console.warn('[crossell] FC.client.request failed, falling back to link', e);
-      }
+      } catch (e) { /* fall back to link navigation below */ }
     }
 
     // Fallback: same hidden-link technique as addToCart.
@@ -864,7 +859,6 @@
     // Pick one product at random so the widget stays compact and varies across sessions
     var pIdx = Math.floor(Math.random() * cs.products.length);
     var randomProduct = cs.products[pIdx];
-    console.log('[crossell] cartCrossSellHTML — picking product', pIdx, 'of', cs.products.length, ':', randomProduct ? randomProduct.name : 'undefined');
     var productsHTML  = [randomProduct].map(function (p) {
       var sale    = salePrice(p.regularPrice, discountPct);
       var hasVars = p.variants && p.variants.length > 0;
@@ -987,23 +981,17 @@
    */
   function renderCartCrossSell() {
     setTimeout(function () {
-      console.log('[crossell] renderCartCrossSell — GENERICCROSSSELLS:', GENERICCROSSSELLS.length,
-        '| .fc-cart__items found:', !!document.querySelector('.fc-cart__items'));
-
       // Remove any stale injection
       var existing = document.getElementById('tgd-cart-crossell');
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
 
       if (!GENERICCROSSSELLS.length) {
-        console.log('[crossell] renderCartCrossSell — no generic cross-sells configured');
         return;
       }
       // Randomly pick from all active generic cross-sell rows so different
       // products surface across cart renders and sessions.
       var csIdx = Math.floor(Math.random() * GENERICCROSSSELLS.length);
       var cs = GENERICCROSSSELLS[csIdx];
-      console.log('[crossell] renderCartCrossSell — picking row', csIdx, 'of', GENERICCROSSSELLS.length,
-        '| row products:', cs ? cs.products.map(function(p){return p.name+'('+p.code+')';}) : 'none');
       if (!cs || !cs.products || !cs.products.length) return;
 
       // Locate the items container — behaviour differs by cart type:
@@ -1016,7 +1004,6 @@
         appendInside = true; // full-page is two-column flex; append inside keeps widget in left column
       }
       if (!itemsList || !itemsList.parentNode) {
-        console.log('[crossell] renderCartCrossSell — cart items container not found in DOM');
         return;
       }
 
@@ -1036,7 +1023,6 @@
       } else {
         itemsList.parentNode.insertBefore(div, itemsList.nextSibling); // sidecart: after items container
       }
-      console.log('[crossell] renderCartCrossSell — widget injected for:', cs.name || cs.products[0].name);
 
       // Stepper +/− and Add to Cart button
       div.addEventListener('click', function (e) {
@@ -1116,9 +1102,7 @@
    * then at full price (1 unit per click).
    */
   function handlePromoAddClick(productCode) {
-    console.log('[crossell] add clicked — code:', productCode, '| ACTIVE_CONFIG:', ACTIVE_CONFIG ? ACTIVE_CONFIG.primaryCategory || 'generic' : 'null');
     var product = getProductByCode(productCode);
-    console.log('[crossell] product lookup:', product ? product.name : 'NOT FOUND');
     if (!product) return;
 
     var useName    = product.name;
@@ -1152,7 +1136,6 @@
     var spaceLeft = PROMO_LIMIT - getPromoQty();
     var addPrice  = spaceLeft > 0 ? salePrice(usePrice, activeDiscountPct()) : usePrice;
     var addCat    = spaceLeft > 0 ? PROMO_CATEGORY : 'DEFAULT';
-    console.log('[crossell] addToCart — name:', useName, '| price:', addPrice, '| code:', useCode, '| category:', addCat, '| price input:', usePrice, '| discountPct:', activeDiscountPct());
 
     addToCart(useName, addPrice, useCode, addCat, 1, useImage, product.url, customOpts.length ? customOpts : undefined);
 
@@ -1246,9 +1229,8 @@
         try { sessionStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
         return data;
       })
-      .catch(function (err) {
-        console.warn('[crossell] Config fetch failed, using fallback:', err.message);
-        return null;
+      .catch(function () {
+        return null; // fall back to hardcoded defaults
       });
   }
 
@@ -1333,26 +1315,19 @@
       if (prevCount === null) {
         prevCount     = current; // establish baseline
         prevQtyByCode = curMap;
-        console.log('[crossell] poll baseline:', current, 'items');
       } else if (current > prevCount) {
-        console.log('[crossell] count delta detected — current:', current, '| configLoaded:', configLoaded);
         // Match the cross-sell against only the item(s) just added, so the
         // popup reflects the new product rather than anything already in cart.
         var added = newlyAddedItems(curMap);
         prevCount     = current;
         prevQtyByCode = curMap;
-        console.log('[crossell] newly added:', added.map(function(it){return it.name + ' [cat:' + it.category + ' → norm:' + normaliseCategory(it.category) + ']';}));
-        console.log('[crossell] CATEGORYCROSSSELLS:', CATEGORYCROSSSELLS.map(function(c){return c.primaryCategory+'('+c.parentCategories.join(',')+')';}).join(' | '));
         var cs = findActiveCrossSell(added.length ? added : null);
-        console.log('[crossell] findActiveCrossSell result:', cs ? cs.primaryCategory || 'generic' : 'null');
         if (cs) {
-          console.log('[crossell] alreadyShownFor:', alreadyShownFor(cs), '| key:', shownKeyFor(cs));
           showPopup(cs); // showPopup checks alreadyShownFor(cs) — safe to call every time
         } else if (!configLoaded) {
           // Config hasn't arrived yet — remember the new items and retry once it does
           pendingShow  = true;
           pendingItems = added.length ? added : null;
-          console.log('[crossell] pendingShow set (config not yet loaded)');
         }
       } else {
         prevCount     = current;
@@ -1377,27 +1352,6 @@
         }
       }
       configLoaded = true;
-      console.log('[crossell] config loaded —',
-        CATEGORYCROSSSELLS.length, 'category cross-sell(s):',
-        CATEGORYCROSSSELLS.map(function(c){ return c.primaryCategory + ' (' + c.parentCategories.join(', ') + ')'; }),
-        '|', GENERICCROSSSELLS.length, 'generic cross-sell(s)'
-      );
-      console.log('[crossell] CATEGORYCROSSSELLS products:',
-        CATEGORYCROSSSELLS.map(function(cs, i){
-          return 'row[' + i + '] "' + cs.primaryCategory + '" — '
-            + cs.products.length + ' product(s): ['
-            + cs.products.map(function(p){ return p.name + ' (' + p.code + ')'; }).join(', ')
-            + ']';
-        })
-      );
-      console.log('[crossell] GENERICCROSSSELLS detail:',
-        GENERICCROSSSELLS.map(function(cs, i){
-          return 'row[' + i + '] "' + (cs.name || 'unnamed') + '" — '
-            + cs.products.length + ' product(s): ['
-            + cs.products.map(function(p){ return p.name + ' (' + p.code + ')'; }).join(', ')
-            + ']';
-        })
-      );
       // Always check for a matching cart item after config loads.
       // Covers two cases:
       //   (a) pendingShow — item was added before config fetch completed: match
