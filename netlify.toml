@@ -15,6 +15,23 @@
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
 
+# Same revalidate policy for the Omnisend tracking scripts so template/Webflow
+# <script src> tags pick up new deploys immediately (fast 304 when unchanged).
+[[headers]]
+  for = "/omnisend-identify.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/omnisend-add-to-cart.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/omnisend-started-checkout.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
 # Production — deploys from main branch
 [context.production]
   # Production function URL: https://YOUR-SITE-NAME.netlify.app/.netlify/functions/
