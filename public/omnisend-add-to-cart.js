@@ -10,11 +10,15 @@
  * crossell-popup.js). Adds happen on product pages, the sidecart, and the
  * cross-sell popup — a site-wide listener catches them all.
  *
- * Detection: binds FoxyCart's `add.done` event and also runs a short backup
- * poll, diffing FC.json against the previous snapshot to find what was just
- * added. (FoxyCart's add event doesn't hand us the item, so we diff — the same
- * approach crossell-popup.js uses.) prev is updated on every detection, so the
- * event path and the poll can't double-fire the same add.
+ * Detection: the ONLY trigger is FoxyCart's `add.done` event, which fires when
+ * an add-to-cart request completes — never on a plain page load. We diff
+ * FC.json against the previous snapshot only to name the item that was added;
+ * the event itself is the signal that an add happened, so we always fire on it.
+ *
+ *   IMPORTANT: do NOT fire on `loaded.done` or a poll. Those run on every page
+ *   load (FoxyCart re-fetches the cart), so firing on them reports every
+ *   pre-existing cart item as a new add on every page. `loaded.done` is used
+ *   here only to silently keep the baseline snapshot current.
  *
  * Units: cart-event amounts are DECIMAL DOLLARS (e.g. 49.99) per Omnisend's
  * cart-event API — do not convert to cents here.
@@ -76,68 +80,64 @@
     return map;
   }
 
-  var prev = null; // baseline qty-by-key; null until first read
+  var prev = {}; // last-seen qty-by-key; only used to identify the added line
 
-  function detectAndFire() {
+  // Silently refresh the baseline (page load, cart reload, removals). Never fires.
+  function syncBaseline() {
+    var json = window.FC && FC.json;
+    if (json) prev = snapshot(itemsArray(json.items));
+  }
+
+  // Called ONLY from add.done — an add definitely happened, so always fire.
+  function onAddDone() {
     var json = window.FC && FC.json;
     if (!json) return;
 
     var arr = itemsArray(json.items);
     var cur = snapshot(arr);
 
-    if (prev === null) { prev = cur; return; } // baseline: ignore pre-existing items
-
-    // Keys whose quantity increased since last snapshot = what was just added.
-    var addedKeys = [];
+    // Best-effort: the line whose qty rose since the last snapshot is the add.
+    var addedKey = null;
     for (var k in cur) {
-      if (cur[k] > (prev[k] || 0)) addedKeys.push(k);
+      if (cur[k] > (prev[k] || 0)) addedKey = k;
     }
     prev = cur;
-    if (!addedKeys.length) return;
 
-    // Use the last increased line as the "added item"; full cart goes in lineItems.
-    var addedKey = addedKeys[addedKeys.length - 1];
     var addedObj = null;
-    for (var i = 0; i < arr.length; i++) {
-      if (itemKey(arr[i]) === addedKey) { addedObj = arr[i]; break; }
+    if (addedKey) {
+      for (var i = 0; i < arr.length; i++) {
+        if (itemKey(arr[i]) === addedKey) { addedObj = arr[i]; break; }
+      }
     }
 
     var common = cartCommon(json);
-    var omCart = {
-      cartID: common.cartID,
-      value: common.value,
-      currency: common.currency,
-      abandonedCheckoutURL: common.abandonedCheckoutURL,
-      addedItem: addedObj ? buildItem(addedObj) : undefined,
-      lineItems: arr.map(buildItem)
-    };
-
     window.dataLayer = window.dataLayer || [];
-    window.dataLayer.push({ event: 'om_add_to_cart', om_cart: omCart });
+    window.dataLayer.push({
+      event: 'om_add_to_cart',
+      om_cart: {
+        cartID: common.cartID,
+        value: common.value,
+        currency: common.currency,
+        abandonedCheckoutURL: common.abandonedCheckoutURL,
+        addedItem: addedObj ? buildItem(addedObj) : undefined,  // Tag 4 falls back to lineItems[0]
+        lineItems: arr.map(buildItem)
+      }
+    });
   }
 
   function attach() {
-    if (!window.FC || !FC.json) {
+    if (!window.FC || !FC.client || typeof FC.client.on !== 'function') {
       setTimeout(attach, 150);
       return;
     }
 
-    // Establish the baseline so items already in the cart on load don't fire.
-    detectAndFire();
+    syncBaseline(); // seed baseline from whatever is loaded so far
 
-    // Primary: FoxyCart's add event. (FC.json is updated by the time it fires.)
-    if (FC.client && typeof FC.client.on === 'function') {
-      try { FC.client.on('add.done', detectAndFire); } catch (e) {}
-      try { FC.client.on('loaded.done', detectAndFire); } catch (e) {}
-    }
-
-    // Backup: brief poll catches adds the event path may miss. prev-tracking
-    // means this can't re-fire an add already reported by the event.
-    var tries = 0;
-    var poll = setInterval(function () {
-      detectAndFire();
-      if (++tries > 120) clearInterval(poll); // ~60s, mirrors crossell-popup.js
-    }, 500);
+    try { FC.client.on('add.done', onAddDone); } catch (e) {}
+    // Keep the baseline fresh on cart (re)loads WITHOUT firing — this is what
+    // prevents the "fires on every page" bug.
+    try { FC.client.on('loaded.done', syncBaseline); } catch (e) {}
+    try { FC.client.on('ready.done', syncBaseline); } catch (e) {}
   }
 
   if (document.readyState === 'loading') {
