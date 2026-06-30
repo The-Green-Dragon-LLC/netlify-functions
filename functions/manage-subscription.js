@@ -186,16 +186,25 @@ exports.handler = async (event) => {
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
   if (!subscription_uri || !sub_token) return resp(400, { error: 'Missing subscription_uri or sub_token' });
 
-  // SSRF guard: only ever talk to the Foxy API host.
-  let subUri;
+  // SSRF guard + normalization. The portal exposes the subscription's self link
+  // on the *store* customer API (e.g. tgd-test.foxycart.com/s/customer/
+  // subscriptions/777700), but we operate via the admin hAPI. Accept any
+  // foxycart.com URL, pull out the numeric subscription id, and always rebuild
+  // the canonical admin URL ourselves — we never fetch a caller-supplied URL.
+  let parsed;
   try {
-    subUri = new URL(subscription_uri);
+    parsed = new URL(subscription_uri);
   } catch (_) {
     return resp(400, { error: 'Invalid subscription_uri' });
   }
-  if (subUri.hostname !== FOXY_API_HOST) {
-    return resp(400, { error: 'subscription_uri must point to ' + FOXY_API_HOST });
+  if (!/(^|\.)foxycart\.com$/.test(parsed.hostname)) {
+    return resp(400, { error: 'subscription_uri must be a foxycart.com URL' });
   }
+  var idMatch = /\/subscriptions\/(\d+)/.exec(parsed.pathname);
+  if (!idMatch) {
+    return resp(400, { error: 'Could not find a subscription id in subscription_uri' });
+  }
+  var adminSubUrl = 'https://' + FOXY_API_HOST + '/subscriptions/' + idMatch[1];
 
   if (action === 'set-frequency' && !ALLOWED_FREQUENCIES.includes(frequency)) {
     return resp(400, { error: 'frequency must be one of ' + ALLOWED_FREQUENCIES.join(', ') });
@@ -209,7 +218,7 @@ exports.handler = async (event) => {
     const authHeaders = { 'Authorization': `Bearer ${token}`, 'FOXY-API-VERSION': '1' };
 
     // 1. Fetch the subscription (single request — fast).
-    const subRes = await httpsReq(subUri.href, { headers: authHeaders });
+    const subRes = await httpsReq(adminSubUrl, { headers: authHeaders });
     const sub = subRes.json;
     if (!sub || !sub._links) {
       throw new Error(`Could not load subscription (${subRes.status}): ${subRes.text.slice(0, 200)}`);
@@ -217,8 +226,12 @@ exports.handler = async (event) => {
 
     // 2. Verify the caller actually owns this subscription.
     const realToken = tokenFromSubTokenUrl(sub);
-    if (!realToken || realToken !== sub_token) {
-      console.warn('[manage] sub_token mismatch for', subUri.href);
+    if (!realToken) {
+      console.warn('[manage] no fx:sub_token_url on admin resource; links:', Object.keys(sub._links || {}));
+      return resp(500, { error: 'Could not verify subscription ownership (token link missing).' });
+    }
+    if (realToken !== sub_token) {
+      console.warn('[manage] sub_token mismatch for', adminSubUrl);
       return resp(403, { error: 'Not authorized for this subscription' });
     }
 
@@ -240,7 +253,7 @@ exports.handler = async (event) => {
     else if (action === 'set-frequency') patchBody = { frequency };
     else if (action === 'skip')       patchBody = { next_transaction_date: addFrequency(sub.next_transaction_date, sub.frequency) };
 
-    const r = await patchOrThrow(subUri.href, patchHeaders, patchBody, action);
+    const r = await patchOrThrow(adminSubUrl, patchHeaders, patchBody, action);
     return resp(200, { success: true, action, applied: patchBody, status: r.status });
 
   } catch (err) {
