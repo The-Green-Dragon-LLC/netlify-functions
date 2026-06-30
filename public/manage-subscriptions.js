@@ -101,9 +101,13 @@
       var d = card.data;
       if (!d) return; /* not yet loaded */
 
-      /* A subscription is considered cancelled when end_date is set (pending
-       * end) OR when is_active has flipped to false (already ended). */
-      var isCancelled = (d.end_date && !d.end_date.startsWith('0000')) || d.is_active === false;
+      /* Status buckets:
+       *   inactive — already ended (is_active === false). Not manageable.
+       *   ending   — still active but a future end_date is set (pending cancel).
+       *   (cancelled = either of the above; used to gate management actions). */
+      var isInactive  = d.is_active === false;
+      var isEnding    = !isInactive && d.end_date && !d.end_date.startsWith('0000');
+      var isCancelled = isInactive || isEnding;
 
       var editUrl = d._links &&
                     d._links['fx:sub_token_url'] &&
@@ -157,6 +161,8 @@
         name:        name,
         nextDate:    nextDate,
         cancelled:   isCancelled,
+        inactive:    isInactive,
+        ending:      isEnding,
         paused:      isPaused,
         endDate:     endDate,
         address:     addr
@@ -331,9 +337,10 @@
       card.dataset.frequency = item.frequency || '';
       card.dataset.address   = JSON.stringify(item.address || {});
 
-      var badge = item.cancelled
-        ? '<span class="dgc-sub-badge-cancelled">Cancelled</span>'
-        : (item.paused ? '<span class="dgc-sub-badge-paused">Paused</span>' : '');
+      var badge =
+        item.inactive ? '<span class="dgc-sub-badge-cancelled">Inactive</span>' :
+        item.ending   ? '<span class="dgc-sub-badge-cancelled">Ending Soon</span>' :
+        item.paused   ? '<span class="dgc-sub-badge-paused">Paused</span>' : '';
 
       var nameRow =
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
@@ -342,8 +349,10 @@
         '</div>';
 
       var dateRow;
-      if (item.cancelled && item.endDate) {
-        dateRow = '<p class="dgc-sub-card-end">Ends on: ' + esc(item.endDate) + '</p>';
+      if (item.inactive) {
+        dateRow = '<p class="dgc-sub-card-end">Ended' + (item.endDate ? ' on ' + esc(item.endDate) : '') + '</p>';
+      } else if (item.ending && item.endDate) {
+        dateRow = '<p class="dgc-sub-card-end">Ends on ' + esc(item.endDate) + '</p>';
       } else if (item.paused) {
         dateRow = '<p class="dgc-sub-card-paused-note">Paused — you won\'t be charged until you resume.</p>';
       } else {
