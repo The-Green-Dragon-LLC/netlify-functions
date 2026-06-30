@@ -15,8 +15,24 @@
   'use strict';
 
   /* Netlify function that performs subscription changes server-side (OAuth +
-   * sub_token ownership check). Matches the GD_RESTART_FN host used elsewhere. */
-  var GD_MANAGE_FN = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/manage-subscription';
+   * sub_token ownership check).
+   * Auto-derived from this script's own src so the correct function is called on
+   * both the develop deploy and production — no manual URL updates needed
+   * (same pattern as crossell-popup.js). */
+  var GD_MANAGE_FN = (function () {
+    try {
+      var s = document.currentScript;
+      if (!s) {
+        var all = document.getElementsByTagName('script');
+        s = all[all.length - 1];
+      }
+      if (s && s.src) {
+        var base = s.src.replace(/\/[^\/]*$/, '');
+        return base + '/.netlify/functions/manage-subscription';
+      }
+    } catch (e) { /* ignore */ }
+    return 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/manage-subscription';
+  })();
 
   /* A subscription whose next charge is more than this many days out is treated
    * as "paused" (the pause action pushes the date ~5 years into the future). */
