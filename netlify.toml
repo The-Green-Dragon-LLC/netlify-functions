@@ -32,6 +32,13 @@
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
 
+# Subscription-management script for the Webflow "Manage Subscriptions" page —
+# same revalidate policy so Webflow picks up new deploys immediately.
+[[headers]]
+  for = "/manage-subscriptions.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
 # Production — deploys from main branch
 [context.production]
   # Production function URL: https://YOUR-SITE-NAME.netlify.app/.netlify/functions/
