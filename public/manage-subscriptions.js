@@ -367,7 +367,7 @@
         actions =
           '<div class="dgc-sub-card-actions">' +
             '<button class="dgc-btn-action dgc-btn-resume" data-action="resume">Resume Subscription</button>' +
-            '<button data-cancel-url="' + esc(item.cancelUrl) + '" class="dgc-btn-cancel">Cancel Subscription</button>' +
+            '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
           '</div>';
       } else {
         /* Active: full set of self-service controls.
@@ -381,7 +381,7 @@
             '<button class="dgc-btn-action" data-action="change-address">Change Address</button>' +
             '<button class="dgc-btn-action" data-action="pause">Pause</button>' +
             '<a href="' + esc(item.editUrl) + '" class="dgc-btn-edit">Modify Items</a>' +
-            '<button data-cancel-url="' + esc(item.cancelUrl) + '" class="dgc-btn-cancel">Cancel Subscription</button>' +
+            '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
           '</div>';
       }
 
@@ -418,7 +418,10 @@
     /* Inline-form openers ----------------------------------------------- */
     if (action === 'change-frequency') { openFrequencyForm(card); return; }
     if (action === 'change-address')   { openAddressForm(card); return; }
+    if (action === 'cancel-prompt')    { openCancelConfirm(card); return; }
     if (action === 'inline-cancel')    { closeInline(card); return; }
+
+    if (action === 'confirm-cancel')   { doAction(card, 'cancel', {}); return; }
 
     if (action === 'apply-frequency') {
       var sel = card.querySelector('.dgc-sub-inline select');
@@ -504,6 +507,23 @@
     return address;
   }
 
+  function openCancelConfirm(card) {
+    var inline = card.querySelector('.dgc-sub-inline');
+    if (!inline) return;
+    inline.innerHTML =
+      '<p style="margin:0 0 12px;font-size:13px;color:#444;line-height:1.5;">' +
+      'Are you sure you want to cancel? You can ' +
+      '<strong>pause anytime</strong> or <strong>change how often it ships</strong> instead — ' +
+      'no need to start over later.</p>' +
+      '<div class="dgc-sub-card-actions">' +
+        '<button class="dgc-btn-action dgc-btn-resume" data-action="pause">Pause instead</button>' +
+        '<button class="dgc-btn-action" data-action="change-frequency">Change frequency instead</button>' +
+        '<button class="dgc-btn-cancel" data-action="confirm-cancel">Yes, cancel subscription</button>' +
+        '<button class="dgc-btn-action" data-action="inline-cancel">Keep my subscription</button>' +
+      '</div>';
+    inline.style.display = 'block';
+  }
+
   function closeInline(card) {
     var inline = card.querySelector('.dgc-sub-inline');
     if (inline) { inline.style.display = 'none'; inline.innerHTML = ''; }
@@ -574,15 +594,6 @@
       .replace(/>/g,  '&gt;')
       .replace(/"/g,  '&quot;');
   }
-
-  /* Navigate cancel URLs via window.location.href — bypasses FoxyCart's
-   * sidecart link interception which hijacks clicks on *.foxycart.com/cart URLs. */
-  document.addEventListener('click', function (e) {
-    var btn = e.target && e.target.closest && e.target.closest('[data-cancel-url]');
-    if (!btn) return;
-    var url = btn.getAttribute('data-cancel-url');
-    if (url) window.location.href = url;
-  });
 
   /* ════════════════════════════════════════════════════════════════════════
    * BOOTSTRAP — wait for <foxy-customer-portal> to exist, then start.

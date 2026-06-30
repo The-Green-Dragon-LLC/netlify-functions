@@ -182,7 +182,7 @@ exports.handler = async (event) => {
 
   const { action, subscription_uri, sub_token, frequency, address } = body;
 
-  const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'change-address'];
+  const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'change-address', 'cancel'];
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
   if (!subscription_uri || !sub_token) return resp(400, { error: 'Missing subscription_uri or sub_token' });
 
@@ -244,6 +244,22 @@ exports.handler = async (event) => {
       const patchBody = buildAddressPatch(address);
       const r = await patchOrThrow(ttHref, patchHeaders, patchBody, 'address');
       return resp(200, { success: true, action, applied: patchBody, status: r.status });
+    }
+
+    if (action === 'cancel') {
+      /* Reuse Foxy's proven cart sub_cancel flow, but server-side so the
+       * customer stays on the manage page. The cart URL (with the sub_token)
+       * comes from the trusted admin API response, not the caller. */
+      let cancelHref = sub._links['fx:sub_token_url'] && sub._links['fx:sub_token_url'].href;
+      if (!cancelHref) throw new Error('Subscription has no sub_token_url link');
+      cancelHref += (cancelHref.indexOf('?') === -1 ? '?' : '&') + 'sub_cancel=1';
+      console.log('[manage] cancel via cart:', cancelHref);
+      const cr = await httpsReq(cancelHref, {});
+      console.log('[manage] cancel status:', cr.status, (cr.text || '').slice(0, 150));
+      if (!(cr.status >= 200 && cr.status < 400)) {
+        throw new Error('Cancel failed (' + cr.status + '): ' + (cr.text || '').slice(0, 150));
+      }
+      return resp(200, { success: true, action });
     }
 
     let patchBody;
