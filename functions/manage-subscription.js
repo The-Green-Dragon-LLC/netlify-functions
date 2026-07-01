@@ -22,6 +22,11 @@
  *                   the existing next charge date if still future, else tomorrow.
  *   change-address→ PATCH the subscription's transaction_template shipping address
  *                   (Foxy does not allow address edits on the subscription itself).
+ *   list-variants → (read) return the switchable variants for a line item, priced
+ *                   from the Webflow CMS.
+ *   set-quantity  → change a line item's quantity (1..99).
+ *   set-variant   → swap a line item to a sibling variant of the same product.
+ *                   Price is read from the CMS, never the client (HMAC is off).
  *
  * SECURITY
  *   The browser sends the subscription's own `sub_token` (an unguessable
@@ -49,6 +54,18 @@ const CORS = {
 const ALLOWED_FREQUENCIES = ['1w', '2w', '1m'];
 const PAUSE_YEARS_OUT = 5; // "indefinite" — far enough that it never charges until resumed
 const FOXY_API_HOST = 'api.foxycart.com';
+
+/* ── Webflow CMS (variant price guard) ──────────────────────────────────────
+ * Foxy global HMAC cart validation is OFF for this store, so Foxy does NOT
+ * validate item prices. When switching a variant we therefore look the price up
+ * from the Webflow CMS ourselves and never trust a client-supplied price.
+ * A Foxy line item's `code` equals the variant's `sku`; the item's `url` is the
+ * parent product slug, whose `variants-options` list the switchable variants. */
+const WEBFLOW_API = 'https://api.webflow.com/v2';
+const WF_PRODUCTS_COLLECTION = '62a16d0c459d465de7ebf815';
+const WF_VARIANTS_COLLECTION = '62a16e12370c3ef89e3c8c79';
+const VARIANT_ATTR_SLUGS = ['strain', 'size', 'flavor', 'strength', 'type'];
+const MAX_QUANTITY = 99;
 
 /* ─── HTTPS HELPER ──────────────────────────────────────────────────────────── */
 
@@ -169,6 +186,91 @@ function tokenFromSubTokenUrl(sub) {
   }
 }
 
+/* ─── WEBFLOW CMS LOOKUPS (variant price guard) ─────────────────────────────── */
+
+async function webflowGet(path) {
+  const token = process.env.WEBFLOW_API_TOKEN || '';
+  if (!token) throw new Error('WEBFLOW_API_TOKEN is not set — variant editing is unavailable.');
+  const res = await httpsReq(WEBFLOW_API + path, {
+    headers: { 'Authorization': 'Bearer ' + token, 'accept': 'application/json' },
+  });
+  if (!res.ok) throw new Error('Webflow GET ' + path + ' failed (' + res.status + '): ' + (res.text || '').slice(0, 150));
+  return res.json || {};
+}
+
+/* Product slug lives in the Foxy line item's `url` (e.g. "products/foo-bar"). */
+function productSlugFromItem(item) {
+  return String((item && item.url) || '').replace(/[?#].*$/, '').replace(/\/+$/, '').replace(/^.*\//, '');
+}
+
+async function wfGetProductBySlug(slug) {
+  if (!slug) return null;
+  const data = await webflowGet('/collections/' + WF_PRODUCTS_COLLECTION + '/items?slug=' + encodeURIComponent(slug));
+  const items = (data && data.items) || [];
+  // Guard against the API ignoring the slug filter: match exactly.
+  return items.find((it) => it.fieldData && it.fieldData.slug === slug) || items[0] || null;
+}
+
+async function wfGetVariant(id) {
+  const data = await webflowGet('/collections/' + WF_VARIANTS_COLLECTION + '/items/' + id);
+  return (data && data.fieldData) ? data.fieldData : null;
+}
+
+/* Best human label for a variant: the first non-empty differentiator attribute,
+ * else the variant name with the product-name prefix stripped. */
+function variantLabel(fd, productName) {
+  for (const slug of VARIANT_ATTR_SLUGS) {
+    if (fd[slug]) return String(fd[slug]).trim();
+  }
+  let n = String(fd.name || '').trim();
+  if (productName && n.indexOf(productName) === 0) {
+    n = n.slice(productName.length).replace(/^[\s\-]+/, '').trim();
+  }
+  return n || fd.name || 'Option';
+}
+
+function variantPrice(fd) {
+  return (fd['sale-price'] !== undefined && fd['sale-price'] !== null) ? fd['sale-price'] : fd.price;
+}
+
+/* Load a product's variants (by the item's product slug) → normalized list. */
+async function loadProductVariants(item) {
+  const slug = productSlugFromItem(item);
+  const product = await wfGetProductBySlug(slug);
+  if (!product) return { product: null, productName: '', variants: [] };
+  const productName = (product.fieldData && product.fieldData.name) || '';
+  const ids = (product.fieldData && product.fieldData['variants-options']) || [];
+  const variants = [];
+  for (const id of ids) {
+    let fd = null;
+    try { fd = await wfGetVariant(id); } catch (_) { continue; }
+    if (!fd || !fd.sku) continue;
+    variants.push({
+      code: fd.sku,
+      label: variantLabel(fd, productName),
+      price: variantPrice(fd),
+      image: (fd['primary-image'] && fd['primary-image'].url) || null,
+      name: fd.name || null,
+      in_stock: (fd.inventory === undefined || fd.inventory === null) ? true : fd.inventory > 0,
+    });
+  }
+  return { product, productName, variants };
+}
+
+/* Find a subscription's transaction_template line item by its Foxy code. */
+function findTemplateItem(sub, code) {
+  const tt = sub._embedded && sub._embedded['fx:transaction_template'];
+  const items = (tt && tt._embedded && tt._embedded['fx:items']) || [];
+  return items.find((it) => String(it.code) === String(code)) || null;
+}
+
+/* Always rebuild a canonical admin item URL — never fetch a caller-supplied one. */
+function toAdminItemUrl(href) {
+  const m = /\/items\/(\d+)/.exec(String(href || ''));
+  if (!m) throw new Error('Could not determine the item id to update.');
+  return 'https://' + FOXY_API_HOST + '/items/' + m[1];
+}
+
 /* ─── HANDLER ───────────────────────────────────────────────────────────────── */
 
 exports.handler = async (event) => {
@@ -182,9 +284,11 @@ exports.handler = async (event) => {
     return resp(400, { error: 'Invalid JSON body' });
   }
 
-  const { action, subscription_uri, sub_token, frequency, address } = body;
+  const { action, subscription_uri, sub_token, frequency, address, item_code, quantity, variant_code } = body;
 
-  const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel'];
+  const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel',
+                 'list-variants', 'set-quantity', 'set-variant'];
+  const ITEM_ACTIONS = ['list-variants', 'set-quantity', 'set-variant'];
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
   if (!subscription_uri || !sub_token) return resp(400, { error: 'Missing subscription_uri or sub_token' });
 
@@ -214,13 +318,17 @@ exports.handler = async (event) => {
   if (action === 'change-address' && (!address || typeof address !== 'object')) {
     return resp(400, { error: 'change-address requires an address object' });
   }
+  if (ITEM_ACTIONS.includes(action) && !item_code) {
+    return resp(400, { error: action + ' requires item_code' });
+  }
 
   try {
     const token = await getAccessToken();
     const authHeaders = { 'Authorization': `Bearer ${token}`, 'FOXY-API-VERSION': '1' };
 
-    // 1. Fetch the subscription (single request — fast).
-    const subRes = await httpsReq(adminSubUrl, { headers: authHeaders });
+    // 1. Fetch the subscription. Zoom the transaction_template items so the
+    //    item-editing actions can find the line to modify.
+    const subRes = await httpsReq(adminSubUrl + '?zoom=transaction_template:items', { headers: authHeaders });
     const sub = subRes.json;
     if (!sub || !sub._links) {
       throw new Error(`Could not load subscription (${subRes.status}): ${subRes.text.slice(0, 200)}`);
@@ -262,6 +370,39 @@ exports.handler = async (event) => {
         throw new Error('Cancel failed (' + cr.status + '): ' + (cr.text || '').slice(0, 150));
       }
       return resp(200, { success: true, action });
+    }
+
+    /* ── Item editing: quantity + variant changes on the transaction_template ── */
+    if (ITEM_ACTIONS.includes(action)) {
+      const item = findTemplateItem(sub, item_code);
+      if (!item) return resp(404, { error: 'That item is no longer on this subscription. Please refresh.' });
+
+      if (action === 'list-variants') {
+        const { variants } = await loadProductVariants(item);
+        return resp(200, { success: true, current_code: item.code, quantity: item.quantity, variants });
+      }
+
+      if (action === 'set-quantity') {
+        const q = parseInt(quantity, 10);
+        if (!(q >= 1 && q <= MAX_QUANTITY)) return resp(400, { error: 'Quantity must be between 1 and ' + MAX_QUANTITY + '.' });
+        const itemUrl = toAdminItemUrl(item._links && item._links.self && item._links.self.href);
+        const r = await patchOrThrow(itemUrl, patchHeaders, { quantity: q }, 'set-quantity');
+        return resp(200, { success: true, action, applied: { quantity: q }, status: r.status });
+      }
+
+      // set-variant — swap to a sibling variant of the SAME product. Price is
+      // read from the CMS (never the client) since Foxy HMAC validation is off.
+      if (!variant_code) return resp(400, { error: 'set-variant requires variant_code' });
+      const { productName, variants } = await loadProductVariants(item);
+      const target = variants.find((v) => String(v.code) === String(variant_code));
+      if (!target) return resp(400, { error: 'That option isn\'t available for this product.' });
+      if (!target.in_stock) return resp(400, { error: 'That option is out of stock.' });
+
+      const itemUrl = toAdminItemUrl(item._links && item._links.self && item._links.self.href);
+      const patch = { code: target.code, name: target.name || (productName + ' - ' + target.label), price: target.price };
+      if (target.image) patch.image = target.image;
+      const r = await patchOrThrow(itemUrl, patchHeaders, patch, 'set-variant');
+      return resp(200, { success: true, action, applied: patch, status: r.status });
     }
 
     let patchBody;

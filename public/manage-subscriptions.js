@@ -144,16 +144,20 @@
       var tmpl      = d._embedded && d._embedded['fx:transaction_template'];
       var tmplItems = (tmpl && tmpl._embedded && tmpl._embedded['fx:items']) || [];
       var dirItems  = (d._embedded && d._embedded['fx:items']) || [];
-      var firstItem = tmplItems[0] || dirItems[0];
+      var lineSrc  = tmplItems.length ? tmplItems : dirItems;
+      var firstItem = lineSrc[0];
       if (firstItem && firstItem.name) name = firstItem.name;
 
-      /* TEMP DEBUG (remove after variant-editing build): dump one real line item
-       * so we can see how Foxy stores code/name/price/options for the mapping. */
-      if (!window.__dgcItemLogged && firstItem) {
-        window.__dgcItemLogged = true;
-        try { console.log('[DGC][debug] sample subscription line item:\n' + JSON.stringify(firstItem, null, 2)); }
-        catch (e) { console.log('[DGC][debug] sample subscription line item:', firstItem); }
-      }
+      /* Line items the customer can edit (quantity / variant). */
+      var lineItems = lineSrc.map(function (it) {
+        return {
+          code:     it.code,
+          name:     it.name,
+          price:    it.price,
+          quantity: it.quantity,
+          image:    it.image
+        };
+      });
 
       /* Current shipping address (from the transaction template) to prefill the
        * address form. Fields fall back to empty strings. */
@@ -181,7 +185,8 @@
         ending:      isEnding,
         paused:      isPaused,
         endDate:     endDate,
-        address:     addr
+        address:     addr,
+        lineItems:   lineItems
       });
       handledCards.push(card); /* hide the native card once its data is read */
     });
@@ -401,6 +406,7 @@
       if (item.subToken) card.dataset.subToken = item.subToken;
       card.dataset.frequency = item.frequency || '';
       card.dataset.address   = JSON.stringify(item.address || {});
+      card.dataset.lineItems = JSON.stringify(item.lineItems || []);
 
       var badge =
         item.inactive ? '<span class="dgc-sub-badge-cancelled">Inactive</span>' :
@@ -456,7 +462,7 @@
             '<button class="dgc-btn-action" data-action="change-frequency">Change Frequency</button>' +
             '<button class="dgc-btn-action" data-action="change-address">Change Address</button>' +
             '<button class="dgc-btn-action" data-action="pause">Pause</button>' +
-            '<a href="' + esc(item.editUrl) + '" class="dgc-btn-edit">Modify Items</a>' +
+            '<button class="dgc-btn-action" data-action="edit-items">Edit Items</button>' +
             '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
           '</div>';
       }
@@ -495,8 +501,15 @@
     /* Inline-form openers ----------------------------------------------- */
     if (action === 'change-frequency') { openFrequencyForm(card); return; }
     if (action === 'change-address')   { openAddressForm(card); return; }
+    if (action === 'edit-items')       { openItemsForm(card); return; }
     if (action === 'cancel-prompt')    { openCancelConfirm(card); return; }
     if (action === 'inline-cancel')    { closeInline(card); return; }
+
+    /* Item editing (quantity / variant) --------------------------------- */
+    if (action === 'qty-inc' || action === 'qty-dec') { adjustQty(actionBtn, action); return; }
+    if (action === 'save-qty')       { saveQty(card, actionBtn); return; }
+    if (action === 'load-variants')  { loadVariants(card, actionBtn); return; }
+    if (action === 'save-variant')   { saveVariant(card, actionBtn); return; }
 
     if (action === 'confirm-cancel')   { doAction(card, 'cancel', {}); return; }
 
@@ -604,6 +617,118 @@
   function closeInline(card) {
     var inline = card.querySelector('.dgc-sub-inline');
     if (inline) { inline.style.display = 'none'; inline.innerHTML = ''; }
+  }
+
+  /* ── Item editing: quantity + variant ─────────────────────────────────── */
+  function openItemsForm(card) {
+    var inline = card.querySelector('.dgc-sub-inline');
+    if (!inline) return;
+    var items = [];
+    try { items = JSON.parse(card.dataset.lineItems || '[]'); } catch (e) { items = []; }
+
+    if (!items.length) {
+      inline.innerHTML =
+        '<p style="margin:0 0 10px;font-size:13px;color:#666;">No editable items found for this subscription.</p>' +
+        '<div class="dgc-sub-card-actions"><button class="dgc-btn-action" data-action="inline-cancel">Close</button></div>';
+      inline.style.display = 'block';
+      return;
+    }
+
+    inline.innerHTML =
+      '<label style="font-size:13px;margin-bottom:10px;">Edit the items in this subscription</label>' +
+      items.map(function (it) {
+        return '' +
+        '<div class="dgc-item-row" data-code="' + esc(it.code) + '" style="padding:10px 0;border-bottom:1px solid #e3efe3;">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">' +
+            (it.image ? '<img src="' + esc(it.image) + '" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:4px;flex:none;">' : '') +
+            '<span style="font-size:13px;font-weight:600;color:#333;">' + esc(it.name) + '</span>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+            '<span style="font-size:12px;color:#555;">Qty</span>' +
+            '<button class="dgc-btn-action" data-action="qty-dec" style="padding:6px 12px;">−</button>' +
+            '<input class="dgc-qty" type="number" min="1" max="99" value="' + (parseInt(it.quantity, 10) || 1) + '" style="width:56px;text-align:center;margin-bottom:0;">' +
+            '<button class="dgc-btn-action" data-action="qty-inc" style="padding:6px 12px;">+</button>' +
+            '<button class="dgc-btn-action dgc-btn-resume" data-action="save-qty">Save qty</button>' +
+            '<button class="dgc-btn-action" data-action="load-variants">Change option</button>' +
+          '</div>' +
+          '<div class="dgc-variant-slot" style="margin-top:8px;"></div>' +
+        '</div>';
+      }).join('') +
+      '<div class="dgc-sub-card-actions" style="margin-top:12px;">' +
+        '<button class="dgc-btn-action" data-action="inline-cancel">Close</button>' +
+      '</div>';
+    inline.style.display = 'block';
+  }
+
+  function adjustQty(btn, action) {
+    var row = btn.closest('.dgc-item-row');
+    var inp = row && row.querySelector('.dgc-qty');
+    if (!inp) return;
+    var v = parseInt(inp.value, 10) || 1;
+    v += (action === 'qty-inc' ? 1 : -1);
+    if (v < 1) v = 1;
+    if (v > 99) v = 99;
+    inp.value = v;
+  }
+
+  function saveQty(card, btn) {
+    var row = btn.closest('.dgc-item-row');
+    var inp = row && row.querySelector('.dgc-qty');
+    var code = row && row.getAttribute('data-code');
+    var q = inp && parseInt(inp.value, 10);
+    if (code && q) doAction(card, 'set-quantity', { item_code: code, quantity: q });
+  }
+
+  function loadVariants(card, btn) {
+    var row = btn.closest('.dgc-item-row');
+    if (!row) return;
+    var code = row.getAttribute('data-code');
+    var slot = row.querySelector('.dgc-variant-slot');
+    if (!slot) return;
+    slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#666;">Loading options…</p>';
+
+    fetch(GD_MANAGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'list-variants',
+        subscription_uri: card.dataset.subUri,
+        sub_token: card.dataset.subToken,
+        item_code: code
+      })
+    })
+    .then(function (r) { return r.json().catch(function () { return {}; }); })
+    .then(function (j) {
+      var variants = (j && j.variants) || [];
+      if (!variants.length) {
+        slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">No other options are available for this product.</p>';
+        return;
+      }
+      var opts = variants.map(function (v) {
+        var selected = (String(v.code) === String(j.current_code)) ? ' selected' : '';
+        var price = (v.price != null) ? ' — $' + Number(v.price).toFixed(2) : '';
+        var oos = v.in_stock ? '' : ' (out of stock)';
+        return '<option value="' + esc(v.code) + '"' + (v.in_stock ? '' : ' disabled') + selected + '>' +
+                 esc(v.label) + price + oos + '</option>';
+      }).join('');
+      slot.innerHTML =
+        '<label style="font-size:12px;">Choose an option</label>' +
+        '<select class="dgc-variant-select">' + opts + '</select>' +
+        '<div class="dgc-sub-card-actions" style="margin-top:6px;">' +
+          '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save option</button>' +
+        '</div>';
+    })
+    .catch(function () {
+      slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">Couldn\'t load options. Please try again.</p>';
+    });
+  }
+
+  function saveVariant(card, btn) {
+    var row = btn.closest('.dgc-item-row');
+    var sel = row && row.querySelector('.dgc-variant-select');
+    var code = row && row.getAttribute('data-code');
+    var vcode = sel && sel.value;
+    if (code && vcode) doAction(card, 'set-variant', { item_code: code, variant_code: vcode });
   }
 
   function doAction(card, action, extra) {
