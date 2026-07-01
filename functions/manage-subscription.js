@@ -275,20 +275,6 @@ function toAdminItemUrl(href) {
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
-
-  /* TEMP diagnostic (remove after): GET ?debug=env reports whether the token is
-   * visible to this deploy — presence/length and matching KEY NAMES only, never
-   * the secret values. */
-  if (event.httpMethod === 'GET' && event.queryStringParameters && event.queryStringParameters.debug === 'env') {
-    return resp(200, {
-      hasWebflowToken:  !!process.env.WEBFLOW_API_TOKEN,
-      webflowTokenLen:  (process.env.WEBFLOW_API_TOKEN || '').length,
-      matchingEnvKeys:  Object.keys(process.env).filter((k) => /WEBFLOW|FOXY/i.test(k)),
-      deployContext:    process.env.CONTEXT || null,
-      branch:           process.env.BRANCH || null,
-    });
-  }
-
   if (event.httpMethod !== 'POST') return resp(405, { error: 'Method Not Allowed' });
 
   let body;
