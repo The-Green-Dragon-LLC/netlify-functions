@@ -275,26 +275,6 @@ function toAdminItemUrl(href) {
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
-
-  /* TEMP diagnostic (remove after): GET ?debug=webflow probes the items endpoint
-   * shapes to find which one the token/API accepts. */
-  if (event.httpMethod === 'GET' && event.queryStringParameters && event.queryStringParameters.debug === 'webflow') {
-    const token = process.env.WEBFLOW_API_TOKEN || '';
-    const H = { headers: { 'Authorization': 'Bearer ' + token, 'accept': 'application/json' } };
-    const C = '/collections/' + WF_PRODUCTS_COLLECTION;
-    async function probe(path) {
-      const r = await httpsReq(WEBFLOW_API + path, H);
-      return { path: path, status: r.status, body: (r.text || '').slice(0, 120) };
-    }
-    const results = [];
-    results.push(await probe(C + '/items'));
-    results.push(await probe(C + '/items?limit=1'));
-    results.push(await probe(C + '/items/live?limit=1'));
-    results.push(await probe(C + '/items?slug=opia-kratom-extract-tablets-600mg'));
-    results.push(await probe('/collections/' + WF_VARIANTS_COLLECTION + '/items/68cc4f60019e0bc8ae850b6a'));
-    return resp(200, { tokenLen: token.length, probes: results });
-  }
-
   if (event.httpMethod !== 'POST') return resp(405, { error: 'Method Not Allowed' });
 
   let body;
