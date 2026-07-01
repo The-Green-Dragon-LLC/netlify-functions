@@ -697,9 +697,19 @@
         item_code: code
       })
     })
-    .then(function (r) { return r.json().catch(function () { return {}; }); })
-    .then(function (j) {
-      var variants = (j && j.variants) || [];
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, json: j }; });
+    })
+    .then(function (res) {
+      var j = res.json || {};
+      /* Surface real failures (e.g. missing Webflow token, lookup error) instead
+       * of masking them as an empty option list. */
+      if (!res.ok || j.error) {
+        slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">' +
+          esc(j.error || 'Couldn\'t load options. Please try again.') + '</p>';
+        return;
+      }
+      var variants = j.variants || [];
       if (!variants.length) {
         slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">No other options are available for this product.</p>';
         return;
