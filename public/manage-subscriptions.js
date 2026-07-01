@@ -147,6 +147,14 @@
       var firstItem = tmplItems[0] || dirItems[0];
       if (firstItem && firstItem.name) name = firstItem.name;
 
+      /* TEMP DEBUG (remove after variant-editing build): dump one real line item
+       * so we can see how Foxy stores code/name/price/options for the mapping. */
+      if (!window.__dgcItemLogged && firstItem) {
+        window.__dgcItemLogged = true;
+        try { console.log('[DGC][debug] sample subscription line item:\n' + JSON.stringify(firstItem, null, 2)); }
+        catch (e) { console.log('[DGC][debug] sample subscription line item:', firstItem); }
+      }
+
       /* Current shipping address (from the transaction template) to prefill the
        * address form. Fields fall back to empty strings. */
       var addr = {
