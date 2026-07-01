@@ -416,13 +416,19 @@
     if (!items.length) { panel.style.display = 'none'; return; }
 
     /* Payment card is account-level (all subscriptions charge the same card), so
-     * offer a single link that jumps to the portal's secure Payment Methods
-     * section rather than a per-subscription control. */
-    var payNote = document.createElement('p');
-    payNote.style.cssText = 'margin:-6px 0 18px;font-size:13px;color:#555;';
-    payNote.innerHTML = 'Need to update the card you\'re billed on? ' +
-      '<a href="#" data-action="scroll-payment" style="color:#2f7d4f;font-weight:600;text-decoration:none;">Update payment card →</a>';
-    panel.appendChild(payNote);
+     * offer a single prominent button that jumps to the portal's secure Payment
+     * Methods section rather than a per-subscription control. */
+    var payRow = document.createElement('div');
+    payRow.style.cssText = 'margin:0 0 22px;';
+    payRow.innerHTML =
+      '<button type="button" data-action="scroll-payment" ' +
+        'style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;background:#37b772;' +
+        'color:#fff;font-size:15px;font-weight:700;border:none;border-radius:6px;cursor:pointer;' +
+        'font-family:\'Lato\',sans-serif;box-shadow:0 2px 6px rgba(55,183,114,.35);">' +
+        '<span aria-hidden="true" style="font-size:17px;line-height:1;">💳</span>' +
+        'Update Payment Card' +
+      '</button>';
+    panel.appendChild(payRow);
 
     items.forEach(function (item) {
       var card = document.createElement('div');
