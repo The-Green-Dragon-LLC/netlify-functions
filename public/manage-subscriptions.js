@@ -96,6 +96,7 @@
     if (!cards.length) return;
 
     var panelItems = [];
+    var handledCards = [];
 
     cards.forEach(function (card) {
       var d = card.data;
@@ -167,12 +168,40 @@
         endDate:     endDate,
         address:     addr
       });
+      handledCards.push(card); /* hide the native card once its data is read */
     });
 
     if (panelItems.length) {
       renderPanel(panelItems);
       _panelBuilt = true;
+      /* The branded panel now mirrors every native subscription card, so hide
+       * the native list to avoid showing each subscription twice. */
+      hideNativeSubscriptions(handledCards);
     }
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 1b. HIDE THE NATIVE SUBSCRIPTIONS LIST
+   *
+   *    The branded panel duplicates every native card, so collapse the native
+   *    list. We hide (display:none) rather than remove so the cards stay in the
+   *    DOM and keep their fetched .data available to the panel.
+   *
+   *    Hiding just the cards leaves the collection wrapper + pagination behind
+   *    as an empty box, so we also hide the enclosing <foxy-collection-pages>
+   *    (portal → foxy-collection-pages → foxy-collection-page → card) — but only
+   *    the one that actually contains subscription cards, never the order-history
+   *    collection.
+   * ════════════════════════════════════════════════════════════════════════ */
+  function hideNativeSubscriptions(cards) {
+    (cards || []).forEach(function (card) { card.style.display = 'none'; });
+
+    if (!portal.shadowRoot) return;
+    deepQueryAll(portal.shadowRoot, 'foxy-collection-pages').forEach(function (coll) {
+      var hasSubCards = coll.shadowRoot &&
+        deepQueryAll(coll.shadowRoot, 'foxy-subscription-card').length;
+      if (hasSubCards) coll.style.display = 'none';
+    });
   }
 
   /* ════════════════════════════════════════════════════════════════════════
