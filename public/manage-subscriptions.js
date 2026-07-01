@@ -95,6 +95,13 @@
     var cards = deepQueryAll(portal.shadowRoot, 'foxy-subscription-card');
     if (!cards.length) return;
 
+    /* Wait until EVERY native card has loaded its data before building the panel
+     * and hiding the native list. hideNativeSubscriptions() hides the whole
+     * collection container, so a card that hadn't loaded yet would be hidden
+     * without ever appearing in the branded panel — dropping a subscription. */
+    var allLoaded = cards.every(function (c) { return !!c.data; });
+    if (!allLoaded) return;
+
     var panelItems = [];
     var handledCards = [];
 
@@ -187,20 +194,41 @@
    *    list. We hide (display:none) rather than remove so the cards stay in the
    *    DOM and keep their fetched .data available to the panel.
    *
-   *    Hiding just the cards leaves the collection wrapper + pagination behind
-   *    as an empty box, so we also hide the enclosing <foxy-collection-pages>
-   *    (portal → foxy-collection-pages → foxy-collection-page → card) — but only
-   *    the one that actually contains subscription cards, never the order-history
-   *    collection.
+   *    Hiding just the inner card empties it but leaves its bordered wrapper +
+   *    the collection/pagination chrome behind as empty boxes. So we also hide
+   *    the enclosing <foxy-collection-pages> (portal → foxy-collection-pages →
+   *    foxy-collection-page → card). Order history is already removed from this
+   *    page via hiddencontrols (customer:transactions), so the subscriptions
+   *    collection is the only foxy-collection-pages present — we can hide it
+   *    directly without a fragile card-detection check (that check failed when
+   *    the cards are slotted rather than living in the collection's shadow root).
+   *
+   *    Belt-and-suspenders: also climb each card's ancestors and hide any
+   *    foxy-collection-* wrapper, covering portal layouts that differ.
    * ════════════════════════════════════════════════════════════════════════ */
   function hideNativeSubscriptions(cards) {
-    (cards || []).forEach(function (card) { card.style.display = 'none'; });
+    (cards || []).forEach(function (card) {
+      card.style.display = 'none';
+      /* Climb through parent elements and shadow-root hosts, hiding any
+       * Foxy collection wrapper so no empty bordered box is left behind. */
+      var node = card;
+      for (var i = 0; i < 10 && node && node !== document; i++) {
+        var tag = (node.tagName || '').toLowerCase();
+        if (tag.indexOf('foxy-collection') === 0 && node.style) {
+          node.style.display = 'none';
+        }
+        var next = node.parentElement;
+        if (!next) {
+          var root = node.getRootNode && node.getRootNode();
+          next = root && root.host;
+        }
+        node = next;
+      }
+    });
 
     if (!portal.shadowRoot) return;
     deepQueryAll(portal.shadowRoot, 'foxy-collection-pages').forEach(function (coll) {
-      var hasSubCards = coll.shadowRoot &&
-        deepQueryAll(coll.shadowRoot, 'foxy-subscription-card').length;
-      if (hasSubCards) coll.style.display = 'none';
+      coll.style.display = 'none';
     });
   }
 
