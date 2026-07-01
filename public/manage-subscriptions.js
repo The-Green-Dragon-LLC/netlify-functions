@@ -423,7 +423,13 @@
 
       var actions;
       if (item.cancelled) {
-        actions = '';
+        /* Cancelled (ending soon or already inactive): offer Restart, but only
+         * when we hold the ownership token needed to authorize the change. */
+        actions = (item.subUri && item.subToken)
+          ? '<div class="dgc-sub-card-actions">' +
+              '<button class="dgc-btn-action dgc-btn-resume" data-action="restart">Restart Subscription</button>' +
+            '</div>'
+          : '';
       } else if (item.paused) {
         /* Paused: offer Resume (+ keep Cancel available). */
         actions =
@@ -463,7 +469,8 @@
     'ship-now': 'Send your next order now? Your saved card will be charged and it will ship on our next run (usually within 1 business day). Your normal schedule then continues from this shipment.',
     'skip':     'Skip your next shipment? Your next charge will move forward by one cycle.',
     'pause':    'Pause this subscription? You won\'t be charged again until you choose to resume it.',
-    'resume':   'Resume this subscription? Your next order will ship within 1 business day.'
+    'resume':   'Resume this subscription? Your next order will ship within 1 business day.',
+    'restart':  'Restart this subscription? It will become active again on its normal schedule (or within 1 business day if the next date has already passed).'
   };
 
   document.addEventListener('click', function (e) {

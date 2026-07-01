@@ -18,6 +18,8 @@
  *   pause         → push next charge far into the future (indefinite).  The portal
  *                   detects this and shows "Resume" instead of the action buttons.
  *   resume        → next charge = tomorrow (un-pause).
+ *   restart       → un-cancel: clear end_date + reactivate (is_active=true). Keeps
+ *                   the existing next charge date if still future, else tomorrow.
  *   change-address→ PATCH the subscription's transaction_template shipping address
  *                   (Foxy does not allow address edits on the subscription itself).
  *
@@ -182,7 +184,7 @@ exports.handler = async (event) => {
 
   const { action, subscription_uri, sub_token, frequency, address } = body;
 
-  const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'change-address', 'cancel'];
+  const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel'];
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
   if (!subscription_uri || !sub_token) return resp(400, { error: 'Missing subscription_uri or sub_token' });
 
@@ -265,6 +267,14 @@ exports.handler = async (event) => {
     let patchBody;
     if (action === 'ship-now')        patchBody = { next_transaction_date: tomorrow() };
     else if (action === 'resume')     patchBody = { next_transaction_date: tomorrow() };
+    else if (action === 'restart') {
+      /* Un-cancel: clear the end_date and reactivate. Keep the existing next
+       * charge date if it's still in the future (preserve the normal cadence);
+       * otherwise fall back to tomorrow so a stale/past date doesn't strand it. */
+      const t = tomorrow();
+      const next = (sub.next_transaction_date || '').slice(0, 10);
+      patchBody = { end_date: '', is_active: true, next_transaction_date: (next && next >= t) ? next : t };
+    }
     else if (action === 'pause')      patchBody = { next_transaction_date: farFuture() };
     else if (action === 'set-frequency') patchBody = { frequency };
     else if (action === 'skip')       patchBody = { next_transaction_date: addFrequency(sub.next_transaction_date, sub.frequency) };
