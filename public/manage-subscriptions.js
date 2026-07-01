@@ -405,15 +405,20 @@
           badge +
         '</div>';
 
+      var freqText = formatFrequency(item.frequency);
+
       var dateRow;
       if (item.inactive) {
         dateRow = '<p class="dgc-sub-card-end">Ended' + (item.endDate ? ' on ' + esc(item.endDate) : '') + '</p>';
       } else if (item.ending && item.endDate) {
-        dateRow = '<p class="dgc-sub-card-end">Ends on ' + esc(item.endDate) + '</p>';
+        dateRow = '<p class="dgc-sub-card-end">Ends on ' + esc(item.endDate) +
+                  (freqText ? ' &middot; ' + esc(freqText) : '') + '</p>';
       } else if (item.paused) {
-        dateRow = '<p class="dgc-sub-card-paused-note">Paused — you won\'t be charged until you resume.</p>';
+        dateRow = '<p class="dgc-sub-card-paused-note">Paused — you won\'t be charged until you resume.' +
+                  (freqText ? ' Normal schedule: ' + esc(freqText) + '.' : '') + '</p>';
       } else {
-        dateRow = '<p class="dgc-sub-card-next">Next payment: ' + esc(item.nextDate) + '</p>';
+        dateRow = '<p class="dgc-sub-card-next">Next payment: ' + esc(item.nextDate) +
+                  (freqText ? ' &middot; ' + esc(freqText) : '') + '</p>';
       }
 
       var actions;
@@ -635,6 +640,18 @@
   /* ════════════════════════════════════════════════════════════════════════
    * HELPERS
    * ════════════════════════════════════════════════════════════════════════ */
+  /* Foxy frequency code (e.g. 1w, 2w, 1m, .5m, 7d) → human-readable text. */
+  function formatFrequency(freq) {
+    if (!freq) return '';
+    if (freq === '.5m') return 'Twice a month';
+    var m = /^(\d+)([dwmy])$/.exec(freq);
+    if (!m) return freq;
+    var n = parseInt(m[1], 10);
+    var units = { d: 'day', w: 'week', m: 'month', y: 'year' };
+    var unit = units[m[2]] || m[2];
+    return n === 1 ? 'Every ' + unit : 'Every ' + n + ' ' + unit + 's';
+  }
+
   function formatDate(str) {
     if (!str) return '—';
     try {
