@@ -275,6 +275,26 @@ function toAdminItemUrl(href) {
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
+
+  /* TEMP diagnostic (remove after): GET ?debug=webflow reports which site the
+   * token is authorized for and whether it can read the Products collection. */
+  if (event.httpMethod === 'GET' && event.queryStringParameters && event.queryStringParameters.debug === 'webflow') {
+    const token = process.env.WEBFLOW_API_TOKEN || '';
+    const H = { headers: { 'Authorization': 'Bearer ' + token, 'accept': 'application/json' } };
+    const sites = await httpsReq(WEBFLOW_API + '/sites', H);
+    const coll = await httpsReq(WEBFLOW_API + '/collections/' + WF_PRODUCTS_COLLECTION, H);
+    let authorizedSites = [];
+    try { authorizedSites = (sites.json.sites || []).map((s) => ({ id: s.id, name: s.displayName || s.shortName })); } catch (_) {}
+    return resp(200, {
+      tokenLen: token.length,
+      sitesStatus: sites.status,
+      authorizedSites: authorizedSites,
+      sitesBody: authorizedSites.length ? undefined : (sites.text || '').slice(0, 200),
+      productsCollectionStatus: coll.status,
+      productsCollectionBody: (coll.text || '').slice(0, 200),
+    });
+  }
+
   if (event.httpMethod !== 'POST') return resp(405, { error: 'Method Not Allowed' });
 
   let body;
