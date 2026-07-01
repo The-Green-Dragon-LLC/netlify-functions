@@ -674,9 +674,22 @@
    *   When loaded via <script src> in the Webflow footer, the element is
    *   usually present already; the retry covers slower module/component loads.
    * ════════════════════════════════════════════════════════════════════════ */
+  /* Lift the branded panel above the portal so "Manage Your Subscriptions"
+   * appears ahead of the portal's Addresses / Payment methods cards. The panel
+   * lives in the embed after <foxy-customer-portal>; move its node to just before
+   * the portal. Kept in the page's light DOM so its <style> rules still apply
+   * (moving it into the portal's shadow DOM would strip the styling). */
+  function movePanelAbovePortal() {
+    var panel = document.getElementById('dgc-sub-edit-panel');
+    if (panel && portal.parentNode && portal.previousElementSibling !== panel) {
+      portal.parentNode.insertBefore(panel, portal);
+    }
+  }
+
   function boot() {
     portal = document.querySelector('foxy-customer-portal');
     if (!portal) return false;
+    movePanelAbovePortal();
     startPolling();
     return true;
   }
