@@ -172,6 +172,19 @@
         country:     (tmpl && tmpl.shipping_country)     || ''
       };
 
+      /* Current billing address (from the transaction template) to prefill the
+       * billing address form. */
+      var billingAddr = {
+        first_name:  (tmpl && tmpl.billing_first_name)  || '',
+        last_name:   (tmpl && tmpl.billing_last_name)   || '',
+        address1:    (tmpl && tmpl.billing_address1)    || '',
+        address2:    (tmpl && tmpl.billing_address2)    || '',
+        city:        (tmpl && tmpl.billing_city)        || '',
+        region:      (tmpl && tmpl.billing_state)       || '',
+        postal_code: (tmpl && tmpl.billing_postal_code) || '',
+        country:     (tmpl && tmpl.billing_country)     || ''
+      };
+
       panelItems.push({
         editUrl:     isCancelled ? null : editUrl,
         cancelUrl:   isCancelled ? null : cancelUrl,
@@ -186,6 +199,7 @@
         paused:      isPaused,
         endDate:     endDate,
         address:     addr,
+        billingAddress: billingAddr,
         lineItems:   lineItems
       });
       handledCards.push(card); /* hide the native card once its data is read */
@@ -216,8 +230,11 @@
    *    directly without a fragile card-detection check (that check failed when
    *    the cards are slotted rather than living in the collection's shadow root).
    *
-   *    Belt-and-suspenders: also climb each card's ancestors and hide any
-   *    foxy-collection-* wrapper, covering portal layouts that differ.
+   *    Primary mechanism: climb each subscription card's ancestors and hide any
+   *    foxy-collection-* wrapper. This is precise — it only touches wrappers that
+   *    actually contain a subscription card, so the portal's Addresses and
+   *    Payment Methods sections (also foxy-collection-pages) stay visible (the
+   *    "Update payment card" link needs Payment Methods to remain on the page).
    * ════════════════════════════════════════════════════════════════════════ */
   function hideNativeSubscriptions(cards) {
     (cards || []).forEach(function (card) {
@@ -239,9 +256,12 @@
       }
     });
 
+    /* Backup: hide only the collection whose endpoint is the subscriptions list
+     * (never the addresses/payment collections). */
     if (!portal.shadowRoot) return;
     deepQueryAll(portal.shadowRoot, 'foxy-collection-pages').forEach(function (coll) {
-      coll.style.display = 'none';
+      var ref = coll.getAttribute('first') || coll.getAttribute('href') || coll.first || '';
+      if (/\/subscriptions(\?|$|\/)/i.test(String(ref))) coll.style.display = 'none';
     });
   }
 
@@ -395,6 +415,15 @@
 
     if (!items.length) { panel.style.display = 'none'; return; }
 
+    /* Payment card is account-level (all subscriptions charge the same card), so
+     * offer a single link that jumps to the portal's secure Payment Methods
+     * section rather than a per-subscription control. */
+    var payNote = document.createElement('p');
+    payNote.style.cssText = 'margin:-6px 0 18px;font-size:13px;color:#555;';
+    payNote.innerHTML = 'Need to update the card you\'re billed on? ' +
+      '<a href="#" data-action="scroll-payment" style="color:#2f7d4f;font-weight:600;text-decoration:none;">Update payment card →</a>';
+    panel.appendChild(payNote);
+
     items.forEach(function (item) {
       var card = document.createElement('div');
       card.className = 'dgc-sub-card' +
@@ -406,6 +435,7 @@
       if (item.subToken) card.dataset.subToken = item.subToken;
       card.dataset.frequency = item.frequency || '';
       card.dataset.address   = JSON.stringify(item.address || {});
+      card.dataset.billingAddress = JSON.stringify(item.billingAddress || {});
       card.dataset.lineItems = JSON.stringify(item.lineItems || []);
 
       var badge =
@@ -461,6 +491,7 @@
             '<button class="dgc-btn-action" data-action="skip">Skip Next</button>' +
             '<button class="dgc-btn-action" data-action="change-frequency">Change Frequency</button>' +
             '<button class="dgc-btn-action" data-action="change-address">Change Address</button>' +
+            '<button class="dgc-btn-action" data-action="change-billing-address">Change Billing Address</button>' +
             '<button class="dgc-btn-action" data-action="pause">Pause</button>' +
             '<button class="dgc-btn-action" data-action="edit-items">Edit Items</button>' +
             '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
@@ -494,13 +525,18 @@
     var actionBtn = el.closest('[data-action]');
     if (!actionBtn) return;
 
+    var action = actionBtn.getAttribute('data-action');
+
+    /* Panel-level (not tied to a specific subscription card). */
+    if (action === 'scroll-payment') { if (e.preventDefault) e.preventDefault(); scrollToPayment(); return; }
+
     var card = actionBtn.closest('.dgc-sub-card');
     if (!card) return;
-    var action = actionBtn.getAttribute('data-action');
 
     /* Inline-form openers ----------------------------------------------- */
     if (action === 'change-frequency') { openFrequencyForm(card); return; }
-    if (action === 'change-address')   { openAddressForm(card); return; }
+    if (action === 'change-address')   { openAddressForm(card, 'shipping'); return; }
+    if (action === 'change-billing-address') { openAddressForm(card, 'billing'); return; }
     if (action === 'edit-items')       { openItemsForm(card); return; }
     if (action === 'cancel-prompt')    { openCancelConfirm(card); return; }
     if (action === 'inline-cancel')    { closeInline(card); return; }
@@ -522,7 +558,11 @@
 
     if (action === 'apply-address') {
       var address = readAddressForm(card);
-      if (address) doAction(card, 'change-address', { address: address });
+      if (address) {
+        var inlineEl = card.querySelector('.dgc-sub-inline');
+        var addrType = (inlineEl && inlineEl.dataset.addrType) || 'shipping';
+        doAction(card, 'change-address', { address: address, address_type: addrType });
+      }
       return;
     }
 
@@ -551,11 +591,15 @@
     inline.style.display = 'block';
   }
 
-  function openAddressForm(card) {
+  function openAddressForm(card, type) {
+    type = (type === 'billing') ? 'billing' : 'shipping';
     var inline = card.querySelector('.dgc-sub-inline');
     if (!inline) return;
+    inline.dataset.addrType = type;
+
     var a = {};
-    try { a = JSON.parse(card.dataset.address || '{}'); } catch (e) { a = {}; }
+    var dataKey = (type === 'billing') ? 'billingAddress' : 'address';
+    try { a = JSON.parse(card.dataset[dataKey] || '{}'); } catch (e) { a = {}; }
 
     function field(name, label, full) {
       return '<div' + (full ? ' class="dgc-addr-full"' : '') + '>' +
@@ -564,8 +608,13 @@
         '</div>';
     }
 
+    var heading = (type === 'billing')
+      ? 'Update the billing address for this subscription'
+      : 'Update the shipping address for this subscription';
+    var saveLabel = (type === 'billing') ? 'Save Billing Address' : 'Save Address';
+
     inline.innerHTML =
-      '<label style="font-size:13px;margin-bottom:10px;">Update the shipping address for this subscription</label>' +
+      '<label style="font-size:13px;margin-bottom:10px;">' + heading + '</label>' +
       '<div class="dgc-addr-grid">' +
         field('first_name', 'First name') +
         field('last_name', 'Last name') +
@@ -577,10 +626,20 @@
         field('country', 'Country') +
       '</div>' +
       '<div class="dgc-sub-card-actions">' +
-        '<button class="dgc-btn-action dgc-btn-resume" data-action="apply-address">Save Address</button>' +
+        '<button class="dgc-btn-action dgc-btn-resume" data-action="apply-address">' + saveLabel + '</button>' +
         '<button class="dgc-btn-action" data-action="inline-cancel">Cancel</button>' +
       '</div>';
     inline.style.display = 'block';
+  }
+
+  /* Jump to the portal's native (secure) Payment Methods section so the customer
+   * can update the card on file — card entry stays inside Foxy's PCI flow. */
+  function scrollToPayment() {
+    var target = null;
+    if (portal && portal.shadowRoot) {
+      target = deepQueryAll(portal.shadowRoot, 'foxy-payment-method-card')[0] || null;
+    }
+    (target || portal || document.body).scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   function readAddressForm(card) {

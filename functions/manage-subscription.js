@@ -20,8 +20,9 @@
  *   resume        → next charge = tomorrow (un-pause).
  *   restart       → un-cancel: clear end_date + reactivate (is_active=true). Keeps
  *                   the existing next charge date if still future, else tomorrow.
- *   change-address→ PATCH the subscription's transaction_template shipping address
- *                   (Foxy does not allow address edits on the subscription itself).
+ *   change-address→ PATCH the subscription's transaction_template shipping OR
+ *                   billing address (address_type: 'shipping' | 'billing'; Foxy
+ *                   does not allow address edits on the subscription itself).
  *   list-variants → (read) return the switchable variants for a line item, priced
  *                   from the Webflow CMS.
  *   set-quantity  → change a line item's quantity (1..99).
@@ -284,7 +285,7 @@ exports.handler = async (event) => {
     return resp(400, { error: 'Invalid JSON body' });
   }
 
-  const { action, subscription_uri, sub_token, frequency, address, item_code, quantity, variant_code } = body;
+  const { action, subscription_uri, sub_token, frequency, address, address_type, item_code, quantity, variant_code } = body;
 
   const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel',
                  'list-variants', 'set-quantity', 'set-variant'];
@@ -351,8 +352,9 @@ exports.handler = async (event) => {
     if (action === 'change-address') {
       const ttHref = sub._links['fx:transaction_template'] && sub._links['fx:transaction_template'].href;
       if (!ttHref) throw new Error('Subscription has no transaction_template link');
-      const patchBody = buildAddressPatch(address);
-      const r = await patchOrThrow(ttHref, patchHeaders, patchBody, 'address');
+      const type = (address_type === 'billing') ? 'billing' : 'shipping';
+      const patchBody = buildAddressPatch(address, type);
+      const r = await patchOrThrow(ttHref, patchHeaders, patchBody, type + '-address');
       return resp(200, { success: true, action, applied: patchBody, status: r.status });
     }
 
@@ -431,19 +433,20 @@ exports.handler = async (event) => {
 
 /* ─── HELPERS ───────────────────────────────────────────────────────────────── */
 
-function buildAddressPatch(a) {
-  // Only forward known shipping_* fields that were supplied.
+function buildAddressPatch(a, type) {
+  // Forward known address fields that were supplied, to shipping_* or billing_*.
+  const p = (type === 'billing') ? 'billing_' : 'shipping_';
   const map = {
-    first_name:  'shipping_first_name',
-    last_name:   'shipping_last_name',
-    company:     'shipping_company',
-    address1:    'shipping_address1',
-    address2:    'shipping_address2',
-    city:        'shipping_city',
-    region:      'shipping_state',
-    postal_code: 'shipping_postal_code',
-    country:     'shipping_country',
-    phone:       'shipping_phone',
+    first_name:  p + 'first_name',
+    last_name:   p + 'last_name',
+    company:     p + 'company',
+    address1:    p + 'address1',
+    address2:    p + 'address2',
+    city:        p + 'city',
+    region:      p + 'state',
+    postal_code: p + 'postal_code',
+    country:     p + 'country',
+    phone:       p + 'phone',
   };
   const out = {};
   Object.keys(map).forEach((k) => {
