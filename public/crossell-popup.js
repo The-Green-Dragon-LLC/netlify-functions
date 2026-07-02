@@ -1244,11 +1244,16 @@
       return;
     }
 
-    // FC events — re-render promo disclaimer and in-cart cross-sell on every cart update
+    // FC events — re-render promo disclaimer and in-cart cross-sell on every cart update.
+    // cart-submit.done is the event this site's sidecart adds actually fire (add.done
+    // does NOT — verified live); kept alongside the others for full coverage. onCartEvent
+    // is an idempotent re-render, so binding several events is harmless. (The popup itself
+    // is triggered by the count-delta poll below, not by these events.)
     var onCartEvent = function () { updatePromoDisclaimer(); renderCartCrossSell(); };
-    try { FC.client.on('loaded.done', onCartEvent); } catch (e) {}
-    try { FC.client.on('add.done',    onCartEvent); } catch (e) {}
-    try { FC.client.on('cart-loaded', onCartEvent); } catch (e) {}
+    try { FC.client.on('loaded.done',      onCartEvent); } catch (e) {}
+    try { FC.client.on('cart-submit.done', onCartEvent); } catch (e) {}
+    try { FC.client.on('add.done',         onCartEvent); } catch (e) {}
+    try { FC.client.on('cart-loaded',      onCartEvent); } catch (e) {}
 
     attachCartPlusInterceptor();
     attachQuantityInputWatcher();
