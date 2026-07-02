@@ -498,7 +498,6 @@
             '<button class="dgc-btn-action" data-action="change-frequency">Change Frequency</button>' +
             '<button class="dgc-btn-action" data-action="change-address">Change Address</button>' +
             '<button class="dgc-btn-action" data-action="change-billing-address">Change Billing Address</button>' +
-            '<button class="dgc-btn-action" data-action="pause">Pause</button>' +
             '<button class="dgc-btn-action" data-action="edit-items">Edit Items</button>' +
             '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
           '</div>';
@@ -673,10 +672,9 @@
     inline.innerHTML =
       '<p style="margin:0 0 12px;font-size:13px;color:#444;line-height:1.5;">' +
       'Are you sure you want to cancel? You can ' +
-      '<strong>pause anytime</strong> or <strong>change how often it ships</strong> instead — ' +
+      '<strong>change how often it ships</strong> instead — ' +
       'no need to start over later.</p>' +
       '<div class="dgc-sub-card-actions">' +
-        '<button class="dgc-btn-action dgc-btn-resume" data-action="pause">Pause instead</button>' +
         '<button class="dgc-btn-action" data-action="change-frequency">Change frequency instead</button>' +
         '<button class="dgc-btn-cancel" data-action="confirm-cancel">Yes, cancel subscription</button>' +
         '<button class="dgc-btn-action" data-action="inline-cancel">Keep my subscription</button>' +
