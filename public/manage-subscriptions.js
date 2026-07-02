@@ -421,7 +421,7 @@
     var payRow = document.createElement('div');
     payRow.style.cssText = 'margin:0 0 22px;';
     payRow.innerHTML =
-      '<button type="button" data-action="scroll-payment" ' +
+      '<button type="button" data-action="update-payment" ' +
         'style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;background:#37b772;' +
         'color:#fff;font-size:15px;font-weight:700;border:none;border-radius:6px;cursor:pointer;' +
         'font-family:\'Lato\',sans-serif;box-shadow:0 2px 6px rgba(55,183,114,.35);">' +
@@ -534,7 +534,7 @@
     var action = actionBtn.getAttribute('data-action');
 
     /* Panel-level (not tied to a specific subscription card). */
-    if (action === 'scroll-payment') { if (e.preventDefault) e.preventDefault(); scrollToPayment(); return; }
+    if (action === 'update-payment') { if (e.preventDefault) e.preventDefault(); openPaymentUpdate(); return; }
 
     var card = actionBtn.closest('.dgc-sub-card');
     if (!card) return;
@@ -638,14 +638,19 @@
     inline.style.display = 'block';
   }
 
-  /* Jump to the portal's native (secure) Payment Methods section so the customer
-   * can update the card on file — card entry stays inside Foxy's PCI flow. */
-  function scrollToPayment() {
-    var target = null;
-    if (portal && portal.shadowRoot) {
-      target = deepQueryAll(portal.shadowRoot, 'foxy-payment-method-card')[0] || null;
-    }
-    (target || portal || document.body).scrollIntoView({ behavior: 'smooth', block: 'center' });
+  /* Open Foxy's secure hosted "update info" page, where the customer can update
+   * the payment card + billing info that their subscriptions are charged on.
+   * (The native portal Payment Methods section only shows/deletes a card; it has
+   * no add/replace form.) Card entry stays inside Foxy's PCI-compliant flow.
+   * The store domain is derived from the portal's `base` so this works on both
+   * the test store and production. */
+  function openPaymentUpdate() {
+    var origin = 'https://secure.thegreendragoncbd.com';
+    try {
+      var base = portal && portal.getAttribute && portal.getAttribute('base');
+      if (base) origin = new URL(base).origin;
+    } catch (e) { /* keep fallback */ }
+    window.open(origin + '/cart?cart=updateinfo', '_blank', 'noopener');
   }
 
   function readAddressForm(card) {
