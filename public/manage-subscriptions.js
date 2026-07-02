@@ -498,7 +498,7 @@
             '<button class="dgc-btn-action" data-action="change-frequency">Change Frequency</button>' +
             '<button class="dgc-btn-action" data-action="change-address">Change Address</button>' +
             '<button class="dgc-btn-action" data-action="change-billing-address">Change Billing Address</button>' +
-            '<button class="dgc-btn-action" data-action="edit-items">Edit Items</button>' +
+            '<button class="dgc-btn-action" data-action="edit-items">Update Quantity</button>' +
             '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
           '</div>';
       }
