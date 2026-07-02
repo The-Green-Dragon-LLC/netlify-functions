@@ -359,13 +359,14 @@ exports.handler = async (event) => {
     }
 
     if (action === 'cancel') {
-      /* Cancel by setting the subscription's end_date directly via the admin API
-       * — the same reliable path the other actions use. (The previous approach
-       * GET-ed the cart sub_token URL with sub_cancel=1; that returned 200 but
-       * did not reliably apply the cancellation server-side.)
-       * end_date = today ends it now with no further charges, whether the sub is
-       * active or paused. The 'restart' action clears end_date to revive it. */
-      const end = fmt(new Date());
+      /* Cancel by setting the subscription's end_date via the admin API — the
+       * same reliable path the other actions use, and exactly what Foxy's native
+       * cancel does. We reuse the subscription's own next_transaction_date value:
+       * it's already a Foxy-valid datetime, and Foxy does not process a
+       * transaction on/after the end_date, so the upcoming charge is cancelled
+       * and the subscription stops renewing. (Sending a bare "YYYY-MM-DD" for
+       * today was rejected with a 400.) The 'restart' action clears end_date. */
+      const end = sub.next_transaction_date || (tomorrow() + 'T00:00:00Z');
       const r = await patchOrThrow(adminSubUrl, patchHeaders, { end_date: end }, 'cancel');
       return resp(200, { success: true, action, applied: { end_date: end }, status: r.status });
     }
@@ -455,8 +456,21 @@ function buildAddressPatch(a, type) {
 async function patchOrThrow(url, headers, bodyObj, label) {
   console.log(`[manage] PATCH (${label}):`, url, '| body:', JSON.stringify(bodyObj));
   const r = await httpsReq(url, { method: 'PATCH', headers }, bodyObj);
-  console.log(`[manage] PATCH (${label}) status:`, r.status, (r.text || '').slice(0, 200));
-  if (!r.ok) throw new Error(`PATCH ${label} failed (${r.status}): ${(r.text || '').slice(0, 200)}`);
+  console.log(`[manage] PATCH (${label}) status:`, r.status, (r.text || '').slice(0, 500));
+  if (!r.ok) {
+    // Prefer Foxy's human-readable validation messages if present.
+    let detail = (r.text || '').slice(0, 500);
+    try {
+      const j = JSON.parse(r.text);
+      const msgs = j && j._embedded && j._embedded['fx:errors'];
+      if (Array.isArray(msgs) && msgs.length) {
+        detail = msgs.map((e) => e.message || e).join('; ');
+      } else if (j && j.message) {
+        detail = j.message;
+      }
+    } catch (_) { /* keep raw slice */ }
+    throw new Error(`PATCH ${label} failed (${r.status}): ${detail}`);
+  }
   return r;
 }
 
