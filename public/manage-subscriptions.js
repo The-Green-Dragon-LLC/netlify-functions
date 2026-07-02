@@ -637,19 +637,67 @@
     inline.style.display = 'block';
   }
 
-  /* Open Foxy's secure hosted "update info" page, where the customer can update
-   * the payment card + billing info that their subscriptions are charged on.
-   * (The native portal Payment Methods section only shows/deletes a card; it has
-   * no add/replace form.) Card entry stays inside Foxy's PCI-compliant flow.
-   * The store domain is derived from the portal's `base` so this works on both
-   * the test store and production. */
+  /* Find the customer-portal session token (JWT) the portal stored client-side,
+   * so we can request an authenticated checkout link. Scans local/session
+   * storage for a JWT-shaped value (prefer Foxy-looking keys). */
+  function getPortalToken() {
+    var jwtRe = /^ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+    var preferred = null, fallback = null;
+    [window.localStorage, window.sessionStorage].forEach(function (store) {
+      if (!store) return;
+      for (var i = 0; i < store.length; i++) {
+        var key = store.key(i);
+        var val = store.getItem(key);
+        if (!val) continue;
+        var token = null;
+        if (jwtRe.test(val)) token = val;
+        else if (val.charAt(0) === '{') {
+          try {
+            var o = JSON.parse(val);
+            token = o.jwt || o.session_token || o.token || (o.session && (o.session.jwt || o.session.token)) || null;
+          } catch (e) { /* not json */ }
+        }
+        if (token && jwtRe.test(token)) {
+          if (/foxy|fx|customer|jwt|sso|session/i.test(key)) preferred = preferred || token;
+          else fallback = fallback || token;
+        }
+      }
+    });
+    return preferred || fallback;
+  }
+
+  /* Open Foxy's secure hosted "update info" page where the customer can update
+   * the payment card + billing info their subscriptions are charged on.
+   * (The native portal Payment Methods card only shows/deletes; no add form.)
+   * The portal authenticates cross-origin via a token, so a bare checkout link
+   * loads logged-OUT. Instead we ask the portal for an authenticated checkout
+   * link (GET /s/customer?sso=true → _links.fx:checkout) and append
+   * cart=updateinfo. Card entry stays in Foxy's PCI flow. */
   function openPaymentUpdate() {
+    var base = (portal && portal.getAttribute && portal.getAttribute('base')) ||
+               'https://secure.thegreendragoncbd.com/s/customer/';
     var origin = 'https://secure.thegreendragoncbd.com';
-    try {
-      var base = portal && portal.getAttribute && portal.getAttribute('base');
-      if (base) origin = new URL(base).origin;
-    } catch (e) { /* keep fallback */ }
-    window.open(origin + '/cart?cart=updateinfo', '_blank', 'noopener');
+    try { origin = new URL(base).origin; } catch (e) { /* keep fallback */ }
+    var fallbackUrl = origin + '/cart?cart=updateinfo';
+
+    /* Open the tab synchronously (inside the click) so it isn't popup-blocked;
+     * navigate it once we have the authenticated URL. */
+    var win = window.open('', '_blank');
+    function go(url) { if (win && !win.closed) win.location = url; else window.location = url; }
+
+    var token = getPortalToken();
+    if (!token) { go(fallbackUrl); return; }
+
+    fetch(base.replace(/\/+$/, '') + '?sso=true', {
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+    })
+    .then(function (r) { return r.json().catch(function () { return {}; }); })
+    .then(function (j) {
+      var href = j && j._links && j._links['fx:checkout'] && j._links['fx:checkout'].href;
+      if (!href) { go(fallbackUrl); return; }
+      go(href + (href.indexOf('?') === -1 ? '?' : '&') + 'cart=updateinfo');
+    })
+    .catch(function () { go(fallbackUrl); });
   }
 
   function readAddressForm(card) {
