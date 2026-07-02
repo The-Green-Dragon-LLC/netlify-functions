@@ -359,19 +359,15 @@ exports.handler = async (event) => {
     }
 
     if (action === 'cancel') {
-      /* Reuse Foxy's proven cart sub_cancel flow, but server-side so the
-       * customer stays on the manage page. The cart URL (with the sub_token)
-       * comes from the trusted admin API response, not the caller. */
-      let cancelHref = sub._links['fx:sub_token_url'] && sub._links['fx:sub_token_url'].href;
-      if (!cancelHref) throw new Error('Subscription has no sub_token_url link');
-      cancelHref += (cancelHref.indexOf('?') === -1 ? '?' : '&') + 'sub_cancel=1';
-      console.log('[manage] cancel via cart:', cancelHref);
-      const cr = await httpsReq(cancelHref, {});
-      console.log('[manage] cancel status:', cr.status, (cr.text || '').slice(0, 150));
-      if (!(cr.status >= 200 && cr.status < 400)) {
-        throw new Error('Cancel failed (' + cr.status + '): ' + (cr.text || '').slice(0, 150));
-      }
-      return resp(200, { success: true, action });
+      /* Cancel by setting the subscription's end_date directly via the admin API
+       * — the same reliable path the other actions use. (The previous approach
+       * GET-ed the cart sub_token URL with sub_cancel=1; that returned 200 but
+       * did not reliably apply the cancellation server-side.)
+       * end_date = today ends it now with no further charges, whether the sub is
+       * active or paused. The 'restart' action clears end_date to revive it. */
+      const end = fmt(new Date());
+      const r = await patchOrThrow(adminSubUrl, patchHeaders, { end_date: end }, 'cancel');
+      return resp(200, { success: true, action, applied: { end_date: end }, status: r.status });
     }
 
     /* ── Item editing: quantity + variant changes on the transaction_template ── */
