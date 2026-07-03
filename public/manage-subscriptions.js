@@ -516,9 +516,18 @@
           '</div>';
       }
 
-      /* Per-subscription shipping + billing addresses (hidden for ended subs). */
-      var shipHTML = item.inactive ? '' : addressBlockHTML('Shipping to', item.address);
-      var billHTML = item.inactive ? '' : addressBlockHTML('Billing to', item.billingAddress);
+      /* Per-subscription shipping + billing addresses (hidden for ended subs).
+       * When billing isn't stored separately, show "Same as shipping". */
+      var shipHTML = '', billHTML = '';
+      if (!item.inactive) {
+        var hasShip = formatAddressLines(item.address).length > 0;
+        shipHTML = addressBlockHTML('Shipping to', item.address);
+        if (formatAddressLines(item.billingAddress).length) {
+          billHTML = addressBlockHTML('Billing to', item.billingAddress);
+        } else if (hasShip) {
+          billHTML = addressNoteHTML('Billing to', 'Same as shipping');
+        }
+      }
       var addrBlock = (shipHTML || billHTML)
         ? '<div style="display:flex;flex-wrap:wrap;gap:18px;margin:8px 0 2px;">' + shipHTML + billHTML + '</div>'
         : '';
@@ -1027,6 +1036,14 @@
     return '<div style="font-size:12px;color:#555;line-height:1.45;min-width:150px;">' +
       '<span style="display:block;font-weight:700;color:#333;margin-bottom:2px;">' + esc(label) + '</span>' +
       lines.map(function (l) { return esc(l); }).join('<br>') +
+    '</div>';
+  }
+
+  /* Labelled block showing a note (e.g. "Same as shipping") instead of an address. */
+  function addressNoteHTML(label, note) {
+    return '<div style="font-size:12px;color:#555;line-height:1.45;min-width:150px;">' +
+      '<span style="display:block;font-weight:700;color:#333;margin-bottom:2px;">' + esc(label) + '</span>' +
+      '<span style="font-style:italic;color:#777;">' + esc(note) + '</span>' +
     '</div>';
   }
 
