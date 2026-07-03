@@ -37,8 +37,15 @@
  *   supplied.  A customer can therefore only modify a subscription they actually
  *   hold the token for — passing someone else's subscription URI is rejected.
  *
+ * OMNISEND EVENTS
+ *   After a successful change we fire a custom Omnisend event (best-effort) so an
+ *   automation can email the customer: `subscription cancelled` on cancel,
+ *   `subscription updated` on every other mutating action.
+ *
  * ENV VARS
- *   FOXY_CLIENT_ID, FOXY_CLIENT_SECRET, FOXY_REFRESH_TOKEN
+ *   FOXY_CLIENT_ID, FOXY_CLIENT_SECRET, FOXY_REFRESH_TOKEN  (required)
+ *   WEBFLOW_API_TOKEN  (required for list-variants / set-variant price lookups)
+ *   OMNISEND_API_KEY   (optional — enables the cancel/update customer-email events)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -55,6 +62,15 @@ const CORS = {
 const ALLOWED_FREQUENCIES = ['1w', '2w', '1m'];
 const PAUSE_YEARS_OUT = 5; // "indefinite" — far enough that it never charges until resumed
 const FOXY_API_HOST = 'api.foxycart.com';
+
+/* Omnisend custom-event trigger (fires on cancel so an automation can email the
+ * customer their cancellation details). Best-effort — never blocks the cancel.
+ * Requires OMNISEND_API_KEY on THIS Netlify site (same key/scope as the order
+ * sync: events.write). Matches the Events API used by foxy-order-sync.js. */
+const OMNISEND_BASE = 'https://api.omnisend.com/api';
+const OMNISEND_VERSION = '2026-03-15';
+const CANCEL_EVENT_NAME = 'subscription cancelled';
+const UPDATE_EVENT_NAME = 'subscription updated';
 
 /* ── Webflow CMS (variant price guard) ──────────────────────────────────────
  * Foxy global HMAC cart validation is OFF for this store, so Foxy does NOT
@@ -363,6 +379,7 @@ exports.handler = async (event) => {
       const type = (address_type === 'billing') ? 'billing' : 'shipping';
       const patchBody = buildAddressPatch(address, type, tt);
       const r = await patchOrThrow(ttHref, patchHeaders, patchBody, type + '-address');
+      await finishWithEvent(action, adminSubUrl, authHeaders, idMatch[1], { address_type: type });
       return resp(200, { success: true, action, applied: patchBody, status: r.status });
     }
 
@@ -376,6 +393,7 @@ exports.handler = async (event) => {
        * action clears end_date. */
       const end = tomorrow() + 'T00:00:00Z';
       const r = await patchOrThrow(adminSubUrl, patchHeaders, { end_date: end }, 'cancel');
+      await finishWithEvent('cancel', adminSubUrl, authHeaders, idMatch[1], { end_date: end });
       return resp(200, { success: true, action, applied: { end_date: end }, status: r.status });
     }
 
@@ -394,6 +412,7 @@ exports.handler = async (event) => {
         if (!(q >= 1 && q <= MAX_QUANTITY)) return resp(400, { error: 'Quantity must be between 1 and ' + MAX_QUANTITY + '.' });
         const itemUrl = toAdminItemUrl(item._links && item._links.self && item._links.self.href);
         const r = await patchOrThrow(itemUrl, patchHeaders, { quantity: q }, 'set-quantity');
+        await finishWithEvent(action, adminSubUrl, authHeaders, idMatch[1], { quantity: q });
         return resp(200, { success: true, action, applied: { quantity: q }, status: r.status });
       }
 
@@ -409,6 +428,7 @@ exports.handler = async (event) => {
       const patch = { code: target.code, name: target.name || (productName + ' - ' + target.label), price: target.price };
       if (target.image) patch.image = target.image;
       const r = await patchOrThrow(itemUrl, patchHeaders, patch, 'set-variant');
+      await finishWithEvent(action, adminSubUrl, authHeaders, idMatch[1], { code: patch.code, name: patch.name, price: patch.price });
       return resp(200, { success: true, action, applied: patch, status: r.status });
     }
 
@@ -428,6 +448,7 @@ exports.handler = async (event) => {
     else if (action === 'skip')       patchBody = { next_transaction_date: addFrequency(sub.next_transaction_date, sub.frequency) };
 
     const r = await patchOrThrow(adminSubUrl, patchHeaders, patchBody, action);
+    await finishWithEvent(action, adminSubUrl, authHeaders, idMatch[1], patchBody);
     return resp(200, { success: true, action, applied: patchBody, status: r.status });
 
   } catch (err) {
@@ -496,6 +517,101 @@ async function patchOrThrow(url, headers, bodyObj, label) {
     throw new Error(`PATCH ${label} failed (${r.status}): ${detail}`);
   }
   return r;
+}
+
+/* ─── OMNISEND CUSTOMER-EMAIL EVENTS ────────────────────────────────────────
+ * After a successful change we fire a custom Omnisend event so an automation can
+ * email the customer: `subscription cancelled` on cancel, `subscription updated`
+ * on every other mutating action (ship-now, skip, frequency, quantity, variant,
+ * address, resume, restart). Best-effort — a missing key, missing email, or a
+ * failed call is logged and swallowed so the subscription change still succeeds.
+ * Requires OMNISEND_API_KEY (events.write) on this Netlify site. */
+
+function customerEmailFrom(sub) {
+  const cust = (sub && sub._embedded && sub._embedded['fx:customer']) || {};
+  const tt = (sub && sub._embedded && sub._embedded['fx:transaction_template']) || {};
+  return cust.email || tt.customer_email || '';
+}
+
+/* Snapshot of the subscription's details for the email template. */
+function subDetails(sub, subId) {
+  const s = sub || {};
+  const tt = (s._embedded && s._embedded['fx:transaction_template']) || {};
+  const cust = (s._embedded && s._embedded['fx:customer']) || {};
+  const items = (tt._embedded && tt._embedded['fx:items']) || [];
+  const first = items[0] || {};
+  const addr = (pfx) => ({
+    name: ((tt[pfx + 'first_name'] || '') + ' ' + (tt[pfx + 'last_name'] || '')).trim(),
+    address1: tt[pfx + 'address1'] || '',
+    address2: tt[pfx + 'address2'] || '',
+    city: tt[pfx + 'city'] || '',
+    state: tt[pfx + 'state'] || '',
+    postalCode: tt[pfx + 'postal_code'] || '',
+    country: tt[pfx + 'country'] || '',
+  });
+  return {
+    subscriptionID: String(subId),
+    productName: first.name || 'your subscription',
+    quantity: (first.quantity != null) ? first.quantity : '',
+    price: (first.price != null) ? first.price : '',
+    frequency: s.frequency || '',
+    nextChargeDate: String(s.next_transaction_date || '').slice(0, 10),
+    endDate: String(s.end_date || '').slice(0, 10),
+    isActive: s.is_active !== false,
+    firstName: cust.first_name || '',
+    lastName: cust.last_name || '',
+    lineItems: items.map((it) => ({
+      productID: String(it.code || it.id || ''),
+      productTitle: it.name,
+      quantity: it.quantity,
+      price: Number(it.price) || 0,
+      image: it.image || undefined,
+    })),
+    shippingAddress: addr('shipping_'),
+    billingAddress: addr('billing_'),
+  };
+}
+
+/* POST a custom event to Omnisend. Throws only on network error (callers wrap). */
+async function fireOmnisendEvent(eventName, email, properties) {
+  const apiKey = process.env.OMNISEND_API_KEY;
+  if (!apiKey) { console.warn(`[manage] OMNISEND_API_KEY not set — skipping "${eventName}" event`); return; }
+  if (!email) { console.warn(`[manage] no customer email — skipping "${eventName}" event`); return; }
+  const res = await httpsReq(OMNISEND_BASE + '/events', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Omnisend-API-Key ' + apiKey,
+      'Omnisend-Version': OMNISEND_VERSION,
+    },
+  }, {
+    eventName,
+    origin: 'api',
+    eventTime: new Date().toISOString(),
+    contact: { email },
+    properties: properties || {},
+  });
+  if (!res.ok) console.error(`[manage] Omnisend "${eventName}" failed`, res.status, (res.text || '').slice(0, 300));
+  else console.log(`[manage] Omnisend "${eventName}" sent for`, email);
+}
+
+/* Re-fetch the subscription fresh (so the event reflects the POST-update state)
+ * and fire the matching Omnisend event. Never throws. */
+async function finishWithEvent(action, adminSubUrl, authHeaders, subId, applied) {
+  try {
+    const eventName = (action === 'cancel') ? CANCEL_EVENT_NAME : UPDATE_EVENT_NAME;
+    let fresh = null;
+    try {
+      const r = await httpsReq(adminSubUrl + '?zoom=transaction_template:items,customer', { headers: authHeaders });
+      fresh = r.json;
+    } catch (_) { /* fire with whatever we have */ }
+    const props = subDetails(fresh, subId);
+    props.action = action;
+    if (applied) props.applied = applied;
+    await fireOmnisendEvent(eventName, customerEmailFrom(fresh), props);
+  } catch (e) {
+    console.error('[manage] finishWithEvent error:', e.message);
+  }
 }
 
 function resp(statusCode, obj) {
