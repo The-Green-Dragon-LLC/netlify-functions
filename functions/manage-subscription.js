@@ -238,14 +238,17 @@ function variantPrice(fd) {
 async function loadProductVariants(item) {
   const slug = productSlugFromItem(item);
   const product = await wfGetProductBySlug(slug);
-  if (!product) return { product: null, productName: '', variants: [] };
+  if (!product) return { product: null, productName: '', variants: [], variant_type: null };
   const productName = (product.fieldData && product.fieldData.name) || '';
   const ids = (product.fieldData && product.fieldData['variants-options']) || [];
   const variants = [];
+  const attrsSeen = {};
   for (const id of ids) {
     let fd = null;
     try { fd = await wfGetVariant(id); } catch (_) { continue; }
     if (!fd || !fd.sku) continue;
+    // Track which differentiator attributes the variants actually carry.
+    VARIANT_ATTR_SLUGS.forEach((s) => { if (fd[s]) attrsSeen[s] = (attrsSeen[s] || 0) + 1; });
     variants.push({
       code: fd.sku,
       label: variantLabel(fd, productName),
@@ -255,7 +258,11 @@ async function loadProductVariants(item) {
       in_stock: (fd.inventory === undefined || fd.inventory === null) ? true : fd.inventory > 0,
     });
   }
-  return { product, productName, variants };
+  // The attribute that differentiates these variants (flavor/size/strength/…),
+  // so the UI can label the picker "Change Flavor", "Change Size", etc.
+  let variant_type = null;
+  for (const s of VARIANT_ATTR_SLUGS) { if (attrsSeen[s]) { variant_type = s; break; } }
+  return { product, productName, variants, variant_type };
 }
 
 /* Find a subscription's transaction_template line item by its Foxy code. */
@@ -378,8 +385,8 @@ exports.handler = async (event) => {
       if (!item) return resp(404, { error: 'That item is no longer on this subscription. Please refresh.' });
 
       if (action === 'list-variants') {
-        const { variants } = await loadProductVariants(item);
-        return resp(200, { success: true, current_code: item.code, quantity: item.quantity, variants });
+        const { variants, variant_type } = await loadProductVariants(item);
+        return resp(200, { success: true, current_code: item.code, quantity: item.quantity, variants, variant_type });
       }
 
       if (action === 'set-quantity') {

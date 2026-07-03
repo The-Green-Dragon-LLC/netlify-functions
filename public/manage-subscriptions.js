@@ -810,7 +810,7 @@
             '<input class="dgc-qty" type="number" min="1" max="99" value="' + (parseInt(it.quantity, 10) || 1) + '" style="width:56px;text-align:center;margin-bottom:0;">' +
             '<button class="dgc-btn-action" data-action="qty-inc" style="padding:6px 12px;">+</button>' +
             '<button class="dgc-btn-action dgc-btn-resume" data-action="save-qty">Save qty</button>' +
-            '<button class="dgc-btn-action" data-action="load-variants">Change Flavor</button>' +
+            '<button class="dgc-btn-action" data-action="load-variants">Change Options</button>' +
           '</div>' +
           '<div class="dgc-variant-slot" style="margin-top:8px;"></div>' +
         '</div>';
@@ -875,6 +875,9 @@
         slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">No other options are available for this product.</p>';
         return;
       }
+      /* Label the picker with the actual differentiator (flavor/size/strength/…). */
+      var vword = variantTypeWord(j.variant_type);
+      btn.textContent = 'Change ' + cap(vword);
       var opts = variants.map(function (v) {
         var selected = (String(v.code) === String(j.current_code)) ? ' selected' : '';
         var price = (v.price != null) ? ' — $' + Number(v.price).toFixed(2) : '';
@@ -883,10 +886,10 @@
                  esc(v.label) + price + oos + '</option>';
       }).join('');
       slot.innerHTML =
-        '<label style="font-size:12px;">Choose a flavor</label>' +
+        '<label style="font-size:12px;">Choose a ' + esc(vword) + '</label>' +
         '<select class="dgc-variant-select">' + opts + '</select>' +
         '<div class="dgc-sub-card-actions" style="margin-top:6px;">' +
-          '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save flavor</button>' +
+          '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save ' + esc(vword) + '</button>' +
         '</div>';
     })
     .catch(function () {
@@ -979,6 +982,15 @@
       .replace(/>/g,  '&gt;')
       .replace(/"/g,  '&quot;');
   }
+
+  /* Variant differentiator slug (from the function) → customer-facing word.
+   * Falls back to "variant" when no differentiator attribute is set (reads
+   * cleanly in "Choose a variant" / "Change Variant"). */
+  function variantTypeWord(slug) {
+    var map = { flavor: 'flavor', size: 'size', strength: 'strength', strain: 'strain', type: 'type' };
+    return map[slug] || 'variant';
+  }
+  function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
 
   /* ════════════════════════════════════════════════════════════════════════
    * BOOTSTRAP — wait for <foxy-customer-portal> to exist, then start.
