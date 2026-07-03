@@ -509,7 +509,7 @@
             '<button class="dgc-btn-action" data-action="ship-now">Ship Now</button>' +
             '<button class="dgc-btn-action" data-action="skip">Skip Next</button>' +
             '<button class="dgc-btn-action" data-action="change-frequency">Change Frequency</button>' +
-            '<button class="dgc-btn-action" data-action="change-address">Change Address</button>' +
+            '<button class="dgc-btn-action" data-action="change-address">Change Shipping Address</button>' +
             '<button class="dgc-btn-action" data-action="change-billing-address">Change Billing Address</button>' +
             '<button class="dgc-btn-action" data-action="edit-items">Update Quantity</button>' +
             '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
