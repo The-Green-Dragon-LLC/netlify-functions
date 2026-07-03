@@ -826,7 +826,7 @@
             '<input class="dgc-qty" type="number" min="1" max="99" value="' + (parseInt(it.quantity, 10) || 1) + '" style="width:56px;text-align:center;margin-bottom:0;">' +
             '<button class="dgc-btn-action" data-action="qty-inc" style="padding:6px 12px;">+</button>' +
             '<button class="dgc-btn-action dgc-btn-resume" data-action="save-qty">Save qty</button>' +
-            '<button class="dgc-btn-action" data-action="load-variants">Change Options</button>' +
+            '<button class="dgc-btn-action" data-action="load-variants">Change Flavor</button>' +
           '</div>' +
           '<div class="dgc-variant-slot" style="margin-top:8px;"></div>' +
         '</div>';
@@ -835,7 +835,7 @@
         '<button class="dgc-btn-action" data-action="inline-cancel">Close</button>' +
       '</div>';
     inline.style.display = 'block';
-    prefetchItemVariants(card); /* relabel each "Change Options" button with its real variant type */
+    prefetchItemVariants(card); /* relabel each variant button with its real type (default is "Change Flavor") */
   }
 
   function adjustQty(btn, action) {
