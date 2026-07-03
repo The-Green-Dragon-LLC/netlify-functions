@@ -698,8 +698,9 @@
    * The portal authenticates cross-origin via a token, so a bare checkout link
    * loads logged-OUT. Instead we ask the portal for an authenticated checkout
    * link (GET /s/customer?sso=true → _links.fx:checkout) and append
-   * cart=updateinfo plus customer_email + billing_* prefill params (see
-   * buildPaymentPrefill) so the email and billing address aren't left blank.
+   * cart=updateinfo. Foxy strips the query on its SSO redirect, so the prefill
+   * data (email + billing) rides in the URL FRAGMENT via buildPrefillFragment;
+   * the checkout template reads the fragment (marker gd=1) and fills the fields.
    * The #fc-payment fragment (Foxy's payment fieldset id) opens the page
    * scrolled straight to the card fields. Card entry stays in Foxy's PCI flow —
    * it can't be iframed into a modal, so this opens a tab. */
@@ -726,19 +727,19 @@
       var href = j && j._links && j._links['fx:checkout'] && j._links['fx:checkout'].href;
       if (!href) { go(fallbackUrl); return; }
       var sep = href.indexOf('?') === -1 ? '?' : '&';
-      go(href + sep + 'cart=updateinfo' + buildPaymentPrefill(j) + '#fc-payment');
+      go(href + sep + 'cart=updateinfo#' + buildPrefillFragment(j));
     })
     .catch(function () { go(fallbackUrl); });
   }
 
-  /* Foxy checkout prefill params (v2.0 field names: customer_email + billing_*,
-   * with the state field as billing_region). HMAC cart validation is off for
-   * this store, so these prepopulate the update-info page. Email comes from the
-   * SSO customer response; the billing address is taken from a subscription (its
-   * billing, or shipping if billing isn't stored separately), with the account's
-   * default addresses as a fallback — so the billing fields aren't left blank. */
-  function buildPaymentPrefill(customer) {
-    var qp = [];
+  /* Build the URL-fragment payload the checkout template reads to prefill the
+   * update-info page (Foxy strips the query on its SSO redirect, but the
+   * fragment survives). Marker `gd=1` identifies our account card-update flow;
+   * then customer_email + billing_* (v2.0 field names, state = billing_region).
+   * Email comes from the SSO customer response; billing from a subscription (its
+   * billing, else shipping), with the account default addresses as a fallback. */
+  function buildPrefillFragment(customer) {
+    var qp = ['gd=1'];
     var email = (customer && customer.email) || '';
     if (email) qp.push('customer_email=' + encodeURIComponent(email));
 
@@ -765,7 +766,7 @@
         if (a[k]) qp.push(map[k] + '=' + encodeURIComponent(a[k]));
       });
     }
-    return qp.length ? '&' + qp.join('&') : '';
+    return qp.join('&');
   }
 
   /* ── Relocate the "Update Payment Card" button into the portal's native
