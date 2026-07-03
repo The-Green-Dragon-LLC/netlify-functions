@@ -819,6 +819,7 @@
         '<button class="dgc-btn-action" data-action="inline-cancel">Close</button>' +
       '</div>';
     inline.style.display = 'block';
+    prefetchItemVariants(card); /* relabel each "Change Options" button with its real variant type */
   }
 
   function adjustQty(btn, action) {
@@ -840,15 +841,9 @@
     if (code && q) doAction(card, 'set-quantity', { item_code: code, quantity: q });
   }
 
-  function loadVariants(card, btn) {
-    var row = btn.closest('.dgc-item-row');
-    if (!row) return;
-    var code = row.getAttribute('data-code');
-    var slot = row.querySelector('.dgc-variant-slot');
-    if (!slot) return;
-    slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#666;">Loading options…</p>';
-
-    fetch(GD_MANAGE_FN, {
+  /* POST list-variants for one line item → resolves to { ok, json }. */
+  function fetchVariants(card, code) {
+    return fetch(GD_MANAGE_FN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -857,11 +852,70 @@
         sub_token: card.dataset.subToken,
         item_code: code
       })
-    })
-    .then(function (r) {
+    }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, json: j }; });
-    })
-    .then(function (res) {
+    });
+  }
+
+  /* When the item editor opens, prefetch each item's variant type so its trigger
+   * button reads "Change Flavor" / "Change Size" (the real differentiator) rather
+   * than the generic "Change Options". Caches the response on the row so the
+   * click renders instantly without a second fetch. Silent on failure — the
+   * button just keeps its generic label. */
+  function prefetchItemVariants(card) {
+    var rows = card.querySelectorAll('.dgc-item-row');
+    Array.prototype.forEach.call(rows, function (row) {
+      var code = row.getAttribute('data-code');
+      if (!code) return;
+      fetchVariants(card, code).then(function (res) {
+        if (!res.ok || !res.json || res.json.error) return;
+        row._dgcVariantData = res.json;
+        var vbtn = row.querySelector('[data-action="load-variants"]');
+        var variants = res.json.variants || [];
+        if (vbtn && variants.length) {
+          vbtn.textContent = 'Change ' + cap(variantTypeWord(res.json.variant_type));
+        }
+      }).catch(function () { /* keep the generic label */ });
+    });
+  }
+
+  /* Render the variant <select> for a row from a list-variants response. */
+  function renderVariantOptions(btn, slot, j) {
+    var variants = (j && j.variants) || [];
+    if (!variants.length) {
+      slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">No other options are available for this product.</p>';
+      return;
+    }
+    /* Label the picker with the actual differentiator (flavor/size/strength/…). */
+    var vword = variantTypeWord(j.variant_type);
+    btn.textContent = 'Change ' + cap(vword);
+    var opts = variants.map(function (v) {
+      var selected = (String(v.code) === String(j.current_code)) ? ' selected' : '';
+      var price = (v.price != null) ? ' — $' + Number(v.price).toFixed(2) : '';
+      var oos = v.in_stock ? '' : ' (out of stock)';
+      return '<option value="' + esc(v.code) + '"' + (v.in_stock ? '' : ' disabled') + selected + '>' +
+               esc(v.label) + price + oos + '</option>';
+    }).join('');
+    slot.innerHTML =
+      '<label style="font-size:12px;">Choose a ' + esc(vword) + '</label>' +
+      '<select class="dgc-variant-select">' + opts + '</select>' +
+      '<div class="dgc-sub-card-actions" style="margin-top:6px;">' +
+        '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save ' + esc(vword) + '</button>' +
+      '</div>';
+  }
+
+  function loadVariants(card, btn) {
+    var row = btn.closest('.dgc-item-row');
+    if (!row) return;
+    var slot = row.querySelector('.dgc-variant-slot');
+    if (!slot) return;
+
+    /* Prefetched by prefetchItemVariants() when the editor opened — render now. */
+    if (row._dgcVariantData) { renderVariantOptions(btn, slot, row._dgcVariantData); return; }
+
+    var code = row.getAttribute('data-code');
+    slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#666;">Loading options…</p>';
+    fetchVariants(card, code).then(function (res) {
       var j = res.json || {};
       /* Surface real failures (e.g. missing Webflow token, lookup error) instead
        * of masking them as an empty option list. */
@@ -870,29 +924,9 @@
           esc(j.error || 'Couldn\'t load options. Please try again.') + '</p>';
         return;
       }
-      var variants = j.variants || [];
-      if (!variants.length) {
-        slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">No other options are available for this product.</p>';
-        return;
-      }
-      /* Label the picker with the actual differentiator (flavor/size/strength/…). */
-      var vword = variantTypeWord(j.variant_type);
-      btn.textContent = 'Change ' + cap(vword);
-      var opts = variants.map(function (v) {
-        var selected = (String(v.code) === String(j.current_code)) ? ' selected' : '';
-        var price = (v.price != null) ? ' — $' + Number(v.price).toFixed(2) : '';
-        var oos = v.in_stock ? '' : ' (out of stock)';
-        return '<option value="' + esc(v.code) + '"' + (v.in_stock ? '' : ' disabled') + selected + '>' +
-                 esc(v.label) + price + oos + '</option>';
-      }).join('');
-      slot.innerHTML =
-        '<label style="font-size:12px;">Choose a ' + esc(vword) + '</label>' +
-        '<select class="dgc-variant-select">' + opts + '</select>' +
-        '<div class="dgc-sub-card-actions" style="margin-top:6px;">' +
-          '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save ' + esc(vword) + '</button>' +
-        '</div>';
-    })
-    .catch(function () {
+      row._dgcVariantData = j;
+      renderVariantOptions(btn, slot, j);
+    }).catch(function () {
       slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">Couldn\'t load options. Please try again.</p>';
     });
   }
