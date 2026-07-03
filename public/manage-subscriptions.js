@@ -698,10 +698,11 @@
    * The portal authenticates cross-origin via a token, so a bare checkout link
    * loads logged-OUT. Instead we ask the portal for an authenticated checkout
    * link (GET /s/customer?sso=true → _links.fx:checkout) and append
-   * cart=updateinfo. The authenticated session pre-fills the customer / billing /
-   * email fields, and the #fc-payment fragment (Foxy's payment fieldset id)
-   * opens the page scrolled straight to the card fields. Card entry stays in
-   * Foxy's PCI flow — it can't be iframed into a modal, so this opens a tab. */
+   * cart=updateinfo plus customer_email + billing_* prefill params (see
+   * buildPaymentPrefill) so the email and billing address aren't left blank.
+   * The #fc-payment fragment (Foxy's payment fieldset id) opens the page
+   * scrolled straight to the card fields. Card entry stays in Foxy's PCI flow —
+   * it can't be iframed into a modal, so this opens a tab. */
   function openPaymentUpdate() {
     var base = (portal && portal.getAttribute && portal.getAttribute('base')) ||
                'https://secure.thegreendragoncbd.com/s/customer/';
@@ -724,9 +725,47 @@
     .then(function (j) {
       var href = j && j._links && j._links['fx:checkout'] && j._links['fx:checkout'].href;
       if (!href) { go(fallbackUrl); return; }
-      go(href + (href.indexOf('?') === -1 ? '?' : '&') + 'cart=updateinfo#fc-payment');
+      var sep = href.indexOf('?') === -1 ? '?' : '&';
+      go(href + sep + 'cart=updateinfo' + buildPaymentPrefill(j) + '#fc-payment');
     })
     .catch(function () { go(fallbackUrl); });
+  }
+
+  /* Foxy checkout prefill params (v2.0 field names: customer_email + billing_*,
+   * with the state field as billing_region). HMAC cart validation is off for
+   * this store, so these prepopulate the update-info page. Email comes from the
+   * SSO customer response; the billing address is taken from a subscription (its
+   * billing, or shipping if billing isn't stored separately), with the account's
+   * default addresses as a fallback — so the billing fields aren't left blank. */
+  function buildPaymentPrefill(customer) {
+    var qp = [];
+    var email = (customer && customer.email) || '';
+    if (email) qp.push('customer_email=' + encodeURIComponent(email));
+
+    var a = null, firstCard = document.querySelector('.dgc-sub-card');
+    if (firstCard) {
+      var b = null, s = null;
+      try { b = JSON.parse(firstCard.dataset.billingAddress || '{}'); } catch (e) {}
+      try { s = JSON.parse(firstCard.dataset.address || '{}'); } catch (e) {}
+      a = (b && b.address1) ? b : ((s && s.address1) ? s : null);
+    }
+    if (!a && customer && customer._embedded) {
+      var ab = customer._embedded['fx:default_billing_address'];
+      var as = customer._embedded['fx:default_shipping_address'];
+      a = (ab && ab.address1) ? ab : ((as && as.address1) ? as : null);
+    }
+    if (a) {
+      var map = {
+        first_name: 'billing_first_name', last_name: 'billing_last_name',
+        address1: 'billing_address1', address2: 'billing_address2',
+        city: 'billing_city', region: 'billing_region',
+        postal_code: 'billing_postal_code', country: 'billing_country'
+      };
+      Object.keys(map).forEach(function (k) {
+        if (a[k]) qp.push(map[k] + '=' + encodeURIComponent(a[k]));
+      });
+    }
+    return qp.length ? '&' + qp.join('&') : '';
   }
 
   /* ── Relocate the "Update Payment Card" button into the portal's native
