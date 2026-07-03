@@ -352,21 +352,22 @@ exports.handler = async (event) => {
     if (action === 'change-address') {
       const ttHref = sub._links['fx:transaction_template'] && sub._links['fx:transaction_template'].href;
       if (!ttHref) throw new Error('Subscription has no transaction_template link');
+      const tt = (sub._embedded && sub._embedded['fx:transaction_template']) || {};
       const type = (address_type === 'billing') ? 'billing' : 'shipping';
-      const patchBody = buildAddressPatch(address, type);
+      const patchBody = buildAddressPatch(address, type, tt);
       const r = await patchOrThrow(ttHref, patchHeaders, patchBody, type + '-address');
       return resp(200, { success: true, action, applied: patchBody, status: r.status });
     }
 
     if (action === 'cancel') {
-      /* Cancel by setting the subscription's end_date via the admin API — the
-       * same reliable path the other actions use, and exactly what Foxy's native
-       * cancel does. We reuse the subscription's own next_transaction_date value:
-       * it's already a Foxy-valid datetime, and Foxy does not process a
-       * transaction on/after the end_date, so the upcoming charge is cancelled
-       * and the subscription stops renewing. (Sending a bare "YYYY-MM-DD" for
-       * today was rejected with a 400.) The 'restart' action clears end_date. */
-      const end = sub.next_transaction_date || (tomorrow() + 'T00:00:00Z');
+      /* Cancel by setting end_date to TOMORROW: the subscription stays active
+       * through today, ends the next day, and never bills again — Foxy does not
+       * process a transaction on/after end_date, so the upcoming charge is
+       * skipped and it stops renewing. (A bare "YYYY-MM-DD" for *today* is
+       * rejected 400 because end_date must be in the future; tomorrow is valid.
+       * We send a full datetime to match Foxy's accepted format.) The 'restart'
+       * action clears end_date. */
+      const end = tomorrow() + 'T00:00:00Z';
       const r = await patchOrThrow(adminSubUrl, patchHeaders, { end_date: end }, 'cancel');
       return resp(200, { success: true, action, applied: { end_date: end }, status: r.status });
     }
@@ -430,26 +431,42 @@ exports.handler = async (event) => {
 
 /* ─── HELPERS ───────────────────────────────────────────────────────────────── */
 
-function buildAddressPatch(a, type) {
-  // Forward known address fields that were supplied, to shipping_* or billing_*.
-  const p = (type === 'billing') ? 'billing_' : 'shipping_';
-  const map = {
-    first_name:  p + 'first_name',
-    last_name:   p + 'last_name',
-    company:     p + 'company',
-    address1:    p + 'address1',
-    address2:    p + 'address2',
-    city:        p + 'city',
-    region:      p + 'state',
-    postal_code: p + 'postal_code',
-    country:     p + 'country',
-    phone:       p + 'phone',
+/* Build a COMPLETE shipping_* + billing_* address patch.
+ *
+ * The subscription's transaction_template has a linked customer_uri, so Foxy
+ * re-populates any shipping_ or billing_ field left out of the PATCH from the
+ * customer's address book — which silently reverted our partial edits (only
+ * the changed type, missing company/phone). Per Foxy's transaction_template
+ * docs we must set ALL shipping_* and billing_* fields in the same request.
+ *
+ * We therefore start from the template's CURRENT values (so the untouched
+ * address type and fields like company/phone are preserved verbatim) and
+ * override only the fields the customer actually edited on the requested type. */
+function buildAddressPatch(a, type, currentTemplate) {
+  const tt = currentTemplate || {};
+  const FIELDS = ['first_name', 'last_name', 'company', 'address1', 'address2',
+                  'city', 'state', 'postal_code', 'country', 'phone'];
+  // Our form field name → Foxy suffix (only `region` differs → `state`).
+  const FROM = {
+    first_name: 'first_name', last_name: 'last_name', company: 'company',
+    address1: 'address1', address2: 'address2', city: 'city',
+    region: 'state', postal_code: 'postal_code', country: 'country', phone: 'phone',
   };
+
   const out = {};
-  Object.keys(map).forEach((k) => {
-    if (a[k] !== undefined && a[k] !== null) out[map[k]] = String(a[k]);
+  // Seed BOTH addresses from the template's current values so a linked
+  // customer_uri can't overwrite anything we don't explicitly send.
+  ['shipping_', 'billing_'].forEach((p) => {
+    FIELDS.forEach((f) => { out[p + f] = (tt[p + f] != null) ? String(tt[p + f]) : ''; });
   });
-  if (!Object.keys(out).length) throw new Error('No recognized address fields supplied');
+
+  // Override the requested type with the supplied (edited) values.
+  const prefix = (type === 'billing') ? 'billing_' : 'shipping_';
+  let any = false;
+  Object.keys(FROM).forEach((k) => {
+    if (a[k] !== undefined && a[k] !== null) { out[prefix + FROM[k]] = String(a[k]); any = true; }
+  });
+  if (!any) throw new Error('No recognized address fields supplied');
   return out;
 }
 

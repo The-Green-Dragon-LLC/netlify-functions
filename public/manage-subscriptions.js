@@ -192,6 +192,7 @@
         subToken:    subToken,
         frequency:   d.frequency || '',
         name:        name,
+        quantity:    (firstItem && parseInt(firstItem.quantity, 10)) || 1,
         nextDate:    nextDate,
         cancelled:   isCancelled,
         inactive:    isInactive,
@@ -399,6 +400,7 @@
       styleDetailPanel();
       relabelDialogButtons();
       labelCancelledTransactions();
+      placePaymentButton();
     }, 500);
   }
 
@@ -416,18 +418,29 @@
     if (!items.length) { panel.style.display = 'none'; return; }
 
     /* Payment card is account-level (all subscriptions charge the same card), so
-     * offer a single prominent button that jumps to the portal's secure Payment
-     * Methods section rather than a per-subscription control. */
+     * offer a single prominent button. It's created here in the panel, then
+     * relocated into the portal's native Payment Methods section by
+     * placePaymentButton() (issue #6); if that section can't be found it stays
+     * here as a safe fallback. */
     var payRow = document.createElement('div');
+    payRow.id = 'dgc-pay-row';
     payRow.style.cssText = 'margin:0 0 22px;';
     payRow.innerHTML =
-      '<button type="button" data-action="update-payment" ' +
+      '<button type="button" ' +
         'style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;background:#37b772;' +
         'color:#fff;font-size:15px;font-weight:700;border:none;border-radius:6px;cursor:pointer;' +
         'font-family:\'Lato\',sans-serif;box-shadow:0 2px 6px rgba(55,183,114,.35);">' +
         '<span aria-hidden="true" style="font-size:17px;line-height:1;">💳</span>' +
         'Update Payment Card' +
       '</button>';
+    /* Bind directly (not via document delegation): once relocated into the
+     * portal's Payment Methods section the button lives in shadow DOM, where
+     * event retargeting would hide it from a document-level click listener. */
+    var payBtn = payRow.querySelector('button');
+    if (payBtn) payBtn.addEventListener('click', function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      openPaymentUpdate();
+    });
     panel.appendChild(payRow);
 
     items.forEach(function (item) {
@@ -451,7 +464,7 @@
 
       var nameRow =
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
-          '<p class="dgc-sub-card-name" style="margin:0;">' + esc(item.name) + '</p>' +
+          '<p class="dgc-sub-card-name" style="margin:0;">(' + (parseInt(item.quantity, 10) || 1) + ') ' + esc(item.name) + '</p>' +
           badge +
         '</div>';
 
@@ -462,7 +475,7 @@
         dateRow = '<p class="dgc-sub-card-end">Ended' + (item.endDate ? ' on ' + esc(item.endDate) : '') + '</p>';
       } else if (item.ending && item.endDate) {
         dateRow = '<p class="dgc-sub-card-end">Ends on ' + esc(item.endDate) +
-                  (freqText ? ' &middot; ' + esc(freqText) : '') + '</p>';
+                  ' &middot; You won\'t be billed again</p>';
       } else if (item.paused) {
         dateRow = '<p class="dgc-sub-card-paused-note">Paused — you won\'t be charged until you resume.' +
                   (freqText ? ' Normal schedule: ' + esc(freqText) + '.' : '') + '</p>';
@@ -531,9 +544,6 @@
     if (!actionBtn) return;
 
     var action = actionBtn.getAttribute('data-action');
-
-    /* Panel-level (not tied to a specific subscription card). */
-    if (action === 'update-payment') { if (e.preventDefault) e.preventDefault(); openPaymentUpdate(); return; }
 
     var card = actionBtn.closest('.dgc-sub-card');
     if (!card) return;
@@ -672,13 +682,16 @@
    * The portal authenticates cross-origin via a token, so a bare checkout link
    * loads logged-OUT. Instead we ask the portal for an authenticated checkout
    * link (GET /s/customer?sso=true → _links.fx:checkout) and append
-   * cart=updateinfo. Card entry stays in Foxy's PCI flow. */
+   * cart=updateinfo. The authenticated session pre-fills the customer / billing /
+   * email fields, and the #fc-payment fragment (Foxy's payment fieldset id)
+   * opens the page scrolled straight to the card fields. Card entry stays in
+   * Foxy's PCI flow — it can't be iframed into a modal, so this opens a tab. */
   function openPaymentUpdate() {
     var base = (portal && portal.getAttribute && portal.getAttribute('base')) ||
                'https://secure.thegreendragoncbd.com/s/customer/';
     var origin = 'https://secure.thegreendragoncbd.com';
     try { origin = new URL(base).origin; } catch (e) { /* keep fallback */ }
-    var fallbackUrl = origin + '/cart?cart=updateinfo';
+    var fallbackUrl = origin + '/cart?cart=updateinfo#fc-payment';
 
     /* Open the tab synchronously (inside the click) so it isn't popup-blocked;
      * navigate it once we have the authenticated URL. */
@@ -695,9 +708,39 @@
     .then(function (j) {
       var href = j && j._links && j._links['fx:checkout'] && j._links['fx:checkout'].href;
       if (!href) { go(fallbackUrl); return; }
-      go(href + (href.indexOf('?') === -1 ? '?' : '&') + 'cart=updateinfo');
+      go(href + (href.indexOf('?') === -1 ? '?' : '&') + 'cart=updateinfo#fc-payment');
     })
     .catch(function () { go(fallbackUrl); });
+  }
+
+  /* ── Relocate the "Update Payment Card" button into the portal's native
+   *    Payment Methods section (issue #6). Runs from the polling loop until the
+   *    portal has rendered its payment method card. Falls back to leaving the
+   *    button in the branded panel if the section can't be located. */
+  var _payBtnPlaced = false;
+  function findPaymentSection() {
+    if (!portal || !portal.shadowRoot) return null;
+    /* The saved-card display is the most reliable anchor for "Payment Methods". */
+    var card = deepQueryAll(portal.shadowRoot, 'foxy-payment-method-card')[0];
+    if (card) return card;
+    /* Fallback: the payment-methods collection wrapper (never the addresses one). */
+    var colls = deepQueryAll(portal.shadowRoot, 'foxy-collection-pages');
+    for (var i = 0; i < colls.length; i++) {
+      var ref = colls[i].getAttribute('first') || colls[i].getAttribute('href') || colls[i].first || '';
+      if (/payment_methods|default_payment_method/i.test(String(ref))) return colls[i];
+    }
+    return null;
+  }
+  function placePaymentButton() {
+    var row = document.getElementById('dgc-pay-row');
+    if (!row) return;
+    if (_payBtnPlaced && row.isConnected) return; /* already placed and still attached */
+    var anchor = findPaymentSection();
+    if (!anchor || !anchor.parentNode) return;    /* section not rendered yet — retry next poll */
+    if (anchor.nextSibling) anchor.parentNode.insertBefore(row, anchor.nextSibling);
+    else anchor.parentNode.appendChild(row);
+    row.style.cssText = 'margin:14px 0 0;';       /* spacing suited to the portal section */
+    _payBtnPlaced = true;
   }
 
   function readAddressForm(card) {
@@ -721,7 +764,9 @@
       '<p style="margin:0 0 12px;font-size:13px;color:#444;line-height:1.5;">' +
       'Are you sure you want to cancel? You can ' +
       '<strong>change how often it ships</strong> instead — ' +
-      'no need to start over later.</p>' +
+      'no need to start over later.<br>' +
+      'If you cancel, your subscription stays active until tomorrow and ' +
+      '<strong>you won\'t be billed again</strong>.</p>' +
       '<div class="dgc-sub-card-actions">' +
         '<button class="dgc-btn-action" data-action="change-frequency">Change frequency instead</button>' +
         '<button class="dgc-btn-cancel" data-action="confirm-cancel">Yes, cancel subscription</button>' +
@@ -765,7 +810,7 @@
             '<input class="dgc-qty" type="number" min="1" max="99" value="' + (parseInt(it.quantity, 10) || 1) + '" style="width:56px;text-align:center;margin-bottom:0;">' +
             '<button class="dgc-btn-action" data-action="qty-inc" style="padding:6px 12px;">+</button>' +
             '<button class="dgc-btn-action dgc-btn-resume" data-action="save-qty">Save qty</button>' +
-            '<button class="dgc-btn-action" data-action="load-variants">Change option</button>' +
+            '<button class="dgc-btn-action" data-action="load-variants">Change Flavor</button>' +
           '</div>' +
           '<div class="dgc-variant-slot" style="margin-top:8px;"></div>' +
         '</div>';
@@ -838,10 +883,10 @@
                  esc(v.label) + price + oos + '</option>';
       }).join('');
       slot.innerHTML =
-        '<label style="font-size:12px;">Choose an option</label>' +
+        '<label style="font-size:12px;">Choose a flavor</label>' +
         '<select class="dgc-variant-select">' + opts + '</select>' +
         '<div class="dgc-sub-card-actions" style="margin-top:6px;">' +
-          '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save option</button>' +
+          '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save flavor</button>' +
         '</div>';
     })
     .catch(function () {
