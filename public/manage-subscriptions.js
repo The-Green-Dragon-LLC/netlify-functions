@@ -516,7 +516,14 @@
           '</div>';
       }
 
-      card.innerHTML = nameRow + dateRow + actions +
+      /* Per-subscription shipping + billing addresses (hidden for ended subs). */
+      var shipHTML = item.inactive ? '' : addressBlockHTML('Shipping to', item.address);
+      var billHTML = item.inactive ? '' : addressBlockHTML('Billing to', item.billingAddress);
+      var addrBlock = (shipHTML || billHTML)
+        ? '<div style="display:flex;flex-wrap:wrap;gap:18px;margin:8px 0 2px;">' + shipHTML + billHTML + '</div>'
+        : '';
+
+      card.innerHTML = nameRow + dateRow + addrBlock + actions +
         '<div class="dgc-sub-inline" style="display:none;"></div>' +
         '<div class="dgc-sub-msg-slot"></div>';
       panel.appendChild(card);
@@ -998,6 +1005,29 @@
     var units = { d: 'day', w: 'week', m: 'month', y: 'year' };
     var unit = units[m[2]] || m[2];
     return n === 1 ? 'Every ' + unit : 'Every ' + n + ' ' + unit + 's';
+  }
+
+  /* Display lines for an address object (keys: first_name, last_name, address1,
+   * address2, city, region, postal_code, country). Empty parts are dropped. */
+  function formatAddressLines(a) {
+    if (!a) return [];
+    var name = ((a.first_name || '') + ' ' + (a.last_name || '')).trim();
+    var cityState = [a.city, a.region].filter(function (s) { return s && String(s).trim(); }).join(', ');
+    if (a.postal_code) cityState = (cityState ? cityState + ' ' : '') + a.postal_code;
+    return [name, a.address1, a.address2, cityState, a.country].filter(function (s) {
+      return s && String(s).trim();
+    });
+  }
+
+  /* A labelled address block for the subscription card (empty string if the
+   * address has no data — e.g. billing not stored separately). */
+  function addressBlockHTML(label, a) {
+    var lines = formatAddressLines(a);
+    if (!lines.length) return '';
+    return '<div style="font-size:12px;color:#555;line-height:1.45;min-width:150px;">' +
+      '<span style="display:block;font-weight:700;color:#333;margin-bottom:2px;">' + esc(label) + '</span>' +
+      lines.map(function (l) { return esc(l); }).join('<br>') +
+    '</div>';
   }
 
   function formatDate(str) {
