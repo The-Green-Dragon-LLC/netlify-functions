@@ -1154,6 +1154,12 @@
         window.location.hostname.indexOf('foxy.io')      !== -1 ||
         window.location.hostname === 'secure.thegreendragoncbd.com') return;
 
+    // Never show on the homepage. Webflow serves the home page at the root path
+    // ("/" or ""); some setups also alias it to "/home". Guard all of these so
+    // the offer can never appear there, regardless of what triggered it.
+    var path = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+    if (path === '/' || path === '/home') return;
+
     // Lock in this session's config for the popup that just fired
     ACTIVE_CONFIG = cs;
     PROMO_LIMIT   = effectiveMaxQty(cs);
@@ -1352,18 +1358,24 @@
         }
       }
       configLoaded = true;
-      // Always check for a matching cart item after config loads.
-      // Covers two cases:
-      //   (a) pendingShow — item was added before config fetch completed: match
-      //       only those just-added items so the popup reflects the new product.
-      //   (b) pre-existing cart items — items were already in cart on page load:
-      //       match against the whole cart.
-      // showPopup() guards against re-showing via alreadyShownFor(cs).
-      var retryItems = (pendingShow && pendingItems) ? pendingItems : null;
-      pendingShow  = false;
-      pendingItems = null;
-      var cs = findActiveCrossSell(retryItems);
-      if (cs) showPopup(cs);
+      // Only fire the popup here when an item was actually ADDED during the
+      // config fetch window (pendingShow) — i.e. the add-delta poll saw a new
+      // item before the config had loaded, so it deferred to us. We match only
+      // those just-added items so the popup reflects the new product.
+      //
+      // We deliberately do NOT show the popup for items that were merely
+      // pre-existing in the cart on page load. Foxy persists the cart across
+      // sessions via cookie, so triggering on pre-existing contents caused the
+      // popup to appear on every page (including the homepage) whenever a
+      // qualifying item was still sitting in the cart from a prior visit. The
+      // popup is an add-time offer, not a page-load offer.
+      if (pendingShow) {
+        var retryItems = pendingItems;
+        pendingShow  = false;
+        pendingItems = null;
+        var cs = findActiveCrossSell(retryItems);
+        if (cs) showPopup(cs);
+      }
 
       updatePromoDisclaimer();
       renderCartCrossSell(); // show in-cart widget now that generic config is loaded
