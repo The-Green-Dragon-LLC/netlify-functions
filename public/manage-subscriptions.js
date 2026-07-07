@@ -159,6 +159,22 @@
         };
       });
 
+      /* Recurring total for this subscription. Prefer Foxy's computed
+       * transaction_template total_order (includes shipping/tax as configured);
+       * fall back to total_item_price, then to summing the discounted line
+       * items. */
+      var itemsSubtotal = lineItems.reduce(function (s, li) {
+        return s + (Number(li.price) || 0) * (parseInt(li.quantity, 10) || 1);
+      }, 0);
+      var subTotal =
+        (tmpl && Number(tmpl.total_order) > 0)      ? Number(tmpl.total_order) :
+        (tmpl && Number(tmpl.total_item_price) > 0) ? Number(tmpl.total_item_price) :
+        itemsSubtotal;
+
+      /* Masked payment card that charges this subscription (from the template's
+       * transaction; account-level fallback filled later by fillSavedCard). */
+      var cardLabel = formatCard(tmpl && tmpl.cc_type, tmpl && tmpl.cc_number_masked);
+
       /* Current shipping address (from the transaction template) to prefill the
        * address form. Fields fall back to empty strings. */
       var addr = {
@@ -201,7 +217,9 @@
         endDate:     endDate,
         address:     addr,
         billingAddress: billingAddr,
-        lineItems:   lineItems
+        lineItems:   lineItems,
+        total:       subTotal,
+        cardLabel:   cardLabel
       });
       handledCards.push(card); /* hide the native card once its data is read */
     });
@@ -401,7 +419,35 @@
       relabelDialogButtons();
       labelCancelledTransactions();
       placePaymentButton();
+      fillSavedCard();
     }, 500);
+  }
+
+  /* "Visa •••• 1234" from a card type + masked number (last 4 digits). Empty
+   * string when there's no usable number. */
+  function formatCard(type, masked) {
+    var last4 = String(masked || '').replace(/\D/g, '').slice(-4);
+    if (!last4) return '';
+    var t = type ? String(type).trim() : '';
+    t = t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Card';
+    return t + ' •••• ' + last4;
+  }
+
+  /* Fallback for cards whose transaction_template didn't carry the masked card:
+   * read the account's saved card from the portal's payment-method element and
+   * fill any still-empty payment slots. Runs from the poll loop. */
+  function fillSavedCard() {
+    var slots = document.querySelectorAll('.dgc-sub-card-pay');
+    var need = false;
+    for (var i = 0; i < slots.length; i++) { if (!slots[i].innerHTML.trim()) { need = true; break; } }
+    if (!need || !portal || !portal.shadowRoot) return;
+    var el = deepQueryAll(portal.shadowRoot, 'foxy-payment-method-card')[0];
+    var d = el && el.data;
+    var txt = d ? formatCard(d.cc_type, d.cc_number_masked) : '';
+    if (!txt) return;
+    for (var j = 0; j < slots.length; j++) {
+      if (!slots[j].innerHTML.trim()) slots[j].innerHTML = '<span aria-hidden="true">💳</span> Charged to ' + esc(txt);
+    }
   }
 
   /* ════════════════════════════════════════════════════════════════════════
@@ -484,6 +530,21 @@
                   (freqText ? ' &middot; ' + esc(freqText) : '') + '</p>';
       }
 
+      var totalRow = (!item.inactive && Number(item.total) > 0)
+        ? '<p class="dgc-sub-card-total" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#333;">' +
+            'Subscription total: $' + Number(item.total).toFixed(2) +
+            (freqText ? ' <span style="font-weight:400;color:#666;">/ ' + esc(freqText.toLowerCase()) + '</span>' : '') +
+          '</p>'
+        : '';
+
+      /* Payment card line. Rendered (empty) for active subs so fillSavedCard()
+       * can populate it from the account default when the template lacked it. */
+      var payRow = (!item.inactive)
+        ? '<p class="dgc-sub-card-pay" style="margin:0 0 12px;font-size:13px;color:#555;">' +
+            (item.cardLabel ? '<span aria-hidden="true">💳</span> Charged to ' + esc(item.cardLabel) : '') +
+          '</p>'
+        : '';
+
       var actions;
       if (item.cancelled) {
         /* Cancelled (ending soon or already inactive): offer Restart, but only
@@ -532,7 +593,7 @@
         ? '<div style="display:flex;flex-wrap:wrap;gap:18px;margin:8px 0 2px;">' + shipHTML + billHTML + '</div>'
         : '';
 
-      card.innerHTML = nameRow + dateRow + addrBlock + actions +
+      card.innerHTML = nameRow + dateRow + totalRow + payRow + addrBlock + actions +
         '<div class="dgc-sub-inline" style="display:none;"></div>' +
         '<div class="dgc-sub-msg-slot"></div>';
       panel.appendChild(card);
@@ -947,7 +1008,10 @@
     btn.textContent = 'Change ' + cap(vword);
     var opts = variants.map(function (v) {
       var selected = (String(v.code) === String(j.current_code)) ? ' selected' : '';
-      var price = (v.price != null) ? ' — $' + Number(v.price).toFixed(2) : '';
+      /* Show the subscription (discounted) price when the function supplies it,
+       * falling back to the raw CMS price for older responses. */
+      var pv = (v.sub_price != null) ? v.sub_price : v.price;
+      var price = (pv != null) ? ' — $' + Number(pv).toFixed(2) : '';
       var oos = v.in_stock ? '' : ' (out of stock)';
       return '<option value="' + esc(v.code) + '"' + (v.in_stock ? '' : ' disabled') + selected + '>' +
                esc(v.label) + price + oos + '</option>';
