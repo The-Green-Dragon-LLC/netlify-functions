@@ -420,10 +420,11 @@ exports.handler = async (event) => {
     const token = await getAccessToken();
     const authHeaders = { 'Authorization': `Bearer ${token}`, 'FOXY-API-VERSION': '1' };
 
-    // 1. Fetch the subscription. Zoom the transaction_template items (and their
-    //    options, so change-address can read each line's shipping-restriction
-    //    code) — item-editing actions also use the embedded items.
-    const subRes = await httpsReq(adminSubUrl + '?zoom=transaction_template:items:item_options', { headers: authHeaders });
+    // 1. Fetch the subscription. Zoom the transaction_template items so the
+    //    item-editing actions can find the line to modify. (Foxy zoom only goes
+    //    2 levels deep, so item_options can't be embedded here — change-address
+    //    fetches those separately from the template.)
+    const subRes = await httpsReq(adminSubUrl + '?zoom=transaction_template:items', { headers: authHeaders });
     const sub = subRes.json;
     if (!sub || !sub._links) {
       throw new Error(`Could not load subscription (${subRes.status}): ${subRes.text.slice(0, 200)}`);
@@ -451,7 +452,15 @@ exports.handler = async (event) => {
       // Guard: don't let a restricted product start shipping to a banned
       // state/ZIP. Billing changes don't affect where it ships, so skip them.
       if (type === 'shipping') {
-        const ttItems = (tt._embedded && tt._embedded['fx:items']) || [];
+        // Item options aren't embedded on the subscription (zoom depth limit),
+        // so fetch the template's items WITH their options (2-level zoom on the
+        // template) to read each line's Restricted_Shipping_Code. Fail open on
+        // any fetch error so a lookup hiccup never blocks a legitimate change.
+        let ttItems = [];
+        try {
+          const itemsRes = await httpsReq(ttHref + '?zoom=items:item_options', { headers: authHeaders });
+          ttItems = (itemsRes.json && itemsRes.json._embedded && itemsRes.json._embedded['fx:items']) || [];
+        } catch (e) { console.warn('[manage] restriction items fetch failed:', e && e.message); }
         const restrictErr = shippingRestrictionError(ttItems, address.region, address.postal_code);
         if (restrictErr) return resp(422, { error: restrictErr, restricted: true });
       }
