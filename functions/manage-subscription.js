@@ -52,6 +52,7 @@
 'use strict';
 
 const https = require('https');
+const crypto = require('crypto');
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -381,7 +382,7 @@ exports.handler = async (event) => {
   const { action, subscription_uri, sub_token, frequency, address, address_type, item_code, quantity, variant_code } = body;
 
   const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel',
-                 'list-variants', 'set-quantity', 'set-variant'];
+                 'list-variants', 'set-quantity', 'set-variant', 'get-payment-url'];
   const ITEM_ACTIONS = ['list-variants', 'set-quantity', 'set-variant'];
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
   if (!subscription_uri || !sub_token) return resp(400, { error: 'Missing subscription_uri or sub_token' });
@@ -444,6 +445,38 @@ exports.handler = async (event) => {
     const patchHeaders = { ...authHeaders, 'Content-Type': 'application/json' };
 
     // 3. Perform the action.
+
+    // Payment-card update: mint a fresh, server-SIGNED Foxy SSO checkout URL so
+    // the customer lands on an authenticated "update info" checkout. This
+    // replaces the flaky client-side portal JWT (which 401s once it goes stale
+    // and then bounces to the /sso endpoint). The caller is already verified
+    // above via sub_token ownership; we read the customer id off the sub and
+    // sign fc_auth_token = sha1(customerId|timestamp|secret) with a future
+    // expiry (per Foxy SSO). Since the token is always valid, Foxy establishes
+    // the session and never redirects to /sso.
+    if (action === 'get-payment-url') {
+      const secret = process.env.FOXY_SSO_SECRET || '';
+      if (!secret) return resp(500, { error: 'Payment update is not configured (missing SSO secret).' });
+      const custHref = (sub._links['fx:customer'] && sub._links['fx:customer'].href) || '';
+      const cm = /\/customers\/(\d+)/.exec(custHref);
+      if (!cm) return resp(500, { error: 'Could not determine the customer for this subscription.' });
+      const customerId = cm[1];
+      // The checkout origin comes from the client (the portal's base origin) so
+      // this works on both the test and production stores; restrict it to Foxy
+      // domains / the store's secure domain to avoid signing a foreign URL.
+      const origin = String((body && body.checkout_origin) || '').replace(/\/+$/, '');
+      if (!/^https:\/\/[a-z0-9.-]+\.foxycart\.com$/i.test(origin) &&
+          origin !== 'https://secure.thegreendragoncbd.com') {
+        return resp(400, { error: 'Invalid checkout origin.' });
+      }
+      const ts = Math.floor(Date.now() / 1000) + 3600; // must be a FUTURE expiry
+      const authToken = crypto.createHash('sha1')
+        .update(customerId + '|' + ts + '|' + secret).digest('hex');
+      const url = origin + '/checkout?fc_customer_id=' + customerId +
+                  '&timestamp=' + ts + '&fc_auth_token=' + authToken + '&cart=updateinfo';
+      return resp(200, { success: true, url: url });
+    }
+
     if (action === 'change-address') {
       const ttHref = sub._links['fx:transaction_template'] && sub._links['fx:transaction_template'].href;
       if (!ttHref) throw new Error('Subscription has no transaction_template link');

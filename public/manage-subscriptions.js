@@ -777,19 +777,30 @@
     var win = window.open('', '_blank');
     function go(url) { if (win && !win.closed) win.location = url; else window.location = url; }
 
-    var token = getPortalToken();
-    if (!token) { go(fallbackUrl); return; }
+    /* Ask the Netlify function to mint a server-signed SSO checkout URL. This
+     * replaces the old client-side `?sso=true` call, whose portal JWT went stale
+     * and returned 401 (then bounced to /sso and looped). The function verifies
+     * ownership via the subscription's sub_token and signs a fresh, always-valid
+     * fc_auth_token, so Foxy authenticates the session and never redirects to
+     * /sso. Payment is account-level, so any of the customer's subs works — use
+     * the first card's URI + token. */
+    var card = document.querySelector('.dgc-sub-card');
+    var subUri = card && card.dataset.subUri;
+    var subToken = card && card.dataset.subToken;
+    if (!subUri || !subToken) { go(fallbackUrl); return; }
 
-    fetch(base.replace(/\/+$/, '') + '?sso=true', {
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+    fetch(GD_MANAGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'get-payment-url',
+        subscription_uri: subUri,
+        sub_token: subToken,
+        checkout_origin: origin
+      })
     })
     .then(function (r) { return r.json().catch(function () { return {}; }); })
-    .then(function (j) {
-      var href = j && j._links && j._links['fx:checkout'] && j._links['fx:checkout'].href;
-      if (!href) { go(fallbackUrl); return; }
-      var sep = href.indexOf('?') === -1 ? '?' : '&';
-      go(href + sep + 'cart=updateinfo#' + buildPrefillFragment(j));
-    })
+    .then(function (j) { go(j && j.url ? j.url : fallbackUrl); })
     .catch(function () { go(fallbackUrl); });
   }
 
