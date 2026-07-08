@@ -770,38 +770,29 @@
                'https://secure.thegreendragoncbd.com/s/customer/';
     var origin = 'https://secure.thegreendragoncbd.com';
     try { origin = new URL(base).origin; } catch (e) { /* keep fallback */ }
-    var fallbackUrl = origin + '/cart?cart=updateinfo#fc-payment';
 
-    /* Open the tab synchronously (inside the click) so it isn't popup-blocked;
-     * navigate it once we have the authenticated URL. */
-    var win = window.open('', '_blank');
-    function go(url) { if (win && !win.closed) win.location = url; else window.location = url; }
-
-    /* Ask the Netlify function to mint a server-signed SSO checkout URL. This
-     * replaces the old client-side `?sso=true` call, whose portal JWT went stale
-     * and returned 401 (then bounced to /sso and looped). The function verifies
-     * ownership via the subscription's sub_token and signs a fresh, always-valid
-     * fc_auth_token, so Foxy authenticates the session and never redirects to
-     * /sso. Payment is account-level, so any of the customer's subs works — use
-     * the first card's URI + token. */
+    /* Foxy-native SSO flow: navigate straight to the store's update-info cart
+     * action. If the customer isn't already authenticated on the Foxy domain,
+     * Foxy bounces to the store SSO endpoint (/sso) with an fcsid; our /sso page
+     * mints the token (via this function, using the sub_token below) and hands
+     * back to /checkout with the same fcsid, so Foxy resumes update-info mode.
+     * We stash the first sub's URI + token (payment is account-level) in
+     * localStorage so the /sso page — same Webflow origin — can authenticate
+     * WITHOUT the flaky portal JWT. */
     var card = document.querySelector('.dgc-sub-card');
     var subUri = card && card.dataset.subUri;
     var subToken = card && card.dataset.subToken;
-    if (!subUri || !subToken) { go(fallbackUrl); return; }
+    if (subUri && subToken) {
+      try {
+        localStorage.setItem('gd_pay_creds', JSON.stringify({
+          subUri: subUri, subToken: subToken, origin: origin, ts: Date.now()
+        }));
+      } catch (e) { /* ignore */ }
+    }
 
-    fetch(GD_MANAGE_FN, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'get-payment-url',
-        subscription_uri: subUri,
-        sub_token: subToken,
-        checkout_origin: origin
-      })
-    })
-    .then(function (r) { return r.json().catch(function () { return {}; }); })
-    .then(function (j) { go(j && j.url ? j.url : fallbackUrl); })
-    .catch(function () { go(fallbackUrl); });
+    var url = origin + '/cart?cart=updateinfo';
+    var win = window.open(url, '_blank');
+    if (!win) window.location = url;
   }
 
   /* Build the URL-fragment payload the checkout template reads to prefill the

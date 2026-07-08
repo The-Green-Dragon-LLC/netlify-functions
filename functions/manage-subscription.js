@@ -472,18 +472,16 @@ exports.handler = async (event) => {
       const ts = Math.floor(Date.now() / 1000) + 3600; // must be a FUTURE expiry
       const authToken = crypto.createHash('sha1')
         .update(customerId + '|' + ts + '|' + secret).digest('hex');
-      // Two-step, because Foxy only honors the SSO token on /checkout (on /cart
-      // it bounces to the /sso endpoint) AND cart=updateinfo is a /cart action
-      // that /checkout ignores:
-      //   1) Land on /checkout with the token → Foxy authenticates and sets the
-      //      session cookie. We tag it with gd_pay=1 (the /checkout auth keeps
-      //      the query string).
-      //   2) The checkout template, seeing gd_pay=1 and that it's not yet in
-      //      update-info mode, redirects to /cart?cart=updateinfo — now
-      //      authenticated via the cookie, so Foxy enters update-info mode
-      //      (is_updateinfo=true) and our chrome fires.
-      const url = origin + '/checkout?fc_customer_id=' + customerId +
-                  '&timestamp=' + ts + '&fc_auth_token=' + authToken + '&gd_pay=1';
+      // This is the Foxy SSO handshake RESPONSE. The customer hit
+      // /cart?cart=updateinfo (unauthenticated), Foxy bounced them to the /sso
+      // endpoint with an fcsid, and /sso calls us to mint the token. Redirect
+      // back to /checkout with the token + the SAME fcsid so Foxy authenticates
+      // the session and RESUMES its pending cart=updateinfo request → the
+      // checkout loads in update-info mode (is_updateinfo=true).
+      const fcsid = String((body && body.fcsid) || '').trim();
+      let url = origin + '/checkout?fc_customer_id=' + customerId +
+                '&timestamp=' + ts + '&fc_auth_token=' + authToken;
+      if (/^[A-Za-z0-9]+$/.test(fcsid)) url += '&fcsid=' + fcsid;
       return resp(200, { success: true, url: url });
     }
 
