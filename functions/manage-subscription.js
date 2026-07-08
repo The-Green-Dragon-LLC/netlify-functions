@@ -472,13 +472,18 @@ exports.handler = async (event) => {
       const ts = Math.floor(Date.now() / 1000) + 3600; // must be a FUTURE expiry
       const authToken = crypto.createHash('sha1')
         .update(customerId + '|' + ts + '|' + secret).digest('hex');
-      // Update-info is a /cart action (NOT /checkout): it authenticates via the
-      // SSO token, sets the updateinfo flag, empties the cart, and redirects to
-      // the checkout in customer_info mode (is_updateinfo=true), which our
-      // checkout-template chrome keys off. Putting cart=updateinfo on /checkout
-      // is ignored (lands on a normal empty checkout).
-      const url = origin + '/cart?cart=updateinfo&fc_customer_id=' + customerId +
-                  '&timestamp=' + ts + '&fc_auth_token=' + authToken;
+      // Two-step, because Foxy only honors the SSO token on /checkout (on /cart
+      // it bounces to the /sso endpoint) AND cart=updateinfo is a /cart action
+      // that /checkout ignores:
+      //   1) Land on /checkout with the token → Foxy authenticates and sets the
+      //      session cookie. We tag it with gd_pay=1 (the /checkout auth keeps
+      //      the query string).
+      //   2) The checkout template, seeing gd_pay=1 and that it's not yet in
+      //      update-info mode, redirects to /cart?cart=updateinfo — now
+      //      authenticated via the cookie, so Foxy enters update-info mode
+      //      (is_updateinfo=true) and our chrome fires.
+      const url = origin + '/checkout?fc_customer_id=' + customerId +
+                  '&timestamp=' + ts + '&fc_auth_token=' + authToken + '&gd_pay=1';
       return resp(200, { success: true, url: url });
     }
 
