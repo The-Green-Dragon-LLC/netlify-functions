@@ -472,8 +472,13 @@ exports.handler = async (event) => {
       const ts = Math.floor(Date.now() / 1000) + 3600; // must be a FUTURE expiry
       const authToken = crypto.createHash('sha1')
         .update(customerId + '|' + ts + '|' + secret).digest('hex');
-      const url = origin + '/checkout?fc_customer_id=' + customerId +
-                  '&timestamp=' + ts + '&fc_auth_token=' + authToken + '&cart=updateinfo';
+      // Update-info is a /cart action (NOT /checkout): it authenticates via the
+      // SSO token, sets the updateinfo flag, empties the cart, and redirects to
+      // the checkout in customer_info mode (is_updateinfo=true), which our
+      // checkout-template chrome keys off. Putting cart=updateinfo on /checkout
+      // is ignored (lands on a normal empty checkout).
+      const url = origin + '/cart?cart=updateinfo&fc_customer_id=' + customerId +
+                  '&timestamp=' + ts + '&fc_auth_token=' + authToken;
       return resp(200, { success: true, url: url });
     }
 
