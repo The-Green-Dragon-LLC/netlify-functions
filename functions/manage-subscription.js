@@ -317,32 +317,56 @@ function toAdminItemUrl(href) {
 
 /* ─── SHIPPING RESTRICTIONS (address-change guard) ──────────────────────────
  * When a customer moves a subscription's SHIPPING address we must not let a
- * restricted product start shipping somewhere it's banned. Keyed by a line
- * item's `Restricted_Shipping_Code` option.
- * IMPORTANT: keep these lists in sync with custom-shipping-code.js (Foxy's
- * shipping-rate script) — that's the source of truth for the same rules at
- * checkout; there is no shared module between the two. */
-const SHIPPING_RESTRICTIONS = {
-  kratom: {
-    name: 'Kratom',
-    states: ['AL', 'AR', 'CT', 'IN', 'NE', 'OH', 'WI', 'LA'],
-    zips: new Set([34223,34224,34229,34230,34231,34232,34233,34234,34235,34236,34237,34238,34239,34240,34241,34242,34272,34274,34275,34276,34277,34278,34284,34285,34286,34287,34288,34289,34292,34293,34295,92163,92164,92165,92166,92167,92168,92169,92170,92171,92172,92173,92174,92175,92176,92177,92178,92182,92186,92190,92191,92192,92193,92194,92195,92196,92197,92198,92199,92101,92102,92103,92104,92105,92106,92107,92108,92109,92110,92111,92112,92113,92114,92115,92116,92117,92118,92119,92120,92121,92122,92123,92124,92126,92127,92128,92129,92130,92131,92132,92133,92134,92135,92136,92137,92138,92139,92140,92142,92143,92145,92147,92149,92150,92152,92153,92154,92155,92159,92160,92162,92049,92051,92052,92054,92055,92056,92057,92058,61021,62002,62075,62052,62025,62026,39701,39702,39703,39704,39705,38627,38650,38652,38828,90001,90002,90003,90004,90005,90006,90007,90008,90010,90011,90012,90014,90015,90016,90017,90018,90019,90020,90021,90022,90023,90024,90025,90026,90027,90028,90029,90031,90032,90033,90034,90035,90036,90037,90038,90039,90040,90041,90042,90043,90044,90045,90046,90047,90048,90049,90056,90057,90058,90059,90061,90062,90063,90064,90065,90066,90067,90068,90069,90071,90073,90077,90089,90094,90095,90201,90210,90211,90212,90220,90221,90222,90230,90232,90240,90241,90242,90245,90247,90248,90249,90250,90254,90255,90260,90261,90262,90263,90265,90266,90270,90272,90274,90275,90277,90278,90280,90290,90291,90292,90293,90301,90302,90303,90304,90305,90401,90402,90403,90404,90405,90501,90502,90503,90504,90505,90506,90601,90602,90603,90604,90605,90606,90623,90630,90631,90638,90639,90640,90650,90660,90670,90701,90703,90706,90710,90712,90713,90715,90716,90717,90723,90731,90732,90744,90745,90746,90747,90755,90802,90803,90804,90805,90806,90807,90808,90810,90813,90814,90815,90822,90831,90840,90846,91001,91006,91007,91008,91010,91011,91016,91020,91023,91024,91030,91040,91042,91046,91101,91103,91104,91105,91106,91107,91108,91125,91126,91201,91202,91203,91204,91205,91206,91207,91208,91210,91214,91301,91302,91303,91304,91306,91307,91311,91316,91324,91325,91326,91330,91331,91335,91340,91342,91343,91344,91345,91350,91351,91352,91354,91355,91356,91361,91362,91364,91367,91381,91382,91384,91387,91390,91401,91402,91403,91405,91406,91411,91423,91436,91501,91502,91504,91505,91506,91521,91522,91523,91601,91602,91604,91605,91606,91607,91608,91702,91706,91711,91722,91723,91724,91731,91732,91733,91740,91741,91744,91745,91746,91750,91754,91755,91759,91767,91768,91770,91773,91775,91776,91780,91789,91790,91791,91792,91801,91803,92397,93243,93510,93523,93532,93534,93535,93536,93543,93544,93550,93551,93552,93553,93563,93591,90704,91321,90013,90090,91709,91748,91765,91766]),
-  },
-  flower:   { name: 'THC Flower', states: ['AL','AZ','CA','CO','CT','GA','HI','IA','ID','MI','MN','MT','ND','OH','OR','RI','TN','UT'], zips: new Set() },
-  thc:      { name: 'THC',        states: ['AL','AR','CA','CT','HI','OH'], zips: new Set() },
-  cbd:      { name: 'CBD',        states: ['CT'], zips: new Set() },
-  smokable: { name: 'Smokable',   states: ['TX'], zips: new Set() },
-  cali:     { name: 'Some',       states: ['CA'], zips: new Set() },
-};
+ * restricted product start shipping somewhere it's banned. The rules are the
+ * SINGLE SOURCE OF TRUTH in Airtable → base "Website" → table "Shipping
+ * Restrictions" (the same table the Foxy checkout shipping script's data comes
+ * from), so there's no hardcoded copy to drift. Each row: Code (matches a line
+ * item's `Restricted_Shipping_Code` option), State Restriction + State List,
+ * Zip Restriction + Zip List, and an optional customer-facing Error Message.
+ * Requires env AIRTABLE_TOKEN (a read-scoped Airtable personal access token). */
+const AIRTABLE_BASE = process.env.AIRTABLE_BASE_ID || 'appWUsGD3byrYcN3l';
+const AIRTABLE_SHIPPING_TABLE = process.env.AIRTABLE_SHIPPING_TABLE || 'tbljI90QZ7C6NWcxa';
+const SHIP_RULES_TTL_MS = 10 * 60 * 1000; // cache across warm invocations
+let _shipRulesCache = null;
+let _shipRulesAt = 0;
+
+/* Fetch + normalize the restriction rules from Airtable, cached for TTL. Shape:
+ * { <code>: { name, states:[UPPER], zips:Set<number>, error } }. Throws on a
+ * fetch/auth error so the caller can decide (we fail OPEN — see change-address). */
+async function getShippingRestrictions() {
+  if (_shipRulesCache && (Date.now() - _shipRulesAt) < SHIP_RULES_TTL_MS) return _shipRulesCache;
+  const token = process.env.AIRTABLE_TOKEN || '';
+  if (!token) throw new Error('AIRTABLE_TOKEN not set');
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_SHIPPING_TABLE}?pageSize=100`;
+  const res = await httpsReq(url, { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok || !res.json) throw new Error(`Airtable ${res.status}: ${(res.text || '').slice(0, 200)}`);
+  const map = {};
+  for (const rec of (res.json.records || [])) {
+    const f = rec.fields || {};
+    const code = String(f.Code || '').trim().toLowerCase();
+    if (!code) continue;
+    const states = (f['State Restriction'] && Array.isArray(f['State List']))
+      ? f['State List'].map((s) => String(s).trim().toUpperCase()) : [];
+    const zips = new Set();
+    if (f['Zip Restriction'] && f['Zip List']) {
+      String(f['Zip List']).split(/[\s,]+/).forEach((z) => { const n = Number(z); if (n > 0) zips.add(n); });
+    }
+    map[code] = { name: f.Name || code, states, zips, error: (f['Error Message'] || '').trim() };
+  }
+  _shipRulesCache = map;
+  _shipRulesAt = Date.now();
+  return map;
+}
 
 /* Returns a customer-facing error string if the new shipping locale bans any
  * restricted item on the subscription; '' when everything can ship there.
- * Mirrors the per-item Restricted_Shipping / Restricted_Shipping_Code option
- * logic used at checkout. */
-function shippingRestrictionError(items, region, postalRaw) {
+ * `rules` is the map from getShippingRestrictions(). Uses each rule's Airtable
+ * Error Message when present, else a generated line. */
+function shippingRestrictionError(items, region, postalRaw, rules) {
+  rules = rules || {};
   const st = String(region || '').trim().toUpperCase();
   const postal = Number(String(postalRaw || '').replace(/\D/g, ''));
-  const blocked = [];
+  const msgs = [];
   for (const item of (items || [])) {
     const opts = (item._embedded && item._embedded['fx:item_options']) || [];
     let restricted = false, codeStr = '';
@@ -352,18 +376,19 @@ function shippingRestrictionError(items, region, postalRaw) {
     }
     if (!restricted || !codeStr) continue;
     for (const raw of codeStr.split(',')) {
-      const rule = SHIPPING_RESTRICTIONS[raw.trim().toLowerCase()];
+      const rule = rules[raw.trim().toLowerCase()];
       if (!rule) continue;
       const stateHit = st && rule.states.includes(st);
       const zipHit = postal && rule.zips.has(postal);
       if (stateHit || zipHit) {
-        blocked.push(rule.name + ' (' + (item.name || 'item') + ') can’t ship to ' + (stateHit ? st : postal));
+        msgs.push(rule.error ||
+          (rule.name + ' (' + (item.name || 'item') + ') can’t ship to ' + (stateHit ? st : postal) + '.'));
       }
     }
   }
-  if (!blocked.length) return '';
-  return 'We can’t ship this subscription to that address: ' + blocked.join('; ') +
-         '. Please choose a different shipping address, or contact us for help.';
+  if (!msgs.length) return '';
+  const unique = msgs.filter((m, i) => msgs.indexOf(m) === i);
+  return unique.join(' ') + ' Please choose a different shipping address, or contact us for help.';
 }
 
 /* ─── HANDLER ───────────────────────────────────────────────────────────────── */
@@ -502,7 +527,13 @@ exports.handler = async (event) => {
           const itemsRes = await httpsReq(ttHref + '?zoom=items:item_options', { headers: authHeaders });
           ttItems = (itemsRes.json && itemsRes.json._embedded && itemsRes.json._embedded['fx:items']) || [];
         } catch (e) { console.warn('[manage] restriction items fetch failed:', e && e.message); }
-        const restrictErr = shippingRestrictionError(ttItems, address.region, address.postal_code);
+        // Rules come from Airtable (cached). If that lookup fails, FAIL OPEN
+        // (allow the change) rather than block a legit edit — the Foxy checkout
+        // shipping script is still the hard enforcement at charge time.
+        let rules = {};
+        try { rules = await getShippingRestrictions(); }
+        catch (e) { console.warn('[manage] shipping rules fetch failed, allowing change:', e && e.message); }
+        const restrictErr = shippingRestrictionError(ttItems, address.region, address.postal_code, rules);
         if (restrictErr) return resp(422, { error: restrictErr, restricted: true });
       }
       const patchBody = buildAddressPatch(address, type, tt);
