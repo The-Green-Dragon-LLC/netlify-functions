@@ -3,7 +3,8 @@
 //
 // Env vars (Netlify -> Site config -> Environment variables):
 //   OMNISEND_API_KEY              (required)
-//   FOXY_WEBHOOK_ENCRYPTION_KEY   (required) the webhook's encryption key from Foxy
+//   FOXY_SUBSCRIBE_ENCRYPTION_KEY (required) this webhook's encryption key from Foxy
+//                                 (separate from FOXY_WEBHOOK_ENCRYPTION_KEY used by other functions)
 //   FOXY_STORE_ID                 (optional) extra sender check, e.g. 101277
 //   OMNISEND_SEND_WELCOME         (optional) "true" to fire Omnisend's welcome message
 
@@ -16,12 +17,12 @@ export default async (req: Request, _context: Context) => {
   }
 
   const OMNISEND_API_KEY = Netlify.env.get("OMNISEND_API_KEY");
-  const FOXY_KEY = Netlify.env.get("FOXY_WEBHOOK_ENCRYPTION_KEY");
+  const FOXY_KEY = Netlify.env.get("FOXY_SUBSCRIBE_ENCRYPTION_KEY");
   const FOXY_STORE_ID = Netlify.env.get("FOXY_STORE_ID");
   const SEND_WELCOME = Netlify.env.get("OMNISEND_SEND_WELCOME") === "true";
 
   if (!OMNISEND_API_KEY || !FOXY_KEY) {
-    console.error("Missing OMNISEND_API_KEY or FOXY_WEBHOOK_ENCRYPTION_KEY.");
+    console.error("Missing OMNISEND_API_KEY or FOXY_SUBSCRIBE_ENCRYPTION_KEY.");
     return new Response("Server misconfigured", { status: 500 });
   }
 
