@@ -408,9 +408,31 @@ exports.handler = async (event) => {
   const { action, subscription_uri, sub_token, frequency, address, address_type, item_code, quantity, variant_code } = body;
 
   const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel',
-                 'list-variants', 'set-quantity', 'set-variant', 'get-payment-url'];
+                 'list-variants', 'set-quantity', 'set-variant', 'get-payment-url', 'sso-guest'];
   const ITEM_ACTIONS = ['list-variants', 'set-quantity', 'set-variant'];
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
+
+  // Guest SSO: store-level SSO routes EVERY checkout through our /sso endpoint,
+  // and Foxy loops on a token-less return. For a NON-payment-update checkout we
+  // mint a GUEST token (fc_customer_id=0) so Foxy lets the customer straight
+  // through to checkout (Foxy's documented "allow guest" path). A guest token
+  // grants no account access, so this needs no sub_token/ownership check.
+  if (action === 'sso-guest') {
+    const secret = process.env.FOXY_SSO_SECRET || '';
+    if (!secret) return resp(500, { error: 'SSO not configured (missing secret).' });
+    const origin = String((body && body.checkout_origin) || '').replace(/\/+$/, '');
+    if (!/^https:\/\/[a-z0-9.-]+\.foxycart\.com$/i.test(origin) &&
+        origin !== 'https://secure.thegreendragoncbd.com') {
+      return resp(400, { error: 'Invalid checkout origin.' });
+    }
+    const ts = Math.floor(Date.now() / 1000) + 3600; // future expiry
+    const authToken = crypto.createHash('sha1').update('0|' + ts + '|' + secret).digest('hex');
+    const fcsid = String((body && body.fcsid) || '').trim();
+    let url = origin + '/checkout?fc_customer_id=0&timestamp=' + ts + '&fc_auth_token=' + authToken;
+    if (/^[A-Za-z0-9]+$/.test(fcsid)) url += '&fcsid=' + fcsid;
+    return resp(200, { success: true, url: url });
+  }
+
   if (!subscription_uri || !sub_token) return resp(400, { error: 'Missing subscription_uri or sub_token' });
 
   // SSRF guard + normalization. The portal exposes the subscription's self link
