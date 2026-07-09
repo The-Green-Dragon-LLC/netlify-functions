@@ -626,11 +626,11 @@
     if (!card) return;
 
     /* Inline-form openers ----------------------------------------------- */
-    if (action === 'change-frequency') { openFrequencyForm(card); return; }
-    if (action === 'change-address')   { openAddressForm(card, 'shipping'); return; }
-    if (action === 'change-billing-address') { openAddressForm(card, 'billing'); return; }
-    if (action === 'edit-items')       { openItemsForm(card); return; }
-    if (action === 'cancel-prompt')    { openCancelConfirm(card); return; }
+    if (action === 'change-frequency') { openFrequencyForm(card); addInlineClose(card); return; }
+    if (action === 'change-address')   { openAddressForm(card, 'shipping'); addInlineClose(card); return; }
+    if (action === 'change-billing-address') { openAddressForm(card, 'billing'); addInlineClose(card); return; }
+    if (action === 'edit-items')       { openItemsForm(card); addInlineClose(card); return; }
+    if (action === 'cancel-prompt')    { openCancelConfirm(card); addInlineClose(card); return; }
     if (action === 'inline-cancel')    { closeInline(card); return; }
 
     /* Item editing (quantity / variant) --------------------------------- */
@@ -897,6 +897,29 @@
   function closeInline(card) {
     var inline = card.querySelector('.dgc-sub-inline');
     if (inline) { inline.style.display = 'none'; inline.innerHTML = ''; }
+  }
+
+  /* Add a small × close button to the top-right of a card's expanded inline
+   * panel. Wired to the existing inline-cancel action (closeInline), so a click
+   * collapses the panel. Idempotent — safe to call after any opener. */
+  function addInlineClose(card) {
+    var inline = card && card.querySelector('.dgc-sub-inline');
+    if (!inline || inline.querySelector('.dgc-inline-close')) return;
+    inline.style.position = 'relative';
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dgc-inline-close';
+    b.setAttribute('data-action', 'inline-cancel');
+    b.setAttribute('aria-label', 'Close');
+    b.innerHTML = '&times;';
+    b.style.cssText = 'position:absolute;top:4px;right:6px;width:28px;height:28px;padding:0;' +
+      'border:none;background:transparent;color:#7a9a7a;font-size:22px;line-height:1;' +
+      'cursor:pointer;font-family:inherit;border-radius:4px;';
+    b.onmouseover = function () { b.style.color = '#2f7d4f'; b.style.background = '#eef7ef'; };
+    b.onmouseout  = function () { b.style.color = '#7a9a7a'; b.style.background = 'transparent'; };
+    /* Keep the panel content from crowding the button. */
+    inline.style.paddingRight = '30px';
+    inline.appendChild(b);
   }
 
   /* ── Item editing: quantity + variant ─────────────────────────────────── */
