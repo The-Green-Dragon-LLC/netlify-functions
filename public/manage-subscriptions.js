@@ -1115,7 +1115,8 @@
       } else {
         card.classList.remove('dgc-busy');
         var err = (res.json && res.json.error) || 'Something went wrong. Please try again.';
-        showMsg(card, err, false);
+        /* Restriction errors carry trusted HTML (a contact link) — render as-is. */
+        showMsg(card, err, false, !!(res.json && res.json.restricted));
       }
     })
     .catch(function () {
@@ -1124,10 +1125,13 @@
     });
   }
 
-  function showMsg(card, text, ok) {
+  function showMsg(card, text, ok, html) {
     var slot = card.querySelector('.dgc-sub-msg-slot');
     if (!slot) return;
-    slot.innerHTML = '<p class="dgc-sub-msg ' + (ok ? 'dgc-sub-msg--ok' : 'dgc-sub-msg--err') + '">' + esc(text) + '</p>';
+    /* `html` = the caller passed trusted markup (e.g. the shipping-restriction
+     * error, which includes a contact link). Everything else is escaped. */
+    slot.innerHTML = '<p class="dgc-sub-msg ' + (ok ? 'dgc-sub-msg--ok' : 'dgc-sub-msg--err') + '">' +
+      (html ? text : esc(text)) + '</p>';
   }
 
   /* ════════════════════════════════════════════════════════════════════════

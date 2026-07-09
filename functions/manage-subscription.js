@@ -389,7 +389,7 @@ function shippingRestrictionError(items, region, postalRaw, rules) {
   }
   if (!msgs.length) return '';
   const unique = msgs.filter((m, i) => msgs.indexOf(m) === i);
-  return unique.join(' ') + ' Please choose a different shipping address, or contact us for help.';
+  return unique.join(' ') + ' or <a href="/contact">contact us</a> for help.';
 }
 
 /* ─── HANDLER ───────────────────────────────────────────────────────────────── */
