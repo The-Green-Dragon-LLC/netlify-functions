@@ -323,7 +323,8 @@ function toAdminItemUrl(href) {
  * from), so there's no hardcoded copy to drift. Each row: Code (matches a line
  * item's `Restricted_Shipping_Code` option), State Restriction + State List,
  * Zip Restriction + Zip List, and an optional customer-facing Error Message.
- * Requires env AIRTABLE_TOKEN (a read-scoped Airtable personal access token). */
+ * Uses env AIRTABLE_API_KEY (Airtable REST API accepts a legacy key or a PAT as
+ * a Bearer token; falls back to AIRTABLE_TOKEN). */
 const AIRTABLE_BASE = process.env.AIRTABLE_BASE_ID || 'appWUsGD3byrYcN3l';
 const AIRTABLE_SHIPPING_TABLE = process.env.AIRTABLE_SHIPPING_TABLE || 'tbljI90QZ7C6NWcxa';
 const SHIP_RULES_TTL_MS = 10 * 60 * 1000; // cache across warm invocations
@@ -335,8 +336,8 @@ let _shipRulesAt = 0;
  * fetch/auth error so the caller can decide (we fail OPEN — see change-address). */
 async function getShippingRestrictions() {
   if (_shipRulesCache && (Date.now() - _shipRulesAt) < SHIP_RULES_TTL_MS) return _shipRulesCache;
-  const token = process.env.AIRTABLE_TOKEN || '';
-  if (!token) throw new Error('AIRTABLE_TOKEN not set');
+  const token = process.env.AIRTABLE_API_KEY || process.env.AIRTABLE_TOKEN || '';
+  if (!token) throw new Error('AIRTABLE_API_KEY not set');
   const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_SHIPPING_TABLE}?pageSize=100`;
   const res = await httpsReq(url, { headers: { Authorization: 'Bearer ' + token } });
   if (!res.ok || !res.json) throw new Error(`Airtable ${res.status}: ${(res.text || '').slice(0, 200)}`);
