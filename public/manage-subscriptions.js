@@ -626,11 +626,11 @@
     if (!card) return;
 
     /* Inline-form openers ----------------------------------------------- */
-    if (action === 'change-frequency') { openFrequencyForm(card); addInlineClose(card); return; }
-    if (action === 'change-address')   { openAddressForm(card, 'shipping'); addInlineClose(card); return; }
-    if (action === 'change-billing-address') { openAddressForm(card, 'billing'); addInlineClose(card); return; }
-    if (action === 'edit-items')       { openItemsForm(card); addInlineClose(card); return; }
-    if (action === 'cancel-prompt')    { openCancelConfirm(card); addInlineClose(card); return; }
+    if (action === 'change-frequency') { clearMsg(card); openFrequencyForm(card); addInlineClose(card); return; }
+    if (action === 'change-address')   { clearMsg(card); openAddressForm(card, 'shipping'); addInlineClose(card); return; }
+    if (action === 'change-billing-address') { clearMsg(card); openAddressForm(card, 'billing'); addInlineClose(card); return; }
+    if (action === 'edit-items')       { clearMsg(card); openItemsForm(card); addInlineClose(card); return; }
+    if (action === 'cancel-prompt')    { clearMsg(card); openCancelConfirm(card); addInlineClose(card); return; }
     if (action === 'inline-cancel')    { closeInline(card); return; }
 
     /* Item editing (quantity / variant) --------------------------------- */
@@ -897,6 +897,14 @@
   function closeInline(card) {
     var inline = card.querySelector('.dgc-sub-inline');
     if (inline) { inline.style.display = 'none'; inline.innerHTML = ''; }
+    clearMsg(card);
+  }
+
+  /* Clear any status/error message on a card (e.g. a shipping-restriction error)
+   * so it doesn't linger after Cancel or when opening a different form. */
+  function clearMsg(card) {
+    var slot = card && card.querySelector('.dgc-sub-msg-slot');
+    if (slot) slot.innerHTML = '';
   }
 
   /* Add a small × close button to the top-right of a card's expanded inline
