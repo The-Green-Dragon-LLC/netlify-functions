@@ -392,6 +392,37 @@ function shippingRestrictionError(items, region, postalRaw, rules) {
   return unique.join(' ') + ' or <a href="/contact">contact us</a> for help.';
 }
 
+/* ─── FOXY CUSTOMER-PORTAL JWT (authenticate the customer for SSO) ───────────
+ * The portal stores a JWT signed (HS256) with the store's Customer Portal
+ * "JWT shared secret". We verify that signature ourselves (env FOXY_JWT_SECRET)
+ * and read the customer id from it, so a logged-in customer can be authenticated
+ * at checkout WITHOUT relying on Foxy accepting the (often stale) JWT on its own
+ * API — we just mint a fresh SSO token for the verified id. */
+function b64urlToBuf(s) { return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64'); }
+function verifyPortalJwt(jwt, secret) {
+  const parts = String(jwt || '').split('.');
+  if (parts.length !== 3 || !secret) return null;
+  const expected = crypto.createHmac('sha256', secret).update(parts[0] + '.' + parts[1])
+    .digest('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const a = Buffer.from(parts[2]);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let payload;
+  try { payload = JSON.parse(b64urlToBuf(parts[1]).toString('utf8')); } catch (_) { return null; }
+  if (payload && payload.exp && (Date.now() / 1000) > Number(payload.exp)) return null; // expired
+  return payload;
+}
+function customerIdFromJwt(payload) {
+  if (!payload) return null;
+  const raw = payload.sub != null ? payload.sub
+            : (payload.customer_id != null ? payload.customer_id
+            : (payload.id != null ? payload.id : null));
+  if (raw == null) return null;
+  const s = String(raw);
+  const m = s.indexOf('/customers/') !== -1 ? /\/customers\/(\d+)/.exec(s) : /^(\d+)$/.exec(s.trim());
+  return (m && Number(m[1]) > 0) ? m[1] : null;
+}
+
 /* ─── HANDLER ───────────────────────────────────────────────────────────────── */
 
 exports.handler = async (event) => {
@@ -408,7 +439,7 @@ exports.handler = async (event) => {
   const { action, subscription_uri, sub_token, frequency, address, address_type, item_code, quantity, variant_code } = body;
 
   const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel',
-                 'list-variants', 'set-quantity', 'set-variant', 'get-payment-url', 'sso-guest'];
+                 'list-variants', 'set-quantity', 'set-variant', 'get-payment-url', 'sso-guest', 'sso-customer'];
   const ITEM_ACTIONS = ['list-variants', 'set-quantity', 'set-variant'];
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
 
@@ -429,6 +460,32 @@ exports.handler = async (event) => {
     const authToken = crypto.createHash('sha1').update('0|' + ts + '|' + secret).digest('hex');
     const fcsid = String((body && body.fcsid) || '').trim();
     let url = origin + '/checkout?fc_customer_id=0&timestamp=' + ts + '&fc_auth_token=' + authToken;
+    if (/^[A-Za-z0-9]+$/.test(fcsid)) url += '&fcsid=' + fcsid;
+    return resp(200, { success: true, url: url });
+  }
+
+  // Logged-in customer SSO: verify the portal JWT (signed with the Customer
+  // Portal JWT shared secret) ourselves and mint a token for that REAL customer
+  // id, so a customer who's already signed in isn't asked to log in again at
+  // checkout. The /sso page falls back to sso-guest if this errors (JWT missing,
+  // stale, or unverifiable).
+  if (action === 'sso-customer') {
+    const secret = process.env.FOXY_SSO_SECRET || '';
+    const jwtSecret = process.env.FOXY_JWT_SECRET || '';
+    if (!secret || !jwtSecret) return resp(500, { error: 'SSO not configured (missing secret).' });
+    const origin = String((body && body.checkout_origin) || '').replace(/\/+$/, '');
+    if (!/^https:\/\/[a-z0-9.-]+\.foxycart\.com$/i.test(origin) &&
+        origin !== 'https://secure.thegreendragoncbd.com') {
+      return resp(400, { error: 'Invalid checkout origin.' });
+    }
+    const payload = verifyPortalJwt(body && body.jwt, jwtSecret);
+    if (!payload) return resp(401, { error: 'Invalid or expired session token.' });
+    const customerId = customerIdFromJwt(payload);
+    if (!customerId) return resp(400, { error: 'Could not read customer id from session token.' });
+    const ts = Math.floor(Date.now() / 1000) + 3600;
+    const authToken = crypto.createHash('sha1').update(customerId + '|' + ts + '|' + secret).digest('hex');
+    const fcsid = String((body && body.fcsid) || '').trim();
+    let url = origin + '/checkout?fc_customer_id=' + customerId + '&timestamp=' + ts + '&fc_auth_token=' + authToken;
     if (/^[A-Za-z0-9]+$/.test(fcsid)) url += '&fcsid=' + fcsid;
     return resp(200, { success: true, url: url });
   }
