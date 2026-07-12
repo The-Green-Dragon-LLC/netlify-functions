@@ -745,9 +745,7 @@ function buildAddressPatch(a, type, currentTemplate) {
 }
 
 async function patchOrThrow(url, headers, bodyObj, label) {
-  console.log(`[manage] PATCH (${label}):`, url, '| body:', JSON.stringify(bodyObj));
   const r = await httpsReq(url, { method: 'PATCH', headers }, bodyObj);
-  console.log(`[manage] PATCH (${label}) status:`, r.status, (r.text || '').slice(0, 500));
   if (!r.ok) {
     // Prefer Foxy's human-readable validation messages if present.
     let detail = (r.text || '').slice(0, 500);
@@ -838,7 +836,6 @@ async function fireOmnisendEvent(eventName, email, properties) {
     properties: properties || {},
   });
   if (!res.ok) console.error(`[manage] Omnisend "${eventName}" failed`, res.status, (res.text || '').slice(0, 300));
-  else console.log(`[manage] Omnisend "${eventName}" sent for`, email);
 }
 
 /* Re-fetch the subscription fresh (so the event reflects the POST-update state)

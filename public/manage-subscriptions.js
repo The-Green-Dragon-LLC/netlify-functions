@@ -322,8 +322,6 @@
         '}',
       ].join('\n');
       formRoot.appendChild(s);
-
-      console.log('[DGC] Popup styles injected. Shadow host:', formRoot.host && formRoot.host.tagName);
     });
   }
 
@@ -400,7 +398,6 @@
         setTimeout(function () { styleDetailPanel(); relabelDialogButtons(); }, 500);
       });
     });
-    console.log('[DGC] Click listeners attached to', cards.length, 'subscription card(s).');
   }
 
   /* ════════════════════════════════════════════════════════════════════════
