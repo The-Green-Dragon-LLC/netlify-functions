@@ -687,12 +687,17 @@ exports.handler = async (event) => {
     if (action === 'ship-now')        patchBody = { next_transaction_date: tomorrow() };
     else if (action === 'resume')     patchBody = { next_transaction_date: tomorrow() };
     else if (action === 'restart') {
-      /* Un-cancel: clear the end_date and reactivate. Keep the existing next
-       * charge date if it's still in the future (preserve the normal cadence);
-       * otherwise fall back to tomorrow so a stale/past date doesn't strand it. */
+      /* Un-cancel: clear the end_date and reactivate. Mirror the proven
+       * restart-subscription.js exactly — Foxy clears end_date via an EMPTY
+       * STRING (the zero-date form is silently ignored), the next charge date
+       * must be a FULL datetime (a bare "YYYY-MM-DD" is silently ignored when
+       * un-cancelling, so the PATCH 200s but nothing changes), and we must NOT
+       * send is_active (it's derived — sending it makes Foxy no-op the patch).
+       * Keep the existing next date if still future, else tomorrow. */
       const t = tomorrow();
       const next = (sub.next_transaction_date || '').slice(0, 10);
-      patchBody = { end_date: '', is_active: true, next_transaction_date: (next && next >= t) ? next : t };
+      const nd = (next && next >= t) ? next : t;
+      patchBody = { end_date: '', next_transaction_date: nd + 'T00:00:00+00:00' };
     }
     else if (action === 'pause')      patchBody = { next_transaction_date: farFuture() };
     else if (action === 'set-frequency') patchBody = { frequency };
