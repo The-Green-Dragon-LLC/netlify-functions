@@ -439,7 +439,8 @@ exports.handler = async (event) => {
   const { action, subscription_uri, sub_token, frequency, address, address_type, item_code, quantity, variant_code } = body;
 
   const VALID = ['ship-now', 'skip', 'set-frequency', 'pause', 'resume', 'restart', 'change-address', 'cancel',
-                 'list-variants', 'set-quantity', 'set-variant', 'get-payment-url', 'sso-guest', 'sso-customer'];
+                 'list-variants', 'set-quantity', 'set-variant', 'get-payment-url', 'sso-guest', 'sso-customer',
+                 'get-sub-state'];
   const ITEM_ACTIONS = ['list-variants', 'set-quantity', 'set-variant'];
   if (!VALID.includes(action)) return resp(400, { error: 'Unknown action: ' + action });
 
@@ -553,6 +554,35 @@ exports.handler = async (event) => {
     }
 
     const patchHeaders = { ...authHeaders, 'Content-Type': 'application/json' };
+
+    // Fresh AUTHORITATIVE state for the manage panel to reconcile against.
+    // Foxy's CUSTOMER API (which the portal reads) serves stale subscription
+    // data for a while after our admin PATCH, so the panel re-reads the truth
+    // from here (the admin API) on load. Read-only; verified above via sub_token.
+    if (action === 'get-sub-state') {
+      const tt = (sub._embedded && sub._embedded['fx:transaction_template']) || {};
+      const ttItems = (tt._embedded && tt._embedded['fx:items']) || [];
+      const addr = function (p) {
+        return {
+          first_name: tt[p + 'first_name'] || '', last_name: tt[p + 'last_name'] || '',
+          address1: tt[p + 'address1'] || '', address2: tt[p + 'address2'] || '',
+          city: tt[p + 'city'] || '', region: tt[p + 'state'] || '',
+          postal_code: tt[p + 'postal_code'] || '', country: tt[p + 'country'] || ''
+        };
+      };
+      return resp(200, { success: true, sub: {
+        is_active: sub.is_active !== false,
+        end_date: sub.end_date || '',
+        next_transaction_date: sub.next_transaction_date || '',
+        frequency: sub.frequency || '',
+        items: ttItems.map(function (it) {
+          return { code: it.code, name: it.name, quantity: it.quantity, price: it.price, image: it.image };
+        }),
+        total_order: tt.total_order, total_item_price: tt.total_item_price,
+        cc_type: tt.cc_type || '', cc_number_masked: tt.cc_number_masked || '',
+        shipping: addr('shipping_'), billing: addr('billing_')
+      }});
+    }
 
     // 3. Perform the action.
 

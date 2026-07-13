@@ -230,7 +230,63 @@
       /* The branded panel now mirrors every native subscription card, so hide
        * the native list to avoid showing each subscription twice. */
       hideNativeSubscriptions(handledCards);
+      /* The portal cards' data comes from Foxy's customer API, which is STALE
+       * for a while after an admin change — so reconcile each card against the
+       * authoritative admin-API state (via our function) once on load. */
+      reconcileCards();
     }
+  }
+
+  /* Re-read each card's true state from the admin API (our function) and update
+   * the card if the portal's data was stale (cancelled/flavor/total/addresses,
+   * etc.). Runs once after the panel builds. */
+  var _reconciled = false;
+  function reconcileCards() {
+    if (_reconciled) return;
+    _reconciled = true;
+    var cards = document.querySelectorAll('#dgc-sub-edit-panel .dgc-sub-card');
+    Array.prototype.forEach.call(cards, function (card) {
+      var subUri = card.dataset.subUri, subToken = card.dataset.subToken;
+      if (!subUri || !subToken || !card._item) return;
+      fetch(GD_MANAGE_FN, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'get-sub-state', subscription_uri: subUri, sub_token: subToken })
+      })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (j) {
+        if (!j || !j.success || !j.sub) return;
+        var s = j.sub, item = card._item;
+        var isInactive = s.is_active === false;
+        var end = (s.end_date || '') + '';
+        var isEnding = !isInactive && end && end.indexOf('0000') !== 0;
+        var isPaused = !isInactive && !isEnding && s.next_transaction_date && daysUntil(s.next_transaction_date) > PAUSE_DETECT_DAYS;
+        item.inactive = isInactive;
+        item.ending = isEnding;
+        item.cancelled = isInactive || isEnding;
+        item.paused = isPaused;
+        item.endDate = end ? formatDate(end.slice(0, 10)) : null;
+        if (s.next_transaction_date) item.nextDate = formatDate((s.next_transaction_date + '').slice(0, 10));
+        if (s.frequency) item.frequency = s.frequency;
+        if (s.items && s.items.length) {
+          item.lineItems = s.items.map(function (it) {
+            return { code: it.code, name: it.name, price: it.price, quantity: it.quantity, image: it.image };
+          });
+          if (s.items[0].name) item.name = s.items[0].name;
+          item.quantity = parseInt(s.items[0].quantity, 10) || item.quantity;
+        }
+        var tot = (Number(s.total_order) > 0) ? Number(s.total_order)
+                : (Number(s.total_item_price) > 0) ? Number(s.total_item_price) : 0;
+        if (!tot && item.lineItems) {
+          tot = 0; item.lineItems.forEach(function (li) { tot += (Number(li.price) || 0) * (parseInt(li.quantity, 10) || 1); });
+        }
+        if (tot > 0) item.total = tot;
+        var cl = formatCard(s.cc_type, s.cc_number_masked); if (cl) item.cardLabel = cl;
+        if (s.shipping) item.address = s.shipping;
+        if (s.billing && (s.billing.address1 || s.billing.city)) item.billingAddress = s.billing;
+        renderCard(card, item);
+      })
+      .catch(function () { /* leave the portal-derived card as-is on error */ });
+    });
   }
 
   /* ════════════════════════════════════════════════════════════════════════
