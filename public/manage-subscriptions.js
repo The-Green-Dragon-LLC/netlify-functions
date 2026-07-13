@@ -488,6 +488,19 @@
 
     items.forEach(function (item) {
       var card = document.createElement('div');
+      renderCard(card, item);
+      panel.appendChild(card);
+    });
+
+    panel.style.display = 'block';
+  }
+
+  /* Render (or re-render) a card's full body from its item data. Separate from
+   * renderPanel so a successful action can mutate the item and re-render the
+   * card WITHOUT a page reload — Foxy's customer API serves STALE data after our
+   * out-of-band admin PATCH, so reloading just re-shows the old state. */
+  function renderCard(card, item) {
+      card._item = item;
       card.className = 'dgc-sub-card' +
         (item.cancelled ? ' dgc-sub-card--cancelled' : '') +
         (item.paused ? ' dgc-sub-card--paused' : '');
@@ -593,10 +606,6 @@
       card.innerHTML = nameRow + dateRow + totalRow + payRow + addrBlock + actions +
         '<div class="dgc-sub-inline" style="display:none;"></div>' +
         '<div class="dgc-sub-msg-slot"></div>';
-      panel.appendChild(card);
-    });
-
-    panel.style.display = 'block';
   }
 
   /* ════════════════════════════════════════════════════════════════════════
@@ -1089,6 +1098,85 @@
     if (code && vcode) doAction(card, 'set-variant', { item_code: code, variant_code: vcode });
   }
 
+  /* A YYYY-MM-DD string `days` from today (UTC). */
+  function ymdOffset(days) {
+    var d = new Date();
+    d.setUTCDate(d.getUTCDate() + (days || 0));
+    return d.toISOString().slice(0, 10);
+  }
+  function updateLineItem(item, code, patch) {
+    (item.lineItems || []).forEach(function (li) {
+      if (String(li.code) !== String(code)) return;
+      if (patch.quantity != null) li.quantity = patch.quantity;
+      if (patch.price != null)    li.price = patch.price;
+      if (patch.name != null)     li.name = patch.name;
+      if (patch.image != null)    li.image = patch.image;
+      if (patch.code != null)     li.code = patch.code;
+    });
+  }
+  function recalcTotal(item) {
+    var t = 0;
+    (item.lineItems || []).forEach(function (li) { t += (Number(li.price) || 0) * (parseInt(li.quantity, 10) || 1); });
+    if (t > 0) item.total = t;
+    if (item.lineItems && item.lineItems[0]) item.quantity = parseInt(item.lineItems[0].quantity, 10) || item.quantity;
+  }
+
+  /* Optimistically update a card's item data from a just-succeeded action, so
+   * the card can re-render the new state immediately (the portal's own data is
+   * stale for a while after our admin change). Uses the values we sent (`extra`)
+   * and what the function echoed back (`applied`). */
+  function applyChange(card, action, extra, applied) {
+    var item = card._item; if (!item) return;
+    extra = extra || {}; applied = applied || {};
+    var nd;
+    if (action === 'cancel') {
+      item.cancelled = true; item.ending = true; item.inactive = false; item.paused = false;
+      item.endDate = formatDate(((applied.end_date || '') + '').slice(0, 10) || ymdOffset(1));
+    } else if (action === 'restart') {
+      item.cancelled = false; item.ending = false; item.inactive = false; item.paused = false; item.endDate = null;
+      nd = ((applied.next_transaction_date || '') + '').slice(0, 10) || ymdOffset(1);
+      item.nextDate = formatDate(nd);
+    } else if (action === 'resume') {
+      item.paused = false;
+      item.nextDate = formatDate(((applied.next_transaction_date || ymdOffset(1)) + '').slice(0, 10));
+    } else if (action === 'pause') {
+      item.paused = true;
+    } else if (action === 'ship-now') {
+      item.nextDate = formatDate(((applied.next_transaction_date || ymdOffset(1)) + '').slice(0, 10));
+    } else if (action === 'skip') {
+      if (applied.next_transaction_date) item.nextDate = formatDate((applied.next_transaction_date + '').slice(0, 10));
+    } else if (action === 'set-frequency') {
+      item.frequency = applied.frequency || extra.frequency || item.frequency;
+    } else if (action === 'change-address') {
+      if (extra.address) {
+        if (extra.address_type === 'billing') item.billingAddress = extra.address;
+        else item.address = extra.address;
+      }
+    } else if (action === 'set-quantity') {
+      updateLineItem(item, extra.item_code, { quantity: parseInt(applied.quantity != null ? applied.quantity : extra.quantity, 10) });
+      recalcTotal(item);
+    } else if (action === 'set-variant') {
+      updateLineItem(item, extra.item_code, applied); /* {code,name,price,image} */
+      recalcTotal(item);
+    }
+  }
+
+  function successMsgFor(action) {
+    switch (action) {
+      case 'cancel':        return 'Your subscription has been cancelled — you won\'t be billed again.';
+      case 'restart':       return 'Your subscription has been restarted and is active again.';
+      case 'resume':        return 'Your subscription has been resumed.';
+      case 'pause':         return 'Your subscription has been paused.';
+      case 'ship-now':      return 'Done — your next order is scheduled to ship shortly.';
+      case 'skip':          return 'Your next shipment has been skipped.';
+      case 'set-frequency': return 'Your shipping frequency has been updated.';
+      case 'change-address':return 'Your address has been updated.';
+      case 'set-quantity':  return 'Quantity updated.';
+      case 'set-variant':   return 'Your selection has been updated.';
+      default:              return 'Done!';
+    }
+  }
+
   function doAction(card, action, extra) {
     var subUri   = card.dataset.subUri;
     var subToken = card.dataset.subToken;
@@ -1115,8 +1203,12 @@
     })
     .then(function (res) {
       if (res.ok && res.json && res.json.success) {
-        showMsg(card, 'Done! Refreshing your subscription…', true);
-        setTimeout(function () { window.location.reload(); }, 1400);
+        /* Re-render the card from the change we just made — do NOT reload:
+         * Foxy's customer API serves stale subscription data after our admin
+         * PATCH, so a reload re-shows the old state. */
+        applyChange(card, action, extra, res.json.applied || {});
+        if (card._item) renderCard(card, card._item);
+        showMsg(card, successMsgFor(action), true);
       } else {
         card.classList.remove('dgc-busy');
         var err = (res.json && res.json.error) || 'Something went wrong. Please try again.';
