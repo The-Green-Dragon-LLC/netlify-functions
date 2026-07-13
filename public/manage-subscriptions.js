@@ -1,0 +1,1246 @@
+/**
+ * manage-subscriptions.js  —  Green Dragon customer-portal enhancements
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Loaded from Netlify and referenced by a small <script src> tag inside the
+ * Webflow "Manage Subscriptions" page (the page Foxy's Customer Portal URL
+ * points at). It enhances the embedded <foxy-customer-portal> with a branded
+ * action panel: Ship Now, Skip Next, Change Frequency, Change Address, Pause /
+ * Resume — plus the existing Modify Items + Cancel controls.
+ *
+ * Subscription changes are performed by the manage-subscription Netlify function
+ * (OAuth + sub_token ownership check). See netlify-functions/functions.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+(function () {
+  'use strict';
+
+  /* Netlify function that performs subscription changes server-side (OAuth +
+   * sub_token ownership check).
+   * Auto-derived from this script's own src so the correct function is called on
+   * both the develop deploy and production — no manual URL updates needed
+   * (same pattern as crossell-popup.js). */
+  var GD_MANAGE_FN = (function () {
+    try {
+      var s = document.currentScript;
+      if (!s) {
+        var all = document.getElementsByTagName('script');
+        s = all[all.length - 1];
+      }
+      if (s && s.src) {
+        var base = s.src.replace(/\/[^\/]*$/, '');
+        return base + '/.netlify/functions/manage-subscription';
+      }
+    } catch (e) { /* ignore */ }
+    return 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/manage-subscription';
+  })();
+
+  /* A subscription whose next charge is more than this many days out is treated
+   * as "paused" (the pause action pushes the date ~5 years into the future). */
+  var PAUSE_DETECT_DAYS = 730;
+
+  /* Frequencies customers may choose (must match the function's allow-list). */
+  var FREQ_OPTIONS = [
+    { value: '1w', label: 'Weekly' },
+    { value: '2w', label: 'Every 2 weeks' },
+    { value: '1m', label: 'Monthly' }
+  ];
+
+  var portal = null; /* set by boot() once the web component is in the DOM */
+
+  function subTokenFromUrl(href) {
+    if (!href) return null;
+    try { return new URL(href).searchParams.get('sub_token'); }
+    catch (e) {
+      var m = /[?&]sub_token=([^&]+)/.exec(href);
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+  }
+
+  /* Days from today until a Foxy date string (negative = past). */
+  function daysUntil(dateStr) {
+    if (!dateStr) return 0;
+    var then = new Date(dateStr.slice(0, 10) + 'T00:00:00Z').getTime();
+    var now  = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z').getTime();
+    return Math.round((then - now) / 86400000);
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * deepQueryAll — cross-shadow-DOM querySelectorAll
+   *
+   * portal.shadowRoot.querySelectorAll() does NOT pierce into nested web
+   * component shadow roots.  foxy-subscription-card lives at least 2 levels
+   * deep (portal → foxy-collection-pages → foxy-collection-page → card).
+   * This helper recurses into every open shadow root it finds.
+   * ════════════════════════════════════════════════════════════════════════ */
+  function deepQueryAll(root, selector) {
+    if (!root) return [];
+    var found = Array.prototype.slice.call(root.querySelectorAll(selector));
+    Array.prototype.slice.call(root.querySelectorAll('*')).forEach(function (el) {
+      if (el.shadowRoot) found = found.concat(deepQueryAll(el.shadowRoot, selector));
+    });
+    return found;
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 1. EDIT PANEL — read data from rendered subscription cards
+   *
+   *    sub_token is NOT a top-level property.  FoxyCart exposes the fully
+   *    formed cart URL in _links['fx:sub_token_url'].href — use that directly.
+   * ════════════════════════════════════════════════════════════════════════ */
+  var _panelBuilt = false;
+
+  function readCardsAndRenderPanel() {
+    if (!portal.shadowRoot) return;
+
+    var cards = deepQueryAll(portal.shadowRoot, 'foxy-subscription-card');
+    if (!cards.length) return;
+
+    /* Wait until EVERY native card has loaded its data before building the panel
+     * and hiding the native list. hideNativeSubscriptions() hides the whole
+     * collection container, so a card that hadn't loaded yet would be hidden
+     * without ever appearing in the branded panel — dropping a subscription. */
+    var allLoaded = cards.every(function (c) { return !!c.data; });
+    if (!allLoaded) return;
+
+    var panelItems = [];
+    var handledCards = [];
+
+    cards.forEach(function (card) {
+      var d = card.data;
+      if (!d) return; /* not yet loaded */
+
+      /* Status buckets:
+       *   inactive — already ended (is_active === false). Not manageable.
+       *   ending   — still active but a future end_date is set (pending cancel).
+       *   (cancelled = either of the above; used to gate management actions). */
+      var isInactive  = d.is_active === false;
+      var isEnding    = !isInactive && d.end_date && !d.end_date.startsWith('0000');
+      var isCancelled = isInactive || isEnding;
+
+      var editUrl = d._links &&
+                    d._links['fx:sub_token_url'] &&
+                    d._links['fx:sub_token_url'].href;
+
+      /* Active subs with no edit URL are unexpected — skip them */
+      if (!isCancelled && !editUrl) return;
+
+      var cancelUrl = editUrl ? editUrl + '&sub_cancel=1' : null;
+
+      /* Self link + token drive the manage-subscription function. */
+      var subUri   = d._links && d._links.self && d._links.self.href;
+      var subToken = subTokenFromUrl(editUrl);
+
+      /* Paused = active, not cancelled, but next charge pushed far out. */
+      var isPaused = !isCancelled &&
+                     d.next_transaction_date &&
+                     daysUntil(d.next_transaction_date) > PAUSE_DETECT_DAYS;
+
+      /* Product name from transaction template items */
+      var name    = 'Your Subscription';
+      var endDate = d.end_date ? formatDate(d.end_date) : null;
+      var nextDate = (!isCancelled && !isPaused && d.next_transaction_date)
+                     ? formatDate(d.next_transaction_date) : '—';
+
+      var tmpl      = d._embedded && d._embedded['fx:transaction_template'];
+      var tmplItems = (tmpl && tmpl._embedded && tmpl._embedded['fx:items']) || [];
+      var dirItems  = (d._embedded && d._embedded['fx:items']) || [];
+      var lineSrc  = tmplItems.length ? tmplItems : dirItems;
+      var firstItem = lineSrc[0];
+      if (firstItem && firstItem.name) name = firstItem.name;
+
+      /* Line items the customer can edit (quantity / variant). */
+      var lineItems = lineSrc.map(function (it) {
+        return {
+          code:     it.code,
+          name:     it.name,
+          price:    it.price,
+          quantity: it.quantity,
+          image:    it.image
+        };
+      });
+
+      /* Recurring total for this subscription. Prefer Foxy's computed
+       * transaction_template total_order (includes shipping/tax as configured);
+       * fall back to total_item_price, then to summing the discounted line
+       * items. */
+      var itemsSubtotal = lineItems.reduce(function (s, li) {
+        return s + (Number(li.price) || 0) * (parseInt(li.quantity, 10) || 1);
+      }, 0);
+      var subTotal =
+        (tmpl && Number(tmpl.total_order) > 0)      ? Number(tmpl.total_order) :
+        (tmpl && Number(tmpl.total_item_price) > 0) ? Number(tmpl.total_item_price) :
+        itemsSubtotal;
+
+      /* Masked payment card that charges this subscription (from the template's
+       * transaction; account-level fallback filled later by fillSavedCard). */
+      var cardLabel = formatCard(tmpl && tmpl.cc_type, tmpl && tmpl.cc_number_masked);
+
+      /* Current shipping address (from the transaction template) to prefill the
+       * address form. Fields fall back to empty strings. */
+      var addr = {
+        first_name:  (tmpl && tmpl.shipping_first_name)  || '',
+        last_name:   (tmpl && tmpl.shipping_last_name)   || '',
+        address1:    (tmpl && tmpl.shipping_address1)    || '',
+        address2:    (tmpl && tmpl.shipping_address2)    || '',
+        city:        (tmpl && tmpl.shipping_city)        || '',
+        region:      (tmpl && tmpl.shipping_state)       || '',
+        postal_code: (tmpl && tmpl.shipping_postal_code) || '',
+        country:     (tmpl && tmpl.shipping_country)     || ''
+      };
+
+      /* Current billing address (from the transaction template) to prefill the
+       * billing address form. */
+      var billingAddr = {
+        first_name:  (tmpl && tmpl.billing_first_name)  || '',
+        last_name:   (tmpl && tmpl.billing_last_name)   || '',
+        address1:    (tmpl && tmpl.billing_address1)    || '',
+        address2:    (tmpl && tmpl.billing_address2)    || '',
+        city:        (tmpl && tmpl.billing_city)        || '',
+        region:      (tmpl && tmpl.billing_state)       || '',
+        postal_code: (tmpl && tmpl.billing_postal_code) || '',
+        country:     (tmpl && tmpl.billing_country)     || ''
+      };
+
+      panelItems.push({
+        editUrl:     isCancelled ? null : editUrl,
+        cancelUrl:   isCancelled ? null : cancelUrl,
+        subUri:      subUri,
+        subToken:    subToken,
+        frequency:   d.frequency || '',
+        name:        name,
+        quantity:    (firstItem && parseInt(firstItem.quantity, 10)) || 1,
+        nextDate:    nextDate,
+        cancelled:   isCancelled,
+        inactive:    isInactive,
+        ending:      isEnding,
+        paused:      isPaused,
+        endDate:     endDate,
+        address:     addr,
+        billingAddress: billingAddr,
+        lineItems:   lineItems,
+        total:       subTotal,
+        cardLabel:   cardLabel
+      });
+      handledCards.push(card); /* hide the native card once its data is read */
+    });
+
+    if (panelItems.length) {
+      renderPanel(panelItems);
+      _panelBuilt = true;
+      /* The branded panel now mirrors every native subscription card, so hide
+       * the native list to avoid showing each subscription twice. */
+      hideNativeSubscriptions(handledCards);
+    }
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 1b. HIDE THE NATIVE SUBSCRIPTIONS LIST
+   *
+   *    The branded panel duplicates every native card, so collapse the native
+   *    list. We hide (display:none) rather than remove so the cards stay in the
+   *    DOM and keep their fetched .data available to the panel.
+   *
+   *    Hiding just the inner card empties it but leaves its bordered wrapper +
+   *    the collection/pagination chrome behind as empty boxes. So we also hide
+   *    the enclosing <foxy-collection-pages> (portal → foxy-collection-pages →
+   *    foxy-collection-page → card). Order history is already removed from this
+   *    page via hiddencontrols (customer:transactions), so the subscriptions
+   *    collection is the only foxy-collection-pages present — we can hide it
+   *    directly without a fragile card-detection check (that check failed when
+   *    the cards are slotted rather than living in the collection's shadow root).
+   *
+   *    Primary mechanism: climb each subscription card's ancestors and hide any
+   *    foxy-collection-* wrapper. This is precise — it only touches wrappers that
+   *    actually contain a subscription card, so the portal's Addresses and
+   *    Payment Methods sections (also foxy-collection-pages) stay visible (the
+   *    "Update payment card" link needs Payment Methods to remain on the page).
+   * ════════════════════════════════════════════════════════════════════════ */
+  function hideNativeSubscriptions(cards) {
+    (cards || []).forEach(function (card) {
+      card.style.display = 'none';
+      /* Climb through parent elements and shadow-root hosts, hiding any
+       * Foxy collection wrapper so no empty bordered box is left behind. */
+      var node = card;
+      for (var i = 0; i < 10 && node && node !== document; i++) {
+        var tag = (node.tagName || '').toLowerCase();
+        if (tag.indexOf('foxy-collection') === 0 && node.style) {
+          node.style.display = 'none';
+        }
+        var next = node.parentElement;
+        if (!next) {
+          var root = node.getRootNode && node.getRootNode();
+          next = root && root.host;
+        }
+        node = next;
+      }
+    });
+
+    /* Backup: hide only the collection whose endpoint is the subscriptions list
+     * (never the addresses/payment collections). */
+    if (!portal.shadowRoot) return;
+    deepQueryAll(portal.shadowRoot, 'foxy-collection-pages').forEach(function (coll) {
+      var ref = coll.getAttribute('first') || coll.getAttribute('href') || coll.first || '';
+      if (/\/subscriptions(\?|$|\/)/i.test(String(ref))) coll.style.display = 'none';
+    });
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 2. POPUP STYLING — inject into the shadow root that contains the form
+   *
+   *    foxy-subscription-form lives inside a nested shadow root.
+   *    form.getRootNode() gives us exactly that shadow root — injecting CSS
+   *    there targets the positioned panel that wraps the form directly,
+   *    regardless of which Tailwind classes FoxyCart uses.
+   * ════════════════════════════════════════════════════════════════════════ */
+  function styleDetailPanel() {
+    /* foxy-subscription-form lives inside foxy-dialog-window which is
+     * appended to document.body — outside the portal's shadow DOM.
+     * Search from document.body so we can find it. */
+    deepQueryAll(document.body, 'foxy-subscription-form').forEach(function (form) {
+      var formRoot = form.getRootNode();
+      if (!(formRoot instanceof ShadowRoot) || formRoot._dgcStyled) return;
+      formRoot._dgcStyled = true;
+
+      var s = document.createElement('style');
+      s.textContent = [
+        /* Panel wrapper: override ml-auto right-alignment → centered fixed modal.
+         * Must override both width AND max-width — sm-max-w-modal sets max-width
+         * which would otherwise clamp the panel regardless of the width rule. */
+        '[class~="sm-max-w-modal"] {',
+        '  position:fixed!important; inset:auto!important;',
+        '  top:50%!important; left:50%!important;',
+        '  transform:translate(-50%,-50%)!important;',
+        '  height:85vh!important;',
+        '  width:min(720px,92vw)!important;',
+        '  max-width:min(720px,92vw)!important;',
+        '  margin:0!important; z-index:9999!important;',
+        '}',
+        /* Content box: nicer radius and shadow now that it's centered */
+        '[class~="bg-base"][class~="rounded-t-l"] {',
+        '  border-radius:12px!important;',
+        '  box-shadow:0 25px 65px rgba(0,0,0,.22)!important;',
+        '}',
+      ].join('\n');
+      formRoot.appendChild(s);
+    });
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 3. RELABEL DIALOG BUTTONS
+   *    foxy-subscription-form renders "End membership" inside its own shadow
+   *    DOM.  Walk every text node inside foxy-dialog-window and swap the label.
+   * ════════════════════════════════════════════════════════════════════════ */
+  function relabelDialogButtons() {
+    document.querySelectorAll('foxy-dialog-window').forEach(function (dialog) {
+      if (!dialog.shadowRoot) return;
+      /* Walk all text nodes anywhere in this shadow tree */
+      (function walk(root) {
+        var iter = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        var node;
+        while ((node = iter.nextNode())) {
+          if (node.nodeValue && node.nodeValue.trim() === 'End membership') {
+            node.nodeValue = node.nodeValue.replace('End membership', 'Cancel subscription');
+          }
+        }
+        /* Recurse into nested shadow roots */
+        root.querySelectorAll('*').forEach(function (el) {
+          if (el.shadowRoot) walk(el.shadowRoot);
+        });
+      })(dialog.shadowRoot);
+    });
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 4. LABEL CANCELLED TRANSACTIONS IN ORDER HISTORY
+   *    FoxyCart creates a $0 transaction of type 'subscription_cancellation'
+   *    when a subscription is cancelled.  We inject a red "CANCELLED" badge
+   *    into each such transaction card's shadow root.
+   * ════════════════════════════════════════════════════════════════════════ */
+  function labelCancelledTransactions() {
+    if (!portal.shadowRoot) return;
+    deepQueryAll(portal.shadowRoot, 'foxy-transaction-card').forEach(function (card) {
+      if (card._dgcTxLabelled) return;
+      var d = card.data;
+      if (!d || d.type !== 'subscription_cancellation') return;
+      if (!card.shadowRoot) return;
+      card._dgcTxLabelled = true;
+
+      var s = document.createElement('style');
+      s.textContent = ':host{position:relative!important;} .dgc-tx-badge{position:absolute;top:10px;right:10px;background:#c62828;color:#fff;font-size:10px;font-weight:700;letter-spacing:0.6px;padding:2px 7px;border-radius:3px;text-transform:uppercase;font-family:Lato,sans-serif;pointer-events:none;z-index:5;}';
+      card.shadowRoot.appendChild(s);
+
+      var badge = document.createElement('div');
+      badge.className = 'dgc-tx-badge';
+      badge.textContent = 'Cancelled';
+      card.shadowRoot.appendChild(badge);
+    });
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 5. CLICK LISTENERS ON SUBSCRIPTION CARDS
+   *    foxy-subscription-form only enters the DOM after the user clicks a
+   *    subscription card.  We attach a click listener to each card so we can
+   *    run styleDetailPanel right after the click (with a short delay to let
+   *    Lit render the form into the shadow root first).
+   * ════════════════════════════════════════════════════════════════════════ */
+  var _cardListenersAttached = false;
+
+  function attachCardClickListeners() {
+    if (!portal.shadowRoot) return;
+    var cards = deepQueryAll(portal.shadowRoot, 'foxy-subscription-card');
+    if (!cards.length || _cardListenersAttached) return;
+    _cardListenersAttached = true;
+    cards.forEach(function (card) {
+      card.addEventListener('click', function () {
+        /* Lit needs a tick to render the form into shadow DOM after click */
+        setTimeout(function () { styleDetailPanel(); relabelDialogButtons(); }, 50);
+        setTimeout(function () { styleDetailPanel(); relabelDialogButtons(); }, 200);
+        setTimeout(function () { styleDetailPanel(); relabelDialogButtons(); }, 500);
+      });
+    });
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 6. POLLING LOOP
+   *    Runs every 500 ms for up to 60 s.  Stops building the panel once
+   *    data is found; keeps styleDetailPanel running in case the form was
+   *    already open when the listener attached.
+   * ════════════════════════════════════════════════════════════════════════ */
+  function startPolling() {
+    var _tick = 0;
+    var _poll = setInterval(function () {
+      if (++_tick > 120) { clearInterval(_poll); return; }
+      if (!_panelBuilt) readCardsAndRenderPanel();
+      if (!_cardListenersAttached) attachCardClickListeners();
+      styleDetailPanel();
+      relabelDialogButtons();
+      labelCancelledTransactions();
+      placePaymentButton();
+      fillSavedCard();
+    }, 500);
+  }
+
+  /* "Visa •••• 1234" from a card type + masked number (last 4 digits). Empty
+   * string when there's no usable number. */
+  function formatCard(type, masked) {
+    var last4 = String(masked || '').replace(/\D/g, '').slice(-4);
+    if (!last4) return '';
+    var t = type ? String(type).trim() : '';
+    t = t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Card';
+    return t + ' •••• ' + last4;
+  }
+
+  /* Fallback for cards whose transaction_template didn't carry the masked card:
+   * read the account's saved card from the portal's payment-method element and
+   * fill any still-empty payment slots. Runs from the poll loop. */
+  function fillSavedCard() {
+    var slots = document.querySelectorAll('.dgc-sub-card-pay');
+    var need = false;
+    for (var i = 0; i < slots.length; i++) { if (!slots[i].innerHTML.trim()) { need = true; break; } }
+    if (!need || !portal || !portal.shadowRoot) return;
+    var el = deepQueryAll(portal.shadowRoot, 'foxy-payment-method-card')[0];
+    var d = el && el.data;
+    var txt = d ? formatCard(d.cc_type, d.cc_number_masked) : '';
+    if (!txt) return;
+    for (var j = 0; j < slots.length; j++) {
+      if (!slots[j].innerHTML.trim()) slots[j].innerHTML = '<span aria-hidden="true">💳</span> Charged to ' + esc(txt);
+    }
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 7. RENDER EDIT PANEL CARDS
+   * ════════════════════════════════════════════════════════════════════════ */
+  function renderPanel(items) {
+    var panel = document.getElementById('dgc-sub-edit-panel');
+    if (!panel) return;
+
+    var heading = panel.querySelector('h3');
+    panel.innerHTML = '';
+    if (heading) panel.appendChild(heading);
+
+    if (!items.length) { panel.style.display = 'none'; return; }
+
+    /* Payment card is account-level (all subscriptions charge the same card), so
+     * offer a single prominent button. It's created here in the panel, then
+     * relocated into the portal's native Payment Methods section by
+     * placePaymentButton() (issue #6); if that section can't be found it stays
+     * here as a safe fallback. */
+    var payRow = document.createElement('div');
+    payRow.id = 'dgc-pay-row';
+    payRow.style.cssText = 'margin:0 0 22px;';
+    payRow.innerHTML =
+      '<button type="button" ' +
+        'style="display:inline-flex;align-items:center;gap:8px;padding:12px 22px;background:#37b772;' +
+        'color:#fff;font-size:15px;font-weight:700;border:none;border-radius:6px;cursor:pointer;' +
+        'font-family:\'Lato\',sans-serif;box-shadow:0 2px 6px rgba(55,183,114,.35);">' +
+        '<span aria-hidden="true" style="font-size:17px;line-height:1;">💳</span>' +
+        'Update Payment Card' +
+      '</button>';
+    /* Bind directly (not via document delegation): once relocated into the
+     * portal's Payment Methods section the button lives in shadow DOM, where
+     * event retargeting would hide it from a document-level click listener. */
+    var payBtn = payRow.querySelector('button');
+    if (payBtn) payBtn.addEventListener('click', function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      openPaymentUpdate();
+    });
+    panel.appendChild(payRow);
+
+    items.forEach(function (item) {
+      var card = document.createElement('div');
+      card.className = 'dgc-sub-card' +
+        (item.cancelled ? ' dgc-sub-card--cancelled' : '') +
+        (item.paused ? ' dgc-sub-card--paused' : '');
+
+      /* Stash the data the action handlers need on the card element itself. */
+      if (item.subUri)   card.dataset.subUri = item.subUri;
+      if (item.subToken) card.dataset.subToken = item.subToken;
+      card.dataset.frequency = item.frequency || '';
+      card.dataset.address   = JSON.stringify(item.address || {});
+      card.dataset.billingAddress = JSON.stringify(item.billingAddress || {});
+      card.dataset.lineItems = JSON.stringify(item.lineItems || []);
+
+      var badge =
+        item.inactive ? '<span class="dgc-sub-badge-cancelled">Inactive</span>' :
+        item.ending   ? '<span class="dgc-sub-badge-cancelled">Ending Soon</span>' :
+        item.paused   ? '<span class="dgc-sub-badge-paused">Paused</span>' : '';
+
+      var nameRow =
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
+          '<p class="dgc-sub-card-name" style="margin:0;">(' + (parseInt(item.quantity, 10) || 1) + ') ' + esc(item.name) + '</p>' +
+          badge +
+        '</div>';
+
+      var freqText = formatFrequency(item.frequency);
+
+      var dateRow;
+      if (item.inactive) {
+        dateRow = '<p class="dgc-sub-card-end">Ended' + (item.endDate ? ' on ' + esc(item.endDate) : '') + '</p>';
+      } else if (item.ending && item.endDate) {
+        dateRow = '<p class="dgc-sub-card-end">Ends on ' + esc(item.endDate) +
+                  ' &middot; You won\'t be billed again</p>';
+      } else if (item.paused) {
+        dateRow = '<p class="dgc-sub-card-paused-note">Paused — you won\'t be charged until you resume.' +
+                  (freqText ? ' Normal schedule: ' + esc(freqText) + '.' : '') + '</p>';
+      } else {
+        dateRow = '<p class="dgc-sub-card-next">Next payment: ' + esc(item.nextDate) +
+                  (freqText ? ' &middot; ' + esc(freqText) : '') + '</p>';
+      }
+
+      var totalRow = (!item.inactive && Number(item.total) > 0)
+        ? '<p class="dgc-sub-card-total" style="margin:0 0 8px;font-size:14px;font-weight:700;color:#333;">' +
+            'Subscription total: $' + Number(item.total).toFixed(2) +
+            (freqText ? ' <span style="font-weight:400;color:#666;">/ ' + esc(freqText.toLowerCase()) + '</span>' : '') +
+          '</p>'
+        : '';
+
+      /* Payment card line. Rendered (empty) for active subs so fillSavedCard()
+       * can populate it from the account default when the template lacked it. */
+      var payRow = (!item.inactive)
+        ? '<p class="dgc-sub-card-pay" style="margin:0 0 12px;font-size:13px;color:#555;">' +
+            (item.cardLabel ? '<span aria-hidden="true">💳</span> Charged to ' + esc(item.cardLabel) : '') +
+          '</p>'
+        : '';
+
+      var actions;
+      if (item.cancelled) {
+        /* Cancelled (ending soon or already inactive): offer Restart, but only
+         * when we hold the ownership token needed to authorize the change. */
+        actions = (item.subUri && item.subToken)
+          ? '<div class="dgc-sub-card-actions">' +
+              '<button class="dgc-btn-action dgc-btn-resume" data-action="restart">Restart Subscription</button>' +
+            '</div>'
+          : '';
+      } else if (item.paused) {
+        /* Paused: offer Resume (+ keep Cancel available). */
+        actions =
+          '<div class="dgc-sub-card-actions">' +
+            '<button class="dgc-btn-action dgc-btn-resume" data-action="resume">Resume Subscription</button>' +
+            '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
+          '</div>';
+      } else {
+        /* Active: full set of self-service controls.
+         * Cancel uses a data attribute (not <a href>) so FoxyCart's sidecart JS
+         * cannot intercept the navigation. */
+        actions =
+          '<div class="dgc-sub-card-actions">' +
+            '<button class="dgc-btn-action" data-action="ship-now">Ship Now</button>' +
+            '<button class="dgc-btn-action" data-action="skip">Skip Next</button>' +
+            '<button class="dgc-btn-action" data-action="change-frequency">Change Frequency</button>' +
+            '<button class="dgc-btn-action" data-action="change-address">Change Shipping Address</button>' +
+            '<button class="dgc-btn-action" data-action="change-billing-address">Change Billing Address</button>' +
+            '<button class="dgc-btn-action" data-action="edit-items">Update Quantity</button>' +
+            '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
+          '</div>';
+      }
+
+      /* Per-subscription shipping + billing addresses (hidden for ended subs).
+       * When billing isn't stored separately, show "Same as shipping". */
+      var shipHTML = '', billHTML = '';
+      if (!item.inactive) {
+        var hasShip = formatAddressLines(item.address).length > 0;
+        shipHTML = addressBlockHTML('Shipping to', item.address);
+        if (formatAddressLines(item.billingAddress).length) {
+          billHTML = addressBlockHTML('Billing to', item.billingAddress);
+        } else if (hasShip) {
+          billHTML = addressNoteHTML('Billing to', 'Same as shipping');
+        }
+      }
+      var addrBlock = (shipHTML || billHTML)
+        ? '<div style="display:flex;flex-wrap:wrap;gap:18px;margin:8px 0 2px;">' + shipHTML + billHTML + '</div>'
+        : '';
+
+      card.innerHTML = nameRow + dateRow + totalRow + payRow + addrBlock + actions +
+        '<div class="dgc-sub-inline" style="display:none;"></div>' +
+        '<div class="dgc-sub-msg-slot"></div>';
+      panel.appendChild(card);
+    });
+
+    panel.style.display = 'block';
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * 8. ACTION HANDLERS
+   * ════════════════════════════════════════════════════════════════════════ */
+  var CONFIRMS = {
+    'ship-now': 'Send your next order now? Your saved card will be charged and it will ship on our next run (usually within 1 business day). Your normal schedule then continues from this shipment.',
+    'skip':     'Skip your next shipment? Your next charge will move forward by one cycle.',
+    'pause':    'Pause this subscription? You won\'t be charged again until you choose to resume it.',
+    'resume':   'Resume this subscription? Your next order will ship within 1 business day.',
+    'restart':  'Restart this subscription? It will become active again on its normal schedule (or within 1 business day if the next date has already passed).'
+  };
+
+  document.addEventListener('click', function (e) {
+    var el = e.target;
+    if (!el || !el.closest) return;
+
+    var actionBtn = el.closest('[data-action]');
+    if (!actionBtn) return;
+
+    var action = actionBtn.getAttribute('data-action');
+
+    var card = actionBtn.closest('.dgc-sub-card');
+    if (!card) return;
+
+    /* Inline-form openers ----------------------------------------------- */
+    if (action === 'change-frequency') { clearMsg(card); openFrequencyForm(card); addInlineClose(card); return; }
+    if (action === 'change-address')   { clearMsg(card); openAddressForm(card, 'shipping'); addInlineClose(card); return; }
+    if (action === 'change-billing-address') { clearMsg(card); openAddressForm(card, 'billing'); addInlineClose(card); return; }
+    if (action === 'edit-items')       { clearMsg(card); openItemsForm(card); addInlineClose(card); return; }
+    if (action === 'cancel-prompt')    { clearMsg(card); openCancelConfirm(card); addInlineClose(card); return; }
+    if (action === 'inline-cancel')    { closeInline(card); return; }
+
+    /* Item editing (quantity / variant) --------------------------------- */
+    if (action === 'qty-inc' || action === 'qty-dec') { adjustQty(actionBtn, action); return; }
+    if (action === 'save-qty')       { saveQty(card, actionBtn); return; }
+    if (action === 'load-variants')  { loadVariants(card, actionBtn); return; }
+    if (action === 'save-variant')   { saveVariant(card, actionBtn); return; }
+
+    if (action === 'confirm-cancel')   { doAction(card, 'cancel', {}); return; }
+
+    if (action === 'apply-frequency') {
+      var sel = card.querySelector('.dgc-sub-inline select');
+      var freq = sel && sel.value;
+      if (freq) doAction(card, 'set-frequency', { frequency: freq });
+      return;
+    }
+
+    if (action === 'apply-address') {
+      var address = readAddressForm(card);
+      if (address) {
+        var inlineEl = card.querySelector('.dgc-sub-inline');
+        var addrType = (inlineEl && inlineEl.dataset.addrType) || 'shipping';
+        doAction(card, 'change-address', { address: address, address_type: addrType });
+      }
+      return;
+    }
+
+    /* Direct actions ----------------------------------------------------- */
+    if (CONFIRMS[action]) {
+      if (!window.confirm(CONFIRMS[action])) return;
+      doAction(card, action, {});
+    }
+  });
+
+  function openFrequencyForm(card) {
+    var inline = card.querySelector('.dgc-sub-inline');
+    if (!inline) return;
+    var current = card.dataset.frequency || '';
+    var opts = FREQ_OPTIONS.map(function (o) {
+      var selected = (o.value === current) ? ' selected' : '';
+      return '<option value="' + esc(o.value) + '"' + selected + '>' + esc(o.label) + '</option>';
+    }).join('');
+    inline.innerHTML =
+      '<label>How often should it ship?</label>' +
+      '<select>' + opts + '</select>' +
+      '<div class="dgc-sub-card-actions">' +
+        '<button class="dgc-btn-action dgc-btn-resume" data-action="apply-frequency">Save</button>' +
+        '<button class="dgc-btn-action" data-action="inline-cancel">Cancel</button>' +
+      '</div>';
+    inline.style.display = 'block';
+  }
+
+  function openAddressForm(card, type) {
+    type = (type === 'billing') ? 'billing' : 'shipping';
+    var inline = card.querySelector('.dgc-sub-inline');
+    if (!inline) return;
+    inline.dataset.addrType = type;
+
+    var a = {};
+    var dataKey = (type === 'billing') ? 'billingAddress' : 'address';
+    try { a = JSON.parse(card.dataset[dataKey] || '{}'); } catch (e) { a = {}; }
+
+    function field(name, label, full) {
+      return '<div' + (full ? ' class="dgc-addr-full"' : '') + '>' +
+        '<label>' + esc(label) + '</label>' +
+        '<input type="text" data-addr="' + name + '" value="' + esc(a[name] || '') + '" />' +
+        '</div>';
+    }
+
+    var heading = (type === 'billing')
+      ? 'Update the billing address for this subscription'
+      : 'Update the shipping address for this subscription';
+    var saveLabel = (type === 'billing') ? 'Save Billing Address' : 'Save Address';
+
+    inline.innerHTML =
+      '<label style="font-size:13px;margin-bottom:10px;">' + heading + '</label>' +
+      '<div class="dgc-addr-grid">' +
+        field('first_name', 'First name') +
+        field('last_name', 'Last name') +
+        field('address1', 'Address', true) +
+        field('address2', 'Apt / Suite (optional)', true) +
+        field('city', 'City') +
+        field('region', 'State') +
+        field('postal_code', 'ZIP') +
+        field('country', 'Country') +
+      '</div>' +
+      '<div class="dgc-sub-card-actions">' +
+        '<button class="dgc-btn-action dgc-btn-resume" data-action="apply-address">' + saveLabel + '</button>' +
+        '<button class="dgc-btn-action" data-action="inline-cancel">Cancel</button>' +
+      '</div>';
+    inline.style.display = 'block';
+  }
+
+  /* Find the customer-portal session token (JWT) the portal stored client-side,
+   * so we can request an authenticated checkout link. Scans local/session
+   * storage for a JWT-shaped value (prefer Foxy-looking keys). */
+  function getPortalToken() {
+    var jwtRe = /^ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+    var preferred = null, fallback = null;
+    [window.localStorage, window.sessionStorage].forEach(function (store) {
+      if (!store) return;
+      for (var i = 0; i < store.length; i++) {
+        var key = store.key(i);
+        var val = store.getItem(key);
+        if (!val) continue;
+        var token = null;
+        if (jwtRe.test(val)) token = val;
+        else if (val.charAt(0) === '{') {
+          try {
+            var o = JSON.parse(val);
+            token = o.jwt || o.session_token || o.token || (o.session && (o.session.jwt || o.session.token)) || null;
+          } catch (e) { /* not json */ }
+        }
+        if (token && jwtRe.test(token)) {
+          if (/foxy|fx|customer|jwt|sso|session/i.test(key)) preferred = preferred || token;
+          else fallback = fallback || token;
+        }
+      }
+    });
+    return preferred || fallback;
+  }
+
+  /* Open Foxy's secure hosted "update info" page where the customer can update
+   * the payment card + billing info their subscriptions are charged on.
+   * (The native portal Payment Methods card only shows/deletes; no add form.)
+   * The portal authenticates cross-origin via a token, so a bare checkout link
+   * loads logged-OUT. Instead we ask the portal for an authenticated checkout
+   * link (GET /s/customer?sso=true → _links.fx:checkout) and append
+   * cart=updateinfo. Foxy strips the query on its SSO redirect, so the prefill
+   * data (email + billing) rides in the URL FRAGMENT via buildPrefillFragment;
+   * the checkout template reads the fragment (marker gd=1) and fills the fields.
+   * The #fc-payment fragment (Foxy's payment fieldset id) opens the page
+   * scrolled straight to the card fields. Card entry stays in Foxy's PCI flow —
+   * it can't be iframed into a modal, so this opens a tab. */
+  function openPaymentUpdate() {
+    var base = (portal && portal.getAttribute && portal.getAttribute('base')) ||
+               'https://secure.thegreendragoncbd.com/s/customer/';
+    var origin = 'https://secure.thegreendragoncbd.com';
+    try { origin = new URL(base).origin; } catch (e) { /* keep fallback */ }
+
+    /* Foxy-native SSO flow: navigate straight to the store's update-info cart
+     * action. If the customer isn't already authenticated on the Foxy domain,
+     * Foxy bounces to the store SSO endpoint (/sso) with an fcsid; our /sso page
+     * mints the token (via this function, using the sub_token below) and hands
+     * back to /checkout with the same fcsid, so Foxy resumes update-info mode.
+     * We stash the first sub's URI + token (payment is account-level) in
+     * localStorage so the /sso page — same Webflow origin — can authenticate
+     * WITHOUT the flaky portal JWT. */
+    var card = document.querySelector('.dgc-sub-card');
+    var subUri = card && card.dataset.subUri;
+    var subToken = card && card.dataset.subToken;
+    if (subUri && subToken) {
+      try {
+        localStorage.setItem('gd_pay_creds', JSON.stringify({
+          subUri: subUri, subToken: subToken, origin: origin, ts: Date.now()
+        }));
+      } catch (e) { /* ignore */ }
+    }
+
+    var url = origin + '/cart?cart=updateinfo';
+    var win = window.open(url, '_blank');
+    if (!win) window.location = url;
+  }
+
+  /* Build the URL-fragment payload the checkout template reads to prefill the
+   * update-info page (Foxy strips the query on its SSO redirect, but the
+   * fragment survives). Marker `gd=1` identifies our account card-update flow;
+   * then customer_email + billing_* (v2.0 field names, state = billing_region).
+   * Email comes from the SSO customer response; billing from a subscription (its
+   * billing, else shipping), with the account default addresses as a fallback. */
+  function buildPrefillFragment(customer) {
+    var qp = ['gd=1'];
+    var email = (customer && customer.email) || '';
+    if (email) qp.push('customer_email=' + encodeURIComponent(email));
+
+    var a = null, firstCard = document.querySelector('.dgc-sub-card');
+    if (firstCard) {
+      var b = null, s = null;
+      try { b = JSON.parse(firstCard.dataset.billingAddress || '{}'); } catch (e) {}
+      try { s = JSON.parse(firstCard.dataset.address || '{}'); } catch (e) {}
+      a = (b && b.address1) ? b : ((s && s.address1) ? s : null);
+    }
+    if (!a && customer && customer._embedded) {
+      var ab = customer._embedded['fx:default_billing_address'];
+      var as = customer._embedded['fx:default_shipping_address'];
+      a = (ab && ab.address1) ? ab : ((as && as.address1) ? as : null);
+    }
+    if (a) {
+      var map = {
+        first_name: 'billing_first_name', last_name: 'billing_last_name',
+        address1: 'billing_address1', address2: 'billing_address2',
+        city: 'billing_city', region: 'billing_region',
+        postal_code: 'billing_postal_code', country: 'billing_country'
+      };
+      Object.keys(map).forEach(function (k) {
+        if (a[k]) qp.push(map[k] + '=' + encodeURIComponent(a[k]));
+      });
+    }
+    return qp.join('&');
+  }
+
+  /* ── Relocate the "Update Payment Card" button into the portal's native
+   *    Payment Methods section (issue #6). Runs from the polling loop until the
+   *    portal has rendered its payment method card. Falls back to leaving the
+   *    button in the branded panel if the section can't be located. */
+  var _payBtnPlaced = false;
+  function findPaymentSection() {
+    if (!portal || !portal.shadowRoot) return null;
+    /* The saved-card display is the most reliable anchor for "Payment Methods". */
+    var card = deepQueryAll(portal.shadowRoot, 'foxy-payment-method-card')[0];
+    if (card) return card;
+    /* Fallback: the payment-methods collection wrapper (never the addresses one). */
+    var colls = deepQueryAll(portal.shadowRoot, 'foxy-collection-pages');
+    for (var i = 0; i < colls.length; i++) {
+      var ref = colls[i].getAttribute('first') || colls[i].getAttribute('href') || colls[i].first || '';
+      if (/payment_methods|default_payment_method/i.test(String(ref))) return colls[i];
+    }
+    return null;
+  }
+  function placePaymentButton() {
+    var row = document.getElementById('dgc-pay-row');
+    if (!row) return;
+    if (_payBtnPlaced && row.isConnected) return; /* already placed and still attached */
+    var anchor = findPaymentSection();
+    if (!anchor || !anchor.parentNode) return;    /* section not rendered yet — retry next poll */
+    if (anchor.nextSibling) anchor.parentNode.insertBefore(row, anchor.nextSibling);
+    else anchor.parentNode.appendChild(row);
+    row.style.cssText = 'margin:14px 0 0;';       /* spacing suited to the portal section */
+    _payBtnPlaced = true;
+  }
+
+  function readAddressForm(card) {
+    var inputs = card.querySelectorAll('.dgc-sub-inline input[data-addr]');
+    if (!inputs.length) return null;
+    var address = {};
+    inputs.forEach(function (inp) {
+      address[inp.getAttribute('data-addr')] = inp.value.trim();
+    });
+    if (!address.address1 || !address.city || !address.postal_code) {
+      showMsg(card, 'Please fill in at least the address, city and ZIP.', false);
+      return null;
+    }
+    return address;
+  }
+
+  function openCancelConfirm(card) {
+    var inline = card.querySelector('.dgc-sub-inline');
+    if (!inline) return;
+    inline.innerHTML =
+      '<p style="margin:0 0 12px;font-size:13px;color:#444;line-height:1.5;">' +
+      'Are you sure you want to cancel? You can ' +
+      '<strong>change how often it ships</strong> instead — ' +
+      'no need to start over later.<br>' +
+      'If you cancel, your subscription stays active until tomorrow and ' +
+      '<strong>you won\'t be billed again</strong>.</p>' +
+      '<div class="dgc-sub-card-actions">' +
+        '<button class="dgc-btn-action" data-action="change-frequency">Change frequency instead</button>' +
+        '<button class="dgc-btn-cancel" data-action="confirm-cancel">Yes, cancel subscription</button>' +
+        '<button class="dgc-btn-action" data-action="inline-cancel">Keep my subscription</button>' +
+      '</div>';
+    inline.style.display = 'block';
+  }
+
+  function closeInline(card) {
+    var inline = card.querySelector('.dgc-sub-inline');
+    if (inline) { inline.style.display = 'none'; inline.innerHTML = ''; }
+    clearMsg(card);
+  }
+
+  /* Clear any status/error message on a card (e.g. a shipping-restriction error)
+   * so it doesn't linger after Cancel or when opening a different form. */
+  function clearMsg(card) {
+    var slot = card && card.querySelector('.dgc-sub-msg-slot');
+    if (slot) slot.innerHTML = '';
+  }
+
+  /* Add a small × close button to the top-right of a card's expanded inline
+   * panel. Wired to the existing inline-cancel action (closeInline), so a click
+   * collapses the panel. Idempotent — safe to call after any opener. */
+  function addInlineClose(card) {
+    var inline = card && card.querySelector('.dgc-sub-inline');
+    if (!inline || inline.querySelector('.dgc-inline-close')) return;
+    inline.style.position = 'relative';
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dgc-inline-close';
+    b.setAttribute('data-action', 'inline-cancel');
+    b.setAttribute('aria-label', 'Close');
+    b.innerHTML = '&times;';
+    b.style.cssText = 'position:absolute;top:4px;right:6px;width:28px;height:28px;padding:0;' +
+      'border:none;background:transparent;color:#7a9a7a;font-size:22px;line-height:1;' +
+      'cursor:pointer;font-family:inherit;border-radius:4px;';
+    b.onmouseover = function () { b.style.color = '#2f7d4f'; b.style.background = '#eef7ef'; };
+    b.onmouseout  = function () { b.style.color = '#7a9a7a'; b.style.background = 'transparent'; };
+    /* Keep the panel content from crowding the button. */
+    inline.style.paddingRight = '30px';
+    inline.appendChild(b);
+  }
+
+  /* ── Item editing: quantity + variant ─────────────────────────────────── */
+  function openItemsForm(card) {
+    var inline = card.querySelector('.dgc-sub-inline');
+    if (!inline) return;
+    var items = [];
+    try { items = JSON.parse(card.dataset.lineItems || '[]'); } catch (e) { items = []; }
+
+    if (!items.length) {
+      inline.innerHTML =
+        '<p style="margin:0 0 10px;font-size:13px;color:#666;">No editable items found for this subscription.</p>' +
+        '<div class="dgc-sub-card-actions"><button class="dgc-btn-action" data-action="inline-cancel">Close</button></div>';
+      inline.style.display = 'block';
+      return;
+    }
+
+    inline.innerHTML =
+      '<label style="font-size:13px;margin-bottom:10px;">Edit the items in this subscription</label>' +
+      items.map(function (it) {
+        return '' +
+        '<div class="dgc-item-row" data-code="' + esc(it.code) + '" style="padding:10px 0;border-bottom:1px solid #e3efe3;">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">' +
+            (it.image ? '<img src="' + esc(it.image) + '" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:4px;flex:none;">' : '') +
+            '<span style="font-size:13px;font-weight:600;color:#333;">' + esc(it.name) + '</span>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+            '<span style="font-size:12px;color:#555;">Qty</span>' +
+            '<button class="dgc-btn-action" data-action="qty-dec" style="padding:6px 12px;">−</button>' +
+            '<input class="dgc-qty" type="number" min="1" max="99" value="' + (parseInt(it.quantity, 10) || 1) + '" style="width:56px;text-align:center;margin-bottom:0;">' +
+            '<button class="dgc-btn-action" data-action="qty-inc" style="padding:6px 12px;">+</button>' +
+            '<button class="dgc-btn-action dgc-btn-resume" data-action="save-qty">Save qty</button>' +
+            '<button class="dgc-btn-action" data-action="load-variants">Change Flavor</button>' +
+          '</div>' +
+          '<div class="dgc-variant-slot" style="margin-top:8px;"></div>' +
+        '</div>';
+      }).join('') +
+      '<div class="dgc-sub-card-actions" style="margin-top:12px;">' +
+        '<button class="dgc-btn-action" data-action="inline-cancel">Close</button>' +
+      '</div>';
+    inline.style.display = 'block';
+    prefetchItemVariants(card); /* relabel each variant button with its real type (default is "Change Flavor") */
+  }
+
+  function adjustQty(btn, action) {
+    var row = btn.closest('.dgc-item-row');
+    var inp = row && row.querySelector('.dgc-qty');
+    if (!inp) return;
+    var v = parseInt(inp.value, 10) || 1;
+    v += (action === 'qty-inc' ? 1 : -1);
+    if (v < 1) v = 1;
+    if (v > 99) v = 99;
+    inp.value = v;
+  }
+
+  function saveQty(card, btn) {
+    var row = btn.closest('.dgc-item-row');
+    var inp = row && row.querySelector('.dgc-qty');
+    var code = row && row.getAttribute('data-code');
+    var q = inp && parseInt(inp.value, 10);
+    if (code && q) doAction(card, 'set-quantity', { item_code: code, quantity: q });
+  }
+
+  /* POST list-variants for one line item → resolves to { ok, json }. */
+  function fetchVariants(card, code) {
+    return fetch(GD_MANAGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'list-variants',
+        subscription_uri: card.dataset.subUri,
+        sub_token: card.dataset.subToken,
+        item_code: code
+      })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, json: j }; });
+    });
+  }
+
+  /* When the item editor opens, prefetch each item's variant type so its trigger
+   * button reads "Change Flavor" / "Change Size" (the real differentiator) rather
+   * than the generic "Change Options". Caches the response on the row so the
+   * click renders instantly without a second fetch. Silent on failure — the
+   * button just keeps its generic label. */
+  function prefetchItemVariants(card) {
+    var rows = card.querySelectorAll('.dgc-item-row');
+    Array.prototype.forEach.call(rows, function (row) {
+      var code = row.getAttribute('data-code');
+      if (!code) return;
+      fetchVariants(card, code).then(function (res) {
+        if (!res.ok || !res.json || res.json.error) return;
+        row._dgcVariantData = res.json;
+        var vbtn = row.querySelector('[data-action="load-variants"]');
+        var variants = res.json.variants || [];
+        if (vbtn && variants.length) {
+          vbtn.textContent = 'Change ' + cap(variantTypeWord(res.json.variant_type));
+        }
+      }).catch(function () { /* keep the generic label */ });
+    });
+  }
+
+  /* Render the variant <select> for a row from a list-variants response. */
+  function renderVariantOptions(btn, slot, j) {
+    var variants = (j && j.variants) || [];
+    if (!variants.length) {
+      slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">No other options are available for this product.</p>';
+      return;
+    }
+    /* Label the picker with the actual differentiator (flavor/size/strength/…). */
+    var vword = variantTypeWord(j.variant_type);
+    btn.textContent = 'Change ' + cap(vword);
+    var opts = variants.map(function (v) {
+      var selected = (String(v.code) === String(j.current_code)) ? ' selected' : '';
+      /* Show the subscription (discounted) price when the function supplies it,
+       * falling back to the raw CMS price for older responses. */
+      var pv = (v.sub_price != null) ? v.sub_price : v.price;
+      var price = (pv != null) ? ' — $' + Number(pv).toFixed(2) : '';
+      var oos = v.in_stock ? '' : ' (out of stock)';
+      return '<option value="' + esc(v.code) + '"' + (v.in_stock ? '' : ' disabled') + selected + '>' +
+               esc(v.label) + price + oos + '</option>';
+    }).join('');
+    slot.innerHTML =
+      '<label style="font-size:12px;">Choose a ' + esc(vword) + '</label>' +
+      '<select class="dgc-variant-select">' + opts + '</select>' +
+      '<div class="dgc-sub-card-actions" style="margin-top:6px;">' +
+        '<button class="dgc-btn-action dgc-btn-resume" data-action="save-variant">Save ' + esc(vword) + '</button>' +
+      '</div>';
+  }
+
+  function loadVariants(card, btn) {
+    var row = btn.closest('.dgc-item-row');
+    if (!row) return;
+    var slot = row.querySelector('.dgc-variant-slot');
+    if (!slot) return;
+
+    /* Prefetched by prefetchItemVariants() when the editor opened — render now. */
+    if (row._dgcVariantData) { renderVariantOptions(btn, slot, row._dgcVariantData); return; }
+
+    var code = row.getAttribute('data-code');
+    slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#666;">Loading options…</p>';
+    fetchVariants(card, code).then(function (res) {
+      var j = res.json || {};
+      /* Surface real failures (e.g. missing Webflow token, lookup error) instead
+       * of masking them as an empty option list. */
+      if (!res.ok || j.error) {
+        slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">' +
+          esc(j.error || 'Couldn\'t load options. Please try again.') + '</p>';
+        return;
+      }
+      row._dgcVariantData = j;
+      renderVariantOptions(btn, slot, j);
+    }).catch(function () {
+      slot.innerHTML = '<p style="margin:6px 0;font-size:12px;color:#c62828;">Couldn\'t load options. Please try again.</p>';
+    });
+  }
+
+  function saveVariant(card, btn) {
+    var row = btn.closest('.dgc-item-row');
+    var sel = row && row.querySelector('.dgc-variant-select');
+    var code = row && row.getAttribute('data-code');
+    var vcode = sel && sel.value;
+    if (code && vcode) doAction(card, 'set-variant', { item_code: code, variant_code: vcode });
+  }
+
+  function doAction(card, action, extra) {
+    var subUri   = card.dataset.subUri;
+    var subToken = card.dataset.subToken;
+    if (!subUri || !subToken) {
+      showMsg(card, 'Sorry — we couldn\'t identify this subscription. Please refresh and try again.', false);
+      return;
+    }
+
+    card.classList.add('dgc-busy');
+    showMsg(card, 'Working…', true);
+
+    var payload = { action: action, subscription_uri: subUri, sub_token: subToken };
+    if (extra) Object.keys(extra).forEach(function (k) { payload[k] = extra[k]; });
+
+    fetch(GD_MANAGE_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        return { ok: r.ok, json: j };
+      });
+    })
+    .then(function (res) {
+      if (res.ok && res.json && res.json.success) {
+        showMsg(card, 'Done! Refreshing your subscription…', true);
+        setTimeout(function () { window.location.reload(); }, 1400);
+      } else {
+        card.classList.remove('dgc-busy');
+        var err = (res.json && res.json.error) || 'Something went wrong. Please try again.';
+        /* Restriction errors carry trusted HTML (a contact link) — render as-is. */
+        showMsg(card, err, false, !!(res.json && res.json.restricted));
+      }
+    })
+    .catch(function () {
+      card.classList.remove('dgc-busy');
+      showMsg(card, 'Network error. Please try again.', false);
+    });
+  }
+
+  function showMsg(card, text, ok, html) {
+    var slot = card.querySelector('.dgc-sub-msg-slot');
+    if (!slot) return;
+    /* `html` = the caller passed trusted markup (e.g. the shipping-restriction
+     * error, which includes a contact link). Everything else is escaped. */
+    slot.innerHTML = '<p class="dgc-sub-msg ' + (ok ? 'dgc-sub-msg--ok' : 'dgc-sub-msg--err') + '">' +
+      (html ? text : esc(text)) + '</p>';
+  }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * HELPERS
+   * ════════════════════════════════════════════════════════════════════════ */
+  /* Foxy frequency code (e.g. 1w, 2w, 1m, .5m, 7d) → human-readable text. */
+  function formatFrequency(freq) {
+    if (!freq) return '';
+    if (freq === '.5m') return 'Twice a month';
+    var m = /^(\d+)([dwmy])$/.exec(freq);
+    if (!m) return freq;
+    var n = parseInt(m[1], 10);
+    var units = { d: 'day', w: 'week', m: 'month', y: 'year' };
+    var unit = units[m[2]] || m[2];
+    return n === 1 ? 'Every ' + unit : 'Every ' + n + ' ' + unit + 's';
+  }
+
+  /* Display lines for an address object (keys: first_name, last_name, address1,
+   * address2, city, region, postal_code, country). Empty parts are dropped. */
+  function formatAddressLines(a) {
+    if (!a) return [];
+    var name = ((a.first_name || '') + ' ' + (a.last_name || '')).trim();
+    var cityState = [a.city, a.region].filter(function (s) { return s && String(s).trim(); }).join(', ');
+    if (a.postal_code) cityState = (cityState ? cityState + ' ' : '') + a.postal_code;
+    return [name, a.address1, a.address2, cityState, a.country].filter(function (s) {
+      return s && String(s).trim();
+    });
+  }
+
+  /* A labelled address block for the subscription card (empty string if the
+   * address has no data — e.g. billing not stored separately). */
+  function addressBlockHTML(label, a) {
+    var lines = formatAddressLines(a);
+    if (!lines.length) return '';
+    return '<div style="font-size:12px;color:#555;line-height:1.45;min-width:150px;">' +
+      '<span style="display:block;font-weight:700;color:#333;margin-bottom:2px;">' + esc(label) + '</span>' +
+      lines.map(function (l) { return esc(l); }).join('<br>') +
+    '</div>';
+  }
+
+  /* Labelled block showing a note (e.g. "Same as shipping") instead of an address. */
+  function addressNoteHTML(label, note) {
+    return '<div style="font-size:12px;color:#555;line-height:1.45;min-width:150px;">' +
+      '<span style="display:block;font-weight:700;color:#333;margin-bottom:2px;">' + esc(label) + '</span>' +
+      '<span style="font-style:italic;color:#777;">' + esc(note) + '</span>' +
+    '</div>';
+  }
+
+  function formatDate(str) {
+    if (!str) return '—';
+    try {
+      return new Date(str).toLocaleDateString('en-US', {
+        month: 'long', day: 'numeric', year: 'numeric'
+      });
+    } catch (e) { return str; }
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,  '&amp;')
+      .replace(/</g,  '&lt;')
+      .replace(/>/g,  '&gt;')
+      .replace(/"/g,  '&quot;');
+  }
+
+  /* Variant differentiator slug (from the function) → customer-facing word.
+   * Falls back to "variant" when no differentiator attribute is set (reads
+   * cleanly in "Choose a variant" / "Change Variant"). */
+  function variantTypeWord(slug) {
+    var map = { flavor: 'flavor', size: 'size', strength: 'strength', strain: 'strain', type: 'type' };
+    return map[slug] || 'variant';
+  }
+  function cap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  /* ════════════════════════════════════════════════════════════════════════
+   * BOOTSTRAP — wait for <foxy-customer-portal> to exist, then start.
+   *   When loaded via <script src> in the Webflow footer, the element is
+   *   usually present already; the retry covers slower module/component loads.
+   * ════════════════════════════════════════════════════════════════════════ */
+  /* Lift the branded panel above the portal so "Manage Your Subscriptions"
+   * appears ahead of the portal's Addresses / Payment methods cards. The panel
+   * lives in the embed after <foxy-customer-portal>; move its node to just before
+   * the portal. Kept in the page's light DOM so its <style> rules still apply
+   * (moving it into the portal's shadow DOM would strip the styling). */
+  function movePanelAbovePortal() {
+    var panel = document.getElementById('dgc-sub-edit-panel');
+    if (panel && portal.parentNode && portal.previousElementSibling !== panel) {
+      portal.parentNode.insertBefore(panel, portal);
+    }
+  }
+
+  function boot() {
+    portal = document.querySelector('foxy-customer-portal');
+    if (!portal) return false;
+    movePanelAbovePortal();
+    startPolling();
+    return true;
+  }
+
+  if (!boot()) {
+    var tries = 0;
+    var bp = setInterval(function () {
+      if (boot() || ++tries > 60) clearInterval(bp);
+    }, 250);
+  }
+
+})();

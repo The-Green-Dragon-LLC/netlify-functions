@@ -10,15 +10,22 @@
  * crossell-popup.js). Adds happen on product pages, the sidecart, and the
  * cross-sell popup — a site-wide listener catches them all.
  *
- * Detection: the ONLY trigger is FoxyCart's `add.done` event, which fires when
- * an add-to-cart request completes — never on a plain page load. We diff
- * FC.json against the previous snapshot only to name the item that was added;
- * the event itself is the signal that an add happened, so we always fire on it.
+ * Detection: this site adds to cart by submitting `form#foxy-form` through the
+ * FoxyCart sidecart, which fires `cart-submit.done` (NOT `add.done` — verified
+ * live: add.done/loaded.done never fire on an add here). We bind to
+ * `cart-submit.done` (plus `add.done` as a fallback for any non-sidecart path)
+ * and diff FC.json against the previous snapshot. Because `cart-submit.done`
+ * also fires on quantity changes and removals, we fire `om_add_to_cart` ONLY
+ * when an item's quantity actually INCREASED — the diff is the add/no-add
+ * decision, not just a way to name the item.
  *
  *   IMPORTANT: do NOT fire on `loaded.done` or a poll. Those run on every page
  *   load (FoxyCart re-fetches the cart), so firing on them reports every
  *   pre-existing cart item as a new add on every page. `loaded.done` is used
  *   here only to silently keep the baseline snapshot current.
+ *
+ *   Double-fire is self-guarding: whichever of cart-submit.done/add.done runs
+ *   first fires and advances the baseline, so the second sees no increase.
  *
  * Units: cart-event amounts are DECIMAL DOLLARS (e.g. 49.99) per Omnisend's
  * cart-event API — do not convert to cents here.
@@ -88,26 +95,28 @@
     if (json) prev = snapshot(itemsArray(json.items));
   }
 
-  // Called ONLY from add.done — an add definitely happened, so always fire.
-  function onAddDone() {
+  // Bound to cart-submit.done / add.done. Fires only when an item's qty rose.
+  function onCartChange() {
     var json = window.FC && FC.json;
     if (!json) return;
 
     var arr = itemsArray(json.items);
     var cur = snapshot(arr);
 
-    // Best-effort: the line whose qty rose since the last snapshot is the add.
+    // The line whose qty rose since the last snapshot is the add.
     var addedKey = null;
     for (var k in cur) {
       if (cur[k] > (prev[k] || 0)) addedKey = k;
     }
-    prev = cur;
+    prev = cur; // always advance the baseline, even on a removal/no-op
+
+    // No quantity increased → this was a removal, qty decrease, or non-add
+    // cart submit. Don't report it as an add.
+    if (!addedKey) return;
 
     var addedObj = null;
-    if (addedKey) {
-      for (var i = 0; i < arr.length; i++) {
-        if (itemKey(arr[i]) === addedKey) { addedObj = arr[i]; break; }
-      }
+    for (var i = 0; i < arr.length; i++) {
+      if (itemKey(arr[i]) === addedKey) { addedObj = arr[i]; break; }
     }
 
     var common = cartCommon(json);
@@ -133,7 +142,10 @@
 
     syncBaseline(); // seed baseline from whatever is loaded so far
 
-    try { FC.client.on('add.done', onAddDone); } catch (e) {}
+    // Primary trigger on this site (sidecart add). add.done is kept as a
+    // fallback for any non-sidecart add path; the qty-diff self-guards duplicates.
+    try { FC.client.on('cart-submit.done', onCartChange); } catch (e) {}
+    try { FC.client.on('add.done', onCartChange); } catch (e) {}
     // Keep the baseline fresh on cart (re)loads WITHOUT firing — this is what
     // prevents the "fires on every page" bug.
     try { FC.client.on('loaded.done', syncBaseline); } catch (e) {}
