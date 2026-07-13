@@ -582,7 +582,7 @@
             '<button class="dgc-btn-action" data-action="change-frequency">Change Frequency</button>' +
             '<button class="dgc-btn-action" data-action="change-address">Change Shipping Address</button>' +
             '<button class="dgc-btn-action" data-action="change-billing-address">Change Billing Address</button>' +
-            '<button class="dgc-btn-action" data-action="edit-items">Update Quantity</button>' +
+            '<button class="dgc-btn-action" data-action="edit-items">Update Quantity/Flavor</button>' +
             '<button class="dgc-btn-cancel" data-action="cancel-prompt">Cancel Subscription</button>' +
           '</div>';
       }
@@ -1118,7 +1118,12 @@
     var t = 0;
     (item.lineItems || []).forEach(function (li) { t += (Number(li.price) || 0) * (parseInt(li.quantity, 10) || 1); });
     if (t > 0) item.total = t;
-    if (item.lineItems && item.lineItems[0]) item.quantity = parseInt(item.lineItems[0].quantity, 10) || item.quantity;
+    if (item.lineItems && item.lineItems[0]) {
+      item.quantity = parseInt(item.lineItems[0].quantity, 10) || item.quantity;
+      /* Reflect a flavor/variant change in the card title (which shows the
+       * first line item's name). */
+      if (item.lineItems[0].name) item.name = item.lineItems[0].name;
+    }
   }
 
   /* Optimistically update a card's item data from a just-succeeded action, so
