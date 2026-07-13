@@ -503,8 +503,13 @@ exports.handler = async (event) => {
   } catch (_) {
     return resp(400, { error: 'Invalid subscription_uri' });
   }
-  if (!/(^|\.)foxycart\.com$/.test(parsed.hostname)) {
-    return resp(400, { error: 'subscription_uri must be a foxycart.com URL' });
+  // Accept the Foxy domain (*.foxycart.com) OR the store's custom customer-API
+  // subdomain used in production (secure.thegreendragoncbd.com). We only ever
+  // pull the numeric subscription id out and rebuild the canonical admin URL,
+  // so the host here is just an allow-list, not something we fetch.
+  if (!/(^|\.)foxycart\.com$/.test(parsed.hostname) &&
+      parsed.hostname !== 'secure.thegreendragoncbd.com') {
+    return resp(400, { error: 'subscription_uri must be a foxycart.com or secure.thegreendragoncbd.com URL' });
   }
   var idMatch = /\/subscriptions\/(\d+)/.exec(parsed.pathname);
   if (!idMatch) {
