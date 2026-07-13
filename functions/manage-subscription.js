@@ -667,10 +667,11 @@ exports.handler = async (event) => {
       // set-variant — swap to a sibling variant of the SAME product. Price is
       // read from the CMS (never the client) since Foxy HMAC validation is off.
       if (!variant_code) return resp(400, { error: 'set-variant requires variant_code' });
-      const { productName, variants } = await loadProductVariants(item);
+      const { productName, variants, variant_type } = await loadProductVariants(item);
       const target = variants.find((v) => String(v.code) === String(variant_code));
       if (!target) return resp(400, { error: 'That option isn\'t available for this product.' });
       if (!target.in_stock) return resp(400, { error: 'That option is out of stock.' });
+      const current = variants.find((v) => String(v.code) === String(item.code));
 
       // Preserve the subscription's discount: charge the sibling variant at the
       // same effective ratio as the current line, not full CMS retail.
@@ -679,6 +680,26 @@ exports.handler = async (event) => {
       const patch = { code: target.code, name: target.name || (productName + ' - ' + target.label), price: roundMoney(target.price * ratio) };
       if (target.image) patch.image = target.image;
       const r = await patchOrThrow(itemUrl, patchHeaders, patch, 'set-variant');
+
+      // Also update the line item's differentiator OPTION (e.g. the "flavor"
+      // product attribute) so admin/fulfillment don't keep the old value. The
+      // item PATCH only changes code/name/price/image; the fx:item_options are
+      // separate resources. Match the option by the differentiator name (e.g.
+      // "flavor"), else by the option whose value equals the OLD variant's
+      // value. Best-effort — never let this fail the swap.
+      try {
+        const oldVal = current && current.label;
+        const newVal = target.label;
+        if (newVal && (variant_type || oldVal)) {
+          const optRes = await httpsReq(itemUrl + '?zoom=item_options', { headers: authHeaders });
+          const opts = (optRes.json && optRes.json._embedded && optRes.json._embedded['fx:item_options']) || [];
+          const opt = opts.find((o) => variant_type && String(o.name || '').trim().toLowerCase() === variant_type)
+                   || opts.find((o) => oldVal && String(o.value || '').trim() === String(oldVal).trim());
+          const optUrl = opt && opt._links && opt._links.self && opt._links.self.href;
+          if (optUrl) await patchOrThrow(optUrl, patchHeaders, { value: newVal }, 'set-variant-option');
+        }
+      } catch (e) { console.warn('[manage] variant option update failed:', e && e.message); }
+
       await finishWithEvent(action, adminSubUrl, authHeaders, idMatch[1], { code: patch.code, name: patch.name, price: patch.price });
       return resp(200, { success: true, action, applied: patch, status: r.status });
     }
