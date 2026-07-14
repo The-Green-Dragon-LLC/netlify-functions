@@ -39,6 +39,17 @@
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
 
+# Back-in-stock widget for the Webflow product template — same revalidate policy.
+[[headers]]
+  for = "/back-in-stock.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Back-in-stock notifier runs on a cron: every 15 min it checks Airtable inventory
+# for Pending signups and fires the Omnisend "back in stock" alert for restocks.
+[functions."back-in-stock-notify"]
+  schedule = "*/15 * * * *"
+
 # Production — deploys from main branch
 [context.production]
   # Production function URL: https://YOUR-SITE-NAME.netlify.app/.netlify/functions/
