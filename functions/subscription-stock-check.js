@@ -179,20 +179,23 @@ async function resolveSubscriptionsUrl(authHeaders) {
  * authoritative filter anyway. Active-sub counts are modest and paginated at 200. */
 async function fetchActiveSubscriptions(authHeaders) {
   const base = await resolveSubscriptionsUrl(authHeaders);
-  const params = new URLSearchParams({
-    is_active: 'true',
-    zoom: 'transaction_template:items,customer',
-    limit: '200',
-  });
-  let url = base + (base.includes('?') ? '&' : '?') + params.toString();
-
+  const LIMIT = 200;
   const subs = [];
-  for (let page = 0; page < MAX_PAGES && url; page++) {
+  // Offset-based pagination: Foxy always emits a `_links.next` (even past the end),
+  // so we advance offset ourselves and stop on the first non-full page.
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      is_active: 'true',
+      zoom: 'transaction_template:items,customer',
+      limit: String(LIMIT),
+      offset: String(page * LIMIT),
+    });
+    const url = base + (base.includes('?') ? '&' : '?') + params.toString();
     const res = await httpsReq(url, { headers: authHeaders });
     if (!res.ok || !res.json) throw new Error(`Foxy subscriptions ${res.status}: ${(res.text || '').slice(0, 200)}`);
     const items = (res.json._embedded && res.json._embedded['fx:subscriptions']) || [];
     for (const s of items) subs.push(s);
-    url = res.json._links && res.json._links.next && res.json._links.next.href;
+    if (items.length < LIMIT) break; // last (or only) page
   }
   return subs;
 }
