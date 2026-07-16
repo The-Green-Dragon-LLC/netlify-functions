@@ -50,6 +50,16 @@
 [functions."back-in-stock-notify"]
   schedule = "*/15 * * * *"
 
+# Daily subscription stock check. Foxy bills all renewals ~7am store-local and does
+# NOT check inventory first, so this runs before that batch, tallies each due
+# subscription's needs, compares against Airtable, and posts shortfalls to Slack.
+# "0 10 * * 1-5" = 10:00 UTC Mon–Fri = 5am CDT / 4am CST — safely before 7am Central
+# year-round. The Friday run covers Sat/Sun/Mon renewals (stock isn't replenished
+# over the weekend), so no weekend cron is needed. If the store timezone is NOT
+# Central, revisit this hour together with the FOXY_TZ env var.
+[functions."subscription-stock-check"]
+  schedule = "0 10 * * 1-5"
+
 # Production — deploys from main branch
 [context.production]
   # Production function URL: https://YOUR-SITE-NAME.netlify.app/.netlify/functions/
