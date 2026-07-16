@@ -526,6 +526,15 @@ exports.handler = async (event) => {
     if (key && (q.key || '') !== key) return { statusCode: 401, body: 'unauthorized' };
   }
 
+  if (q.rawproduct) { // TEMP: inspect raw Airtable product fields
+    try {
+      const fields = (await airtableRecord(PRODUCTS_TABLE, q.rawproduct)) || {};
+      return { statusCode: 200, body: JSON.stringify({ ok: true, keys: Object.keys(fields),
+        Name: fields.Name, Inventory: fields.Inventory, Variants: fields.Variants,
+        variantsType: Array.isArray(fields.Variants) ? 'array' : typeof fields.Variants }) };
+    } catch (e) { return { statusCode: 500, body: JSON.stringify({ ok: false, error: e.message }) }; }
+  }
+
   const opts = {
     dry: q.dry === '1' || q.dry === 'true',
     force: q.force === '1' || q.force === 'true', // bypass the 7am–7pm post window (testing)
