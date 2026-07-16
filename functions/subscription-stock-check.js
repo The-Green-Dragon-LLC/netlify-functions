@@ -489,27 +489,6 @@ async function runCheck({ dateOverride, windowOverride, dry }) {
   return summary;
 }
 
-/* ─── TEMP INSPECTOR (dump one sub's real line items + item_options) ────────── */
-async function inspectSub(subId) {
-  const token = await getAccessToken();
-  const authHeaders = { 'Authorization': `Bearer ${token}`, 'FOXY-API-VERSION': '1' };
-  const subUrl = `https://${FOXY_API_HOST}/subscriptions/${subId}?zoom=transaction_template:items`;
-  const subRes = await httpsReq(subUrl, { headers: authHeaders });
-  const sub = subRes.json || {};
-  const tt = sub._embedded && sub._embedded['fx:transaction_template'];
-  const ttHref = tt && tt._links && tt._links.self && tt._links.self.href;
-  let itemsWithOpts = 'no transaction_template';
-  if (ttHref) {
-    const ttRes = await httpsReq(ttHref + '?zoom=items:item_options', { headers: authHeaders });
-    const items = (((ttRes.json || {})._embedded || {})['fx:items']) || [];
-    itemsWithOpts = items.map((it) => ({
-      code: it.code, name: it.name, quantity: it.quantity,
-      options: (((it._embedded || {})['fx:item_options']) || []).map((o) => ({ name: o.name, value: o.value })),
-    }));
-  }
-  return { subId, next_transaction_date: sub.next_transaction_date, items: itemsWithOpts };
-}
-
 /* ─── HANDLER (scheduled + manual HTTP) ─────────────────────────────────────── */
 exports.handler = async (event) => {
   const q = (event && event.queryStringParameters) || {};
@@ -518,11 +497,6 @@ exports.handler = async (event) => {
   if (event && event.httpMethod) {
     const key = process.env.STOCK_CHECK_KEY;
     if (key && (q.key || '') !== key) return { statusCode: 401, body: 'unauthorized' };
-  }
-
-  if (q.inspect) {
-    try { return { statusCode: 200, body: JSON.stringify({ ok: true, inspect: await inspectSub(q.inspect) }) }; }
-    catch (e) { return { statusCode: 500, body: JSON.stringify({ ok: false, error: e.message }) }; }
   }
 
   const opts = {
