@@ -40,13 +40,14 @@
     Cache-Control = "public, max-age=0, must-revalidate"
 
 # Daily subscription stock check. Foxy bills all renewals ~7am store-local and does
-# NOT check inventory first, so this runs before that batch, tallies each due
-# subscription's needs, compares against Airtable, and posts shortfalls to Slack.
-# "0 10 * * 1-5" = 10:00 UTC Mon–Fri = 5am CDT / 4am CST — safely before 7am Central
-# year-round. The Friday run covers Sat/Sun/Mon renewals (stock isn't replenished
-# over the weekend), so no weekend cron is needed.
+# NOT check inventory first. This runs each weekday MORNING (after 7am, business
+# hours — no middle-of-night pings) and reports the UPCOMING renewals (tomorrow;
+# Friday covers Sat/Sun/Mon) so there's lead time to restock before they bill.
+# "0 14 * * 1-5" = 14:00 UTC Mon–Fri = 9am CDT / 8am CST — after 7am Central
+# year-round and inside the 7am–7pm post window enforced in the function. If the
+# store timezone is NOT Central, revisit this hour together with the FOXY_TZ env var.
 [functions."subscription-stock-check"]
-  schedule = "0 10 * * 1-5"
+  schedule = "0 14 * * 1-5"
 
 # Production — deploys from main branch
 [context.production]
