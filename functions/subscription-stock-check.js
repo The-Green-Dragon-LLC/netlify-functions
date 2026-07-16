@@ -283,11 +283,16 @@ async function airtableRecord(table, id) {
 
 /* Resolve a Foxy line (code + selected differentiator) to the specific inventory unit.
  * Returns { key, name, inventory, allowBackorders, aggregated? } or null if unresolvable.
- *  - code is a VARIANT record  → use it directly (this is the common, correct case).
- *  - code is a PRODUCT with variants → pick the variant matching the differentiator
- *    (the product's own Inventory is 0/meaningless for variant parents). If we can't
- *    match a specific variant, fall back to the SUM of variants (never false-alarms).
- *  - code is a PRODUCT without variants → use the product's own Inventory.
+ *
+ * IMPORTANT Airtable quirk: the GET-record endpoint resolves a record id even when
+ * the URL names a DIFFERENT table (record ids are unique per base) and returns the
+ * record with ITS OWN fields. So we CANNOT tell a product from a variant by which
+ * table URL succeeds — a product id fetched via the Variants table still returns the
+ * product. Instead we fetch once and discriminate by the "Variants" link field:
+ *  - record has a populated "Variants" link → it's a variant-parent PRODUCT (its own
+ *    Inventory is 0/meaningless); pick the variant matching the differentiator, else
+ *    fall back to the SUM of variants (never false-alarms).
+ *  - otherwise (a specific variant, or a simple product) → use its own Inventory.
  *  - non-record-id code → legacy Website-Product-Code formula lookup. */
 async function resolveInventory(code, differentiator) {
   if (!RECORD_ID_RE.test(code)) {
@@ -303,26 +308,23 @@ async function resolveInventory(code, differentiator) {
     return null;
   }
 
-  // 1. Is the code itself a variant?
-  const v = await airtableRecord(VARIANTS_TABLE, code);
-  if (v) { const i = readInv(v); return { key: code, name: i.name || code, inventory: i.inventory, allowBackorders: i.allowBackorders }; }
+  // One fetch resolves the record regardless of table (cross-table id resolution).
+  const rec = (await airtableRecord(PRODUCTS_TABLE, code)) || (await airtableRecord(VARIANTS_TABLE, code));
+  if (!rec) return null;
 
-  // 2. Otherwise it should be a product.
-  const p = await airtableRecord(PRODUCTS_TABLE, code);
-  if (!p) return null;
-  const prodName = p.Name || code;
-  // "Variants" is a linked-record field → array of variant record-id strings (be
-  // tolerant of {id} objects too, just in case).
-  const variantIds = (Array.isArray(p.Variants) ? p.Variants : [])
+  // "Variants" is a Products-only link field → array of variant record-id strings
+  // (tolerate {id} objects too). Present + non-empty ⇒ this is a variant-parent product.
+  const variantIds = (Array.isArray(rec.Variants) ? rec.Variants : [])
     .map((x) => (typeof x === 'string' ? x : (x && x.id))).filter(Boolean);
 
   if (!variantIds.length) {
-    // Simple product (stock tracked at product level).
-    const i = readInv(p);
-    return { key: code, name: prodName, inventory: i.inventory, allowBackorders: i.allowBackorders };
+    // A specific variant, or a simple product — its own Inventory is the real stock.
+    const i = readInv(rec);
+    return { key: code, name: i.name || code, inventory: i.inventory, allowBackorders: i.allowBackorders };
   }
 
-  // Product WITH variants: the parent Inventory is 0 — resolve the specific variant.
+  // Variant-parent product: resolve the chosen variant by its differentiator.
+  const prodName = rec.Name || code;
   const variants = [];
   for (const vid of variantIds) {
     const vr = await airtableRecord(VARIANTS_TABLE, vid);
@@ -335,7 +337,7 @@ async function resolveInventory(code, differentiator) {
   }
   // No differentiator, or it didn't match a variant name → safe aggregate (won't false-alarm).
   const total = variants.reduce((s, x) => s + x.inventory, 0);
-  return { key: code, name: `${prodName} (all variants)`, inventory: total, allowBackorders: truthy(p['Allow Backorders']), aggregated: true };
+  return { key: code, name: `${prodName} (all variants)`, inventory: total, allowBackorders: truthy(rec['Allow Backorders']), aggregated: true };
 }
 
 /* ─── SLACK ─────────────────────────────────────────────────────────────────── */
@@ -524,22 +526,6 @@ exports.handler = async (event) => {
   if (event && event.httpMethod) {
     const key = process.env.STOCK_CHECK_KEY;
     if (key && (q.key || '') !== key) return { statusCode: 401, body: 'unauthorized' };
-  }
-
-  if (q.crosstest) { // TEMP: does GET /{table}/{id} resolve across tables?
-    try {
-      const prodId = 'recy4JRo1Ug4FRSQA';  // OPiA PRODUCT
-      const varId = 'recwqTM6v2l95rq0q';   // OPiA Wild Cherry VARIANT
-      const probe = async (table, id) => {
-        const f = await airtableRecord(table, id);
-        return f ? { Name: f.Name, Inventory: f.Inventory, hasVariants: Array.isArray(f.Variants) && f.Variants.length > 0 } : null;
-      };
-      return { statusCode: 200, body: JSON.stringify({ ok: true,
-        productId_via_VARIANTS: await probe(VARIANTS_TABLE, prodId),
-        productId_via_PRODUCTS: await probe(PRODUCTS_TABLE, prodId),
-        variantId_via_VARIANTS: await probe(VARIANTS_TABLE, varId),
-        variantId_via_PRODUCTS: await probe(PRODUCTS_TABLE, varId) }) };
-    } catch (e) { return { statusCode: 500, body: JSON.stringify({ ok: false, error: e.message }) }; }
   }
 
   const opts = {
