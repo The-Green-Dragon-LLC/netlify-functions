@@ -402,6 +402,40 @@ async function runCheck({ dateOverride, windowOverride, dry }) {
   return summary;
 }
 
+/* ─── DEBUG (temporary diagnostics; no secrets) ─────────────────────────────── */
+async function runDebug() {
+  const token = await getAccessToken();
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'FOXY-API-VERSION': '1' };
+  const subsUrl = await resolveSubscriptionsUrl(authHeaders);
+  const u = new URL(subsUrl);
+
+  // Total active subscriptions (no date filter).
+  const a = await httpsReq(subsUrl + (subsUrl.includes('?') ? '&' : '?') + 'is_active=true&limit=1',
+    { headers: authHeaders });
+
+  // Active subs due in the next 60 days, with a small sample zoomed.
+  const maxUTC = addDays(localDate(new Date()), 60) + 'T23:59:59Z';
+  const p = new URLSearchParams({
+    is_active: 'true', 'next_transaction_date:lessthanorequal': maxUTC,
+    limit: '3', zoom: 'transaction_template:items,customer',
+  });
+  const f = await httpsReq(subsUrl + (subsUrl.includes('?') ? '&' : '?') + p.toString(), { headers: authHeaders });
+  const sample = ((f.json && f.json._embedded && f.json._embedded['fx:subscriptions']) || []).map((s) => ({
+    id: subIdOf(s), next_transaction_date: s.next_transaction_date, is_active: s.is_active, end_date: s.end_date,
+    items: (((s._embedded || {})['fx:transaction_template'] || {})._embedded || {})['fx:items']
+      ? s._embedded['fx:transaction_template']._embedded['fx:items'].map((i) => ({ code: i.code, qty: i.quantity, name: i.name }))
+      : 'NO_ITEMS_EMBEDDED',
+  }));
+
+  return {
+    subsHost: u.host, subsPath: u.pathname,
+    activeTotal: a.json ? a.json.total_items : null, activeStatus: a.status,
+    filteredNext60dTotal: f.json ? f.json.total_items : null, filteredStatus: f.status,
+    filterErrorText: f.ok ? undefined : (f.text || '').slice(0, 300),
+    sample,
+  };
+}
+
 /* ─── HANDLER (scheduled + manual HTTP) ─────────────────────────────────────── */
 exports.handler = async (event) => {
   const q = (event && event.queryStringParameters) || {};
@@ -410,6 +444,11 @@ exports.handler = async (event) => {
   if (event && event.httpMethod) {
     const key = process.env.STOCK_CHECK_KEY;
     if (key && (q.key || '') !== key) return { statusCode: 401, body: 'unauthorized' };
+  }
+
+  if (q.debug === '1') {
+    try { return { statusCode: 200, body: JSON.stringify({ ok: true, debug: await runDebug() }) }; }
+    catch (e) { return { statusCode: 500, body: JSON.stringify({ ok: false, error: e.message }) }; }
   }
 
   const opts = {
