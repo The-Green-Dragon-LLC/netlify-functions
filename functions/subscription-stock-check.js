@@ -298,7 +298,10 @@ async function resolveInventory(code, differentiator) {
   const p = await airtableRecord(PRODUCTS_TABLE, code);
   if (!p) return null;
   const prodName = p[F.PROD_NAME] || code;
-  const variantIds = Array.isArray(p[F.PROD_VARIANTS]) ? p[F.PROD_VARIANTS] : [];
+  // Linked-record fields come back as an array of record-id strings via the REST API;
+  // be tolerant of {id} objects too, just in case.
+  const variantIds = (Array.isArray(p[F.PROD_VARIANTS]) ? p[F.PROD_VARIANTS] : [])
+    .map((x) => (typeof x === 'string' ? x : (x && x.id))).filter(Boolean);
 
   if (!variantIds.length) {
     // Simple product (stock tracked at product level).
