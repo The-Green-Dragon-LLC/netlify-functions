@@ -409,30 +409,40 @@ async function runDebug() {
   const subsUrl = await resolveSubscriptionsUrl(authHeaders);
   const u = new URL(subsUrl);
 
-  // Total active subscriptions (no date filter).
-  const a = await httpsReq(subsUrl + (subsUrl.includes('?') ? '&' : '?') + 'is_active=true&limit=1',
-    { headers: authHeaders });
+  const join = (extra) => subsUrl + (subsUrl.includes('?') ? '&' : '?') + extra;
 
-  // Active subs due in the next 60 days, with a small sample zoomed.
-  const maxUTC = addDays(localDate(new Date()), 60) + 'T23:59:59Z';
-  const p = new URLSearchParams({
-    is_active: 'true', 'next_transaction_date:lessthanorequal': maxUTC,
-    limit: '3', zoom: 'transaction_template:items,customer',
-  });
-  const f = await httpsReq(subsUrl + (subsUrl.includes('?') ? '&' : '?') + p.toString(), { headers: authHeaders });
-  const sample = ((f.json && f.json._embedded && f.json._embedded['fx:subscriptions']) || []).map((s) => ({
+  // 1. UNFILTERED active subs (ground truth) — sample their real dates + items.
+  const a = await httpsReq(join('is_active=true&limit=5&zoom=transaction_template:items,customer'),
+    { headers: authHeaders });
+  const unfilteredSample = ((a.json && a.json._embedded && a.json._embedded['fx:subscriptions']) || []).map((s) => ({
     id: subIdOf(s), next_transaction_date: s.next_transaction_date, is_active: s.is_active, end_date: s.end_date,
     items: (((s._embedded || {})['fx:transaction_template'] || {})._embedded || {})['fx:items']
       ? s._embedded['fx:transaction_template']._embedded['fx:items'].map((i) => ({ code: i.code, qty: i.quantity, name: i.name }))
       : 'NO_ITEMS_EMBEDDED',
   }));
 
+  // 2. Same active subs but with a VERY wide date filter (+10y). If this returns
+  //    the full count, the colon-modifier date filter works and any 0 in the real
+  //    run is just far-future data; if it returns 0, the date filter is broken.
+  const wideMax = addDays(localDate(new Date()), 3650) + 'T23:59:59Z';
+  const w = await httpsReq(join(new URLSearchParams({
+    is_active: 'true', 'next_transaction_date:lessthanorequal': wideMax, limit: '1',
+  }).toString()), { headers: authHeaders });
+
+  // 3. Next 60 days (what a normal run would roughly see).
+  const max60 = addDays(localDate(new Date()), 60) + 'T23:59:59Z';
+  const f = await httpsReq(join(new URLSearchParams({
+    is_active: 'true', 'next_transaction_date:lessthanorequal': max60, limit: '1',
+  }).toString()), { headers: authHeaders });
+
   return {
     subsHost: u.host, subsPath: u.pathname,
     activeTotal: a.json ? a.json.total_items : null, activeStatus: a.status,
+    wideFilterTotal_plus10y: w.json ? w.json.total_items : null, wideStatus: w.status,
+    wideFilterUrlSuffix: 'next_transaction_date:lessthanorequal=' + wideMax,
     filteredNext60dTotal: f.json ? f.json.total_items : null, filteredStatus: f.status,
-    filterErrorText: f.ok ? undefined : (f.text || '').slice(0, 300),
-    sample,
+    filterErrorText: w.ok ? undefined : (w.text || '').slice(0, 300),
+    unfilteredSample,
   };
 }
 
