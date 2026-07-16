@@ -1,18 +1,22 @@
 /**
- * SUBSCRIPTION STOCK CHECK — DAILY PRE-BILLING INVENTORY GUARD
+ * SUBSCRIPTION STOCK CHECK — DAILY LOOK-AHEAD INVENTORY GUARD
  * ────────────────────────────────────────────────────────────────────────────
  * FoxyCart runs ALL subscription renewals in one batch around ~7am store-local
  * time and does NOT check inventory before billing. So a subscription can bill
  * and commit us to ship something we don't have in stock. This scheduled
- * function runs BEFORE that 7am batch, tallies what every due subscription
- * needs, compares it against Airtable (the inventory source of record), and
- * posts a Slack digest of any subscriptions we can't fully ship.
+ * function runs each weekday MORNING (after 7am, in business hours — no
+ * middle-of-the-night pings), tallies what the UPCOMING renewals need, compares
+ * against Airtable (the inventory source of record), and posts a Slack digest of
+ * any subscriptions we can't fully ship — with lead time to restock before they bill.
  *
- * WINDOW (store-local):
- *   • Mon–Thu → just today's renewals.
- *   • Fri     → Fri + Sat + Sun + Mon, because stock won't be replenished over
- *               the weekend, so weekend + Monday renewals must be vetted before
- *               the team leaves Friday.
+ * WINDOW (store-local, look-ahead): we run AFTER ~7am, by which point "today" has
+ * already billed and Foxy has advanced those subs, so we report the UPCOMING day(s):
+ *   • Mon–Thu → tomorrow.
+ *   • Fri     → Sat + Sun + Mon (no weekend runs; Monday bills before Monday's run).
+ * Every billing day is covered by the prior weekday's run.
+ *
+ * POST WINDOW: the digest is only posted to Slack between 7am and 7pm store-local,
+ * so a run (scheduled or manual) outside business hours never notifies anyone.
  *
  * SHORTFALL LOGIC = AGGREGATE DEMAND: sum the units each SKU needs across ALL
  * subscriptions in the window and compare to ONE current stock number (a single
@@ -20,15 +24,17 @@
  * Airtable are never reported (Foxy will let them ship).
  *
  * WHY AIRTABLE (not Webflow): Airtable is the inventory source of record; the
- * Webflow CMS inventory is a downstream sync. The Foxy line-item `code`/SKU
- * equals the Airtable record id (the "Website Product Code" formula = RECORD_ID()),
- * so a SKU → inventory lookup is a direct record fetch (variants then products).
+ * Webflow CMS inventory is a downstream sync. Each Foxy line resolves to a specific
+ * Airtable record: the line `code` is usually the VARIANT record id; when it's the
+ * PARENT PRODUCT id (whose Inventory formula is 0 for variant parents), we use the
+ * line's differentiator option (Flavor/Size/…) to pick the right variant.
  *
  * MANUAL RUN (for testing): the handler also responds to a direct HTTP hit.
  *   ?key=<STOCK_CHECK_KEY>   required if STOCK_CHECK_KEY env is set
  *   ?dry=1                   compute + return JSON, do NOT post to Slack
+ *   ?force=1                 bypass the 7am–7pm post window (still posts)
  *   ?date=YYYY-MM-DD         pretend "today" is this store-local date
- *   ?window=N                override the window to N inclusive days
+ *   ?window=N                report N upcoming days (starting tomorrow)
  *
  * Env: FOXY_CLIENT_ID/SECRET/REFRESH_TOKEN, AIRTABLE_API_KEY, SLACK_WEBHOOK_URL.
  *      Optional: FOXY_TZ (default America/Chicago), FOXY_STORE_ID (else resolved),
@@ -140,14 +146,26 @@ function niceDate(ymd) {
   }).format(new Date(ymd + 'T12:00:00Z'));
 }
 
-/* Build the target date window given a store-local "today". */
+/* Current hour (0–23) in the store timezone. */
+function localHour(date) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour: '2-digit', hour12: false }).formatToParts(date);
+  const h = parseInt(((parts.find((p) => p.type === 'hour') || {}).value) || '0', 10);
+  return h === 24 ? 0 : h;
+}
+
+/* Build the LOOK-AHEAD window of billing dates to report, given store-local "today".
+ * We run in the morning AFTER Foxy's ~7am billing (so posts land in business hours,
+ * not the middle of the night). By then "today" has already billed and Foxy has
+ * advanced those subs, so we report the UPCOMING day(s) — giving lead time to restock
+ * before they bill:
+ *   • Mon–Thu → tomorrow.
+ *   • Fri     → Sat + Sun + Mon (no weekend runs; Monday bills before Monday's run).
+ * Every billing day is covered by the prior weekday's run. */
 function buildWindow(todayLocal, windowOverride) {
-  let days;
-  if (windowOverride && windowOverride > 0) days = windowOverride;
-  else if (weekdayOf(todayLocal) === 5) days = 4; // Friday → Fri..Mon
-  else days = 1;
+  const count = (windowOverride && windowOverride > 0) ? windowOverride
+    : (weekdayOf(todayLocal) === 5 ? 3 : 1); // Friday → Sat, Sun, Mon
   const dates = [];
-  for (let i = 0; i < days; i++) dates.push(addDays(todayLocal, i));
+  for (let i = 0; i < count; i++) dates.push(addDays(todayLocal, 1 + i)); // start at tomorrow
   return dates;
 }
 
@@ -233,17 +251,14 @@ function toInt(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
-/* Airtable field IDs (stable; confirmed via schema on base appWUsGD3byrYcN3l).
- * We read records with ?returnFieldsByFieldId=true so a field rename can't break us. */
-const F = {
-  PROD_INV: 'fldE6TlVlGrBevthh',       // Products "Inventory" (formula; = 0 for variant parents)
-  PROD_VARIANTS: 'fldPZ1uHTIaISJ3pX',  // Products → linked variant records
-  PROD_BACKORDER: 'fld23D3gZpoQzCIyh', // Products "Allow Backorders" (checkbox)
-  PROD_NAME: 'fld4KivrRSWqRZoSL',      // Products name
-  VAR_INV: 'fldYOJdFD7qtukkgj',        // Variants "Inventory" (formula)
-  VAR_BACKORDER: 'fld0OUl6A0Mtkg7qX',  // Variants "Allow Backorders" (checkbox)
-  VAR_NAME: 'fldos8nb9jVi7OfRN',       // Variants name (ends with the differentiator, e.g. "… Wild Cherry")
-};
+/* Airtable field NAMES (confirmed via schema on base appWUsGD3byrYcN3l). Both the
+ * Products and Product Variants tables share these; the Products table additionally
+ * has "Variants" (a link to its variant records). We read by name — the single-record
+ * GET does NOT honor ?returnFieldsByFieldId, so field-id reads come back undefined. */
+const truthy = (v) => v === true || v === 'true';
+function readInv(fields) {
+  return { inventory: toInt(fields.Inventory), allowBackorders: truthy(fields['Allow Backorders']), name: fields.Name };
+}
 
 /* Foxy item_option names that identify WHICH variant a product-level line is for. */
 const DIFFERENTIATOR_OPTS = new Set(['flavor', 'size', 'strain', 'strength', 'type']);
@@ -257,16 +272,14 @@ function differentiatorOf(item) {
   return '';
 }
 
-/* Fetch one Airtable record's fields (keyed by field id), or null on 404. */
+/* Fetch one Airtable record's fields (keyed by field NAME), or null on 404. */
 async function airtableRecord(table, id) {
-  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}/${id}?returnFieldsByFieldId=true`;
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}/${id}`;
   const res = await httpsReq(url, { headers: airtableHeaders() });
   if (res.ok && res.json && res.json.fields) return res.json.fields;
   if (res.status !== 404) console.error(`[stock-check] Airtable ${table}/${id} → ${res.status}`);
   return null;
 }
-
-const truthy = (v) => v === true || v === 'true';
 
 /* Resolve a Foxy line (code + selected differentiator) to the specific inventory unit.
  * Returns { key, name, inventory, allowBackorders, aggregated? } or null if unresolvable.
@@ -283,8 +296,8 @@ async function resolveInventory(code, differentiator) {
       const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}?filterByFormula=${formula}&maxRecords=1`;
       const res = await httpsReq(url, { headers: airtableHeaders() });
       if (res.ok && res.json && (res.json.records || []).length) {
-        const r = res.json.records[0];
-        return { key: r.id, name: (r.fields && r.fields.Name) || code, inventory: toInt(r.fields && r.fields.Inventory), allowBackorders: truthy(r.fields && r.fields['Allow Backorders']) };
+        const r = res.json.records[0]; const i = readInv(r.fields || {});
+        return { key: r.id, name: i.name || code, inventory: i.inventory, allowBackorders: i.allowBackorders };
       }
     }
     return null;
@@ -292,27 +305,28 @@ async function resolveInventory(code, differentiator) {
 
   // 1. Is the code itself a variant?
   const v = await airtableRecord(VARIANTS_TABLE, code);
-  if (v) return { key: code, name: v[F.VAR_NAME] || code, inventory: toInt(v[F.VAR_INV]), allowBackorders: truthy(v[F.VAR_BACKORDER]) };
+  if (v) { const i = readInv(v); return { key: code, name: i.name || code, inventory: i.inventory, allowBackorders: i.allowBackorders }; }
 
   // 2. Otherwise it should be a product.
   const p = await airtableRecord(PRODUCTS_TABLE, code);
   if (!p) return null;
-  const prodName = p[F.PROD_NAME] || code;
-  // Linked-record fields come back as an array of record-id strings via the REST API;
-  // be tolerant of {id} objects too, just in case.
-  const variantIds = (Array.isArray(p[F.PROD_VARIANTS]) ? p[F.PROD_VARIANTS] : [])
+  const prodName = p.Name || code;
+  // "Variants" is a linked-record field → array of variant record-id strings (be
+  // tolerant of {id} objects too, just in case).
+  const variantIds = (Array.isArray(p.Variants) ? p.Variants : [])
     .map((x) => (typeof x === 'string' ? x : (x && x.id))).filter(Boolean);
 
   if (!variantIds.length) {
     // Simple product (stock tracked at product level).
-    return { key: code, name: prodName, inventory: toInt(p[F.PROD_INV]), allowBackorders: truthy(p[F.PROD_BACKORDER]) };
+    const i = readInv(p);
+    return { key: code, name: prodName, inventory: i.inventory, allowBackorders: i.allowBackorders };
   }
 
   // Product WITH variants: the parent Inventory is 0 — resolve the specific variant.
   const variants = [];
   for (const vid of variantIds) {
     const vr = await airtableRecord(VARIANTS_TABLE, vid);
-    if (vr) variants.push({ id: vid, name: String(vr[F.VAR_NAME] || ''), inventory: toInt(vr[F.VAR_INV]), allowBackorders: truthy(vr[F.VAR_BACKORDER]) });
+    if (vr) { const i = readInv(vr); variants.push({ id: vid, name: String(i.name || ''), inventory: i.inventory, allowBackorders: i.allowBackorders }); }
   }
   if (differentiator) {
     const want = differentiator.toLowerCase();
@@ -321,7 +335,7 @@ async function resolveInventory(code, differentiator) {
   }
   // No differentiator, or it didn't match a variant name → safe aggregate (won't false-alarm).
   const total = variants.reduce((s, x) => s + x.inventory, 0);
-  return { key: code, name: `${prodName} (all variants)`, inventory: total, allowBackorders: truthy(p[F.PROD_BACKORDER]), aggregated: true };
+  return { key: code, name: `${prodName} (all variants)`, inventory: total, allowBackorders: truthy(p['Allow Backorders']), aggregated: true };
 }
 
 /* ─── SLACK ─────────────────────────────────────────────────────────────────── */
@@ -389,7 +403,7 @@ function buildSlackMessage(windowDates, subsChecked, shortfalls, unresolved, all
 }
 
 /* ─── CORE ──────────────────────────────────────────────────────────────────── */
-async function runCheck({ dateOverride, windowOverride, dry }) {
+async function runCheck({ dateOverride, windowOverride, dry, force }) {
   if (!process.env.AIRTABLE_API_KEY && !process.env.AIRTABLE_TOKEN) throw new Error('AIRTABLE_API_KEY not set');
 
   const todayLocal = dateOverride || localDate(new Date());
@@ -476,18 +490,28 @@ async function runCheck({ dateOverride, windowOverride, dry }) {
     unresolved: unresolved.map((u) => ({ code: u.code, name: u.name, demand: u.demand })),
   };
 
-  // 4. Post to Slack (unless dry, or a clean run with all-clear suppressed).
+  // 4. Post to Slack — never in the middle of the night. Only post between 7am and
+  //    7pm store-local, so a scheduled (or manual) run outside business hours won't
+  //    ping anyone. `force` bypasses the window for testing; `dry` never posts.
+  summary.slackPosted = false;
   const allClearSuppressed = clean && String(process.env.STOCK_CHECK_ALLCLEAR || '').toLowerCase() === 'off';
-  if (!dry && !allClearSuppressed) {
+  const hour = localHour(new Date());
+  const inBusinessHours = hour >= 7 && hour < 19;
+  if (dry) {
+    summary.slackPosted = false;
+  } else if (!inBusinessHours && !force) {
+    summary.postSkipped = `outside 7am–7pm ${TZ} (local hour ${hour})`;
+  } else if (allClearSuppressed) {
+    summary.postSkipped = 'all-clear suppressed (STOCK_CHECK_ALLCLEAR=off)';
+  } else {
     const { text, blocks } = buildSlackMessage(windowDates, subsChecked, shortfalls, unresolved, clean);
     summary.slackPosted = await postToSlack(text, blocks);
-  } else {
-    summary.slackPosted = false;
   }
 
   console.log('[stock-check] complete', JSON.stringify({
     window: windowDates, subsChecked, skusChecked: demand.size,
-    shortfalls: shortfalls.length, unresolved: unresolved.length, dry: !!dry, posted: summary.slackPosted,
+    shortfalls: shortfalls.length, unresolved: unresolved.length,
+    dry: !!dry, localHour: hour, posted: summary.slackPosted, postSkipped: summary.postSkipped,
   }));
   return summary;
 }
@@ -504,6 +528,7 @@ exports.handler = async (event) => {
 
   const opts = {
     dry: q.dry === '1' || q.dry === 'true',
+    force: q.force === '1' || q.force === 'true', // bypass the 7am–7pm post window (testing)
     dateOverride: /^\d{4}-\d{2}-\d{2}$/.test(q.date || '') ? q.date : null,
     windowOverride: q.window ? parseInt(q.window, 10) : null,
   };
