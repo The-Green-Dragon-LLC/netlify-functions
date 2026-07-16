@@ -168,16 +168,19 @@ async function resolveSubscriptionsUrl(authHeaders) {
   return subsHref || (storeHref.replace(/\/$/, '') + '/subscriptions');
 }
 
-/* Fetch active subscriptions with next_transaction_date in a padded UTC window,
- * embedding the transaction_template items + the customer. Paginated. */
-async function fetchDueSubscriptions(authHeaders, minDate, maxDate) {
+/* Fetch all active subscriptions, embedding the transaction_template items +
+ * the customer. Paginated.
+ *
+ * We deliberately do NOT use Foxy's next_transaction_date filter: the
+ * colon-modifier form (`next_transaction_date:lessthanorequal=<ISO datetime>`)
+ * returned 0 even for a +10-year window (confirmed live against store 112423),
+ * so relying on it would silently miss every due subscription. Instead we pull
+ * active subs and bucket them by store-local date in code (runCheck) — the
+ * authoritative filter anyway. Active-sub counts are modest and paginated at 200. */
+async function fetchActiveSubscriptions(authHeaders) {
   const base = await resolveSubscriptionsUrl(authHeaders);
-  const minUTC = addDays(minDate, -1) + 'T00:00:00Z'; // pad ±1 day for tz safety
-  const maxUTC = addDays(maxDate, 1) + 'T23:59:59Z';
   const params = new URLSearchParams({
     is_active: 'true',
-    'next_transaction_date:greaterthanorequal': minUTC,
-    'next_transaction_date:lessthanorequal': maxUTC,
     zoom: 'transaction_template:items,customer',
     limit: '200',
   });
@@ -209,6 +212,7 @@ function customerLabel(sub) {
 /* Won't-actually-bill guard: a subscription with an end_date on or before its
  * next transaction date is ending and Foxy won't charge it. */
 function willBill(sub, billDate) {
+  if (sub.is_active === false) return false; // defensive: in case the is_active filter is ignored
   const end = String(sub.end_date || '').trim().slice(0, 10);
   if (end && end <= billDate) return false;
   if (sub.is_frozen === true) return false;
@@ -330,7 +334,7 @@ async function runCheck({ dateOverride, windowOverride, dry }) {
   // 1. List active subscriptions in the (padded) window.
   const token = await getAccessToken();
   const authHeaders = { 'Authorization': `Bearer ${token}`, 'FOXY-API-VERSION': '1' };
-  const rawSubs = await fetchDueSubscriptions(authHeaders, windowDates[0], windowDates[windowDates.length - 1]);
+  const rawSubs = await fetchActiveSubscriptions(authHeaders);
 
   // 2. Keep only subs actually billing on a target date, and build demand.
   const demand = new Map();   // code → total qty needed across the window
