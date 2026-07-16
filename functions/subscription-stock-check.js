@@ -233,33 +233,92 @@ function toInt(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function readInv(fields) {
-  const ab = fields['Allow Backorders'];
-  return {
-    inventory: toInt(fields.Inventory),
-    allowBackorders: ab === true || ab === 'true',
-  };
+/* Airtable field IDs (stable; confirmed via schema on base appWUsGD3byrYcN3l).
+ * We read records with ?returnFieldsByFieldId=true so a field rename can't break us. */
+const F = {
+  PROD_INV: 'fldE6TlVlGrBevthh',       // Products "Inventory" (formula; = 0 for variant parents)
+  PROD_VARIANTS: 'fldPZ1uHTIaISJ3pX',  // Products → linked variant records
+  PROD_BACKORDER: 'fld23D3gZpoQzCIyh', // Products "Allow Backorders" (checkbox)
+  PROD_NAME: 'fld4KivrRSWqRZoSL',      // Products name
+  VAR_INV: 'fldYOJdFD7qtukkgj',        // Variants "Inventory" (formula)
+  VAR_BACKORDER: 'fld0OUl6A0Mtkg7qX',  // Variants "Allow Backorders" (checkbox)
+  VAR_NAME: 'fldos8nb9jVi7OfRN',       // Variants name (ends with the differentiator, e.g. "… Wild Cherry")
+};
+
+/* Foxy item_option names that identify WHICH variant a product-level line is for. */
+const DIFFERENTIATOR_OPTS = new Set(['flavor', 'size', 'strain', 'strength', 'type']);
+
+/* The selected variant differentiator for a Foxy line item (e.g. "Wild Cherry"), or ''. */
+function differentiatorOf(item) {
+  const opts = ((item._embedded || {})['fx:item_options']) || [];
+  for (const o of opts) {
+    if (o && o.name && DIFFERENTIATOR_OPTS.has(String(o.name).toLowerCase())) return String(o.value || '').trim();
+  }
+  return '';
 }
 
-/* Returns { inventory, allowBackorders } or null if the code can't be resolved. */
-async function inventoryForCode(code) {
-  if (RECORD_ID_RE.test(code)) {
+/* Fetch one Airtable record's fields (keyed by field id), or null on 404. */
+async function airtableRecord(table, id) {
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}/${id}?returnFieldsByFieldId=true`;
+  const res = await httpsReq(url, { headers: airtableHeaders() });
+  if (res.ok && res.json && res.json.fields) return res.json.fields;
+  if (res.status !== 404) console.error(`[stock-check] Airtable ${table}/${id} → ${res.status}`);
+  return null;
+}
+
+const truthy = (v) => v === true || v === 'true';
+
+/* Resolve a Foxy line (code + selected differentiator) to the specific inventory unit.
+ * Returns { key, name, inventory, allowBackorders, aggregated? } or null if unresolvable.
+ *  - code is a VARIANT record  → use it directly (this is the common, correct case).
+ *  - code is a PRODUCT with variants → pick the variant matching the differentiator
+ *    (the product's own Inventory is 0/meaningless for variant parents). If we can't
+ *    match a specific variant, fall back to the SUM of variants (never false-alarms).
+ *  - code is a PRODUCT without variants → use the product's own Inventory.
+ *  - non-record-id code → legacy Website-Product-Code formula lookup. */
+async function resolveInventory(code, differentiator) {
+  if (!RECORD_ID_RE.test(code)) {
+    const formula = encodeURIComponent(`{${WEBSITE_CODE_FIELD}}="${String(code).replace(/"/g, '\\"')}"`);
     for (const table of [VARIANTS_TABLE, PRODUCTS_TABLE]) {
-      const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}/${code}`;
+      const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}?filterByFormula=${formula}&maxRecords=1`;
       const res = await httpsReq(url, { headers: airtableHeaders() });
-      if (res.ok && res.json && res.json.fields) return readInv(res.json.fields);
-      if (res.status !== 404) console.error(`[stock-check] inventory fetch ${table}/${code} → ${res.status}`);
+      if (res.ok && res.json && (res.json.records || []).length) {
+        const r = res.json.records[0];
+        return { key: r.id, name: (r.fields && r.fields.Name) || code, inventory: toInt(r.fields && r.fields.Inventory), allowBackorders: truthy(r.fields && r.fields['Allow Backorders']) };
+      }
     }
     return null;
   }
-  // Fallback: match on the Website Product Code formula for any non-record-id code.
-  const formula = encodeURIComponent(`{${WEBSITE_CODE_FIELD}}="${String(code).replace(/"/g, '\\"')}"`);
-  for (const table of [VARIANTS_TABLE, PRODUCTS_TABLE]) {
-    const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}?filterByFormula=${formula}&maxRecords=1`;
-    const res = await httpsReq(url, { headers: airtableHeaders() });
-    if (res.ok && res.json && (res.json.records || []).length) return readInv(res.json.records[0].fields);
+
+  // 1. Is the code itself a variant?
+  const v = await airtableRecord(VARIANTS_TABLE, code);
+  if (v) return { key: code, name: v[F.VAR_NAME] || code, inventory: toInt(v[F.VAR_INV]), allowBackorders: truthy(v[F.VAR_BACKORDER]) };
+
+  // 2. Otherwise it should be a product.
+  const p = await airtableRecord(PRODUCTS_TABLE, code);
+  if (!p) return null;
+  const prodName = p[F.PROD_NAME] || code;
+  const variantIds = Array.isArray(p[F.PROD_VARIANTS]) ? p[F.PROD_VARIANTS] : [];
+
+  if (!variantIds.length) {
+    // Simple product (stock tracked at product level).
+    return { key: code, name: prodName, inventory: toInt(p[F.PROD_INV]), allowBackorders: truthy(p[F.PROD_BACKORDER]) };
   }
-  return null;
+
+  // Product WITH variants: the parent Inventory is 0 — resolve the specific variant.
+  const variants = [];
+  for (const vid of variantIds) {
+    const vr = await airtableRecord(VARIANTS_TABLE, vid);
+    if (vr) variants.push({ id: vid, name: String(vr[F.VAR_NAME] || ''), inventory: toInt(vr[F.VAR_INV]), allowBackorders: truthy(vr[F.VAR_BACKORDER]) });
+  }
+  if (differentiator) {
+    const want = differentiator.toLowerCase();
+    const match = variants.find((x) => x.name.toLowerCase().includes(want));
+    if (match) return { key: match.id, name: match.name, inventory: match.inventory, allowBackorders: match.allowBackorders };
+  }
+  // No differentiator, or it didn't match a variant name → safe aggregate (won't false-alarm).
+  const total = variants.reduce((s, x) => s + x.inventory, 0);
+  return { key: code, name: `${prodName} (all variants)`, inventory: total, allowBackorders: truthy(p[F.PROD_BACKORDER]), aggregated: true };
 }
 
 /* ─── SLACK ─────────────────────────────────────────────────────────────────── */
@@ -339,10 +398,15 @@ async function runCheck({ dateOverride, windowOverride, dry }) {
   const authHeaders = { 'Authorization': `Bearer ${token}`, 'FOXY-API-VERSION': '1' };
   const rawSubs = await fetchActiveSubscriptions(authHeaders);
 
-  // 2. Keep only subs actually billing on a target date, and build demand.
-  const demand = new Map();   // code → total qty needed across the window
-  const affected = new Map(); // code → [{ subId, customer, qty, billDate }]
-  const nameFor = new Map();  // code → human item name (from the Foxy line)
+  // 2. For each due sub, resolve every line to its specific inventory unit (the
+  //    selected variant) and build aggregate demand keyed by that unit. Foxy zoom
+  //    is 2 levels deep, so we fetch each due sub's transaction_template items WITH
+  //    item_options (the variant flavor/size/etc. lives in item_options) separately.
+  const demand = new Map();        // inventory key → total qty needed across the window
+  const affected = new Map();      // inventory key → [{ subId, customer, qty, billDate }]
+  const info = new Map();          // inventory key → resolved { name, inventory, allowBackorders, aggregated }
+  const unresolvedMap = new Map(); // code → { name, demand, subs }
+  const resolveCache = new Map();  // `${code}|${diff}` → resolved | null
   let subsChecked = 0;
 
   for (const sub of rawSubs) {
@@ -351,7 +415,13 @@ async function runCheck({ dateOverride, windowOverride, dry }) {
     if (!willBill(sub, billDate)) continue;
 
     const tt = sub._embedded && sub._embedded['fx:transaction_template'];
-    const items = (tt && tt._embedded && tt._embedded['fx:items']) || [];
+    const ttHref = tt && tt._links && tt._links.self && tt._links.self.href;
+    let items = [];
+    if (ttHref) {
+      const r = await httpsReq(ttHref + '?zoom=items:item_options', { headers: authHeaders });
+      items = (((r.json || {})._embedded || {})['fx:items']) || [];
+    }
+    if (!items.length) items = (tt && tt._embedded && tt._embedded['fx:items']) || []; // fallback: no options
     if (!items.length) continue;
 
     subsChecked++;
@@ -362,27 +432,37 @@ async function runCheck({ dateOverride, windowOverride, dry }) {
       const code = String(it.code || '').trim();
       if (!code) continue;
       const qty = toInt(it.quantity) || 1;
-      demand.set(code, (demand.get(code) || 0) + qty);
-      if (!affected.has(code)) affected.set(code, []);
-      affected.get(code).push({ subId, customer, qty, billDate });
-      if (!nameFor.has(code)) nameFor.set(code, String(it.name || '').trim() || code);
+      const diff = differentiatorOf(it);
+
+      const cacheKey = `${code}|${diff}`;
+      if (!resolveCache.has(cacheKey)) resolveCache.set(cacheKey, await resolveInventory(code, diff));
+      const resolved = resolveCache.get(cacheKey);
+
+      if (!resolved) { // SKU not found in Airtable — surface, never silently drop
+        const u = unresolvedMap.get(code) || { name: String(it.name || '').trim() || code, demand: 0, subs: [] };
+        u.demand += qty; u.subs.push({ subId, customer, qty, billDate });
+        unresolvedMap.set(code, u);
+        continue;
+      }
+      const key = resolved.key;
+      demand.set(key, (demand.get(key) || 0) + qty);
+      if (!affected.has(key)) affected.set(key, []);
+      affected.get(key).push({ subId, customer, qty, billDate });
+      if (!info.has(key)) info.set(key, resolved);
     }
   }
 
-  // 3. Check inventory per unique code and compute shortfalls.
+  // 3. Compute shortfalls from the resolved inventory.
   const shortfalls = [];
-  const unresolved = [];
-  for (const [code, need] of demand) {
-    const inv = await inventoryForCode(code);
-    const entry = { code, name: nameFor.get(code) || code, demand: need, subs: affected.get(code) || [] };
-    if (inv === null) { unresolved.push(entry); continue; }
+  for (const [key, need] of demand) {
+    const inv = info.get(key);
     if (inv.allowBackorders) continue;                 // backorderable → never flag
     if (need > inv.inventory) {
-      shortfalls.push({ ...entry, inventory: inv.inventory, short: need - inv.inventory });
+      shortfalls.push({ code: key, name: inv.name, demand: need, inventory: inv.inventory, short: need - inv.inventory, aggregated: inv.aggregated, subs: affected.get(key) || [] });
     }
   }
-  // Worst shortfall first.
-  shortfalls.sort((a, b) => b.short - a.short);
+  shortfalls.sort((a, b) => b.short - a.short); // worst first
+  const unresolved = Array.from(unresolvedMap.entries()).map(([code, u]) => ({ code, name: u.name, demand: u.demand, subs: u.subs }));
 
   const clean = shortfalls.length === 0 && unresolved.length === 0;
   const summary = {
