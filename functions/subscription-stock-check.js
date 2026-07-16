@@ -526,12 +526,19 @@ exports.handler = async (event) => {
     if (key && (q.key || '') !== key) return { statusCode: 401, body: 'unauthorized' };
   }
 
-  if (q.rawproduct) { // TEMP: inspect raw Airtable product fields
+  if (q.crosstest) { // TEMP: does GET /{table}/{id} resolve across tables?
     try {
-      const fields = (await airtableRecord(PRODUCTS_TABLE, q.rawproduct)) || {};
-      return { statusCode: 200, body: JSON.stringify({ ok: true, keys: Object.keys(fields),
-        Name: fields.Name, Inventory: fields.Inventory, Variants: fields.Variants,
-        variantsType: Array.isArray(fields.Variants) ? 'array' : typeof fields.Variants }) };
+      const prodId = 'recy4JRo1Ug4FRSQA';  // OPiA PRODUCT
+      const varId = 'recwqTM6v2l95rq0q';   // OPiA Wild Cherry VARIANT
+      const probe = async (table, id) => {
+        const f = await airtableRecord(table, id);
+        return f ? { Name: f.Name, Inventory: f.Inventory, hasVariants: Array.isArray(f.Variants) && f.Variants.length > 0 } : null;
+      };
+      return { statusCode: 200, body: JSON.stringify({ ok: true,
+        productId_via_VARIANTS: await probe(VARIANTS_TABLE, prodId),
+        productId_via_PRODUCTS: await probe(PRODUCTS_TABLE, prodId),
+        variantId_via_VARIANTS: await probe(VARIANTS_TABLE, varId),
+        variantId_via_PRODUCTS: await probe(PRODUCTS_TABLE, varId) }) };
     } catch (e) { return { statusCode: 500, body: JSON.stringify({ ok: false, error: e.message }) }; }
   }
 
