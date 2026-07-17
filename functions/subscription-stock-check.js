@@ -38,7 +38,9 @@
  *
  * Env: FOXY_CLIENT_ID/SECRET/REFRESH_TOKEN, AIRTABLE_API_KEY, SLACK_WEBHOOK_URL.
  *      Optional: FOXY_TZ (default America/Chicago), FOXY_STORE_ID (else resolved),
- *      STOCK_CHECK_KEY, STOCK_CHECK_ALLCLEAR ("off" to suppress the green post).
+ *      STOCK_CHECK_KEY, STOCK_CHECK_ALLCLEAR ("off" to suppress the green post),
+ *      STOCK_CHECK_IGNORE_CODES (comma-sep line codes to always skip; default
+ *      "dragon-master,dragon-slayer" — no-physical-inventory membership products).
  */
 
 const https = require('https');
@@ -53,6 +55,15 @@ const WEBSITE_CODE_FIELD = 'Website Product Code'; // RECORD_ID() formula, for t
 const TZ = process.env.FOXY_TZ || 'America/Chicago';
 const RECORD_ID_RE = /^rec[A-Za-z0-9]{14}$/;
 const MAX_PAGES = 50; // safety cap on subscription pagination
+
+// Foxy line codes to ALWAYS ignore — membership/subscription products with no
+// physical inventory to ship (e.g. the DragonSlayer/DragonMaster discount tiers).
+// Matched case-insensitively against the line `code`. Override with a
+// comma-separated STOCK_CHECK_IGNORE_CODES env var.
+const IGNORE_CODES = new Set(
+  (process.env.STOCK_CHECK_IGNORE_CODES || 'dragon-master,dragon-slayer')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+);
 
 /* ─── HTTPS helper (same shape as back-in-stock-notify) ─────────────────────── */
 function httpsReq(url, opts, bodyObj) {
@@ -450,6 +461,7 @@ async function runCheck({ dateOverride, windowOverride, dry, force }) {
     for (const it of items) {
       const code = String(it.code || '').trim();
       if (!code) continue;
+      if (IGNORE_CODES.has(code.toLowerCase())) continue; // no-physical-inventory membership products
       const qty = toInt(it.quantity) || 1;
       const diff = differentiatorOf(it);
 
