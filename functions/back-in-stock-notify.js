@@ -91,15 +91,19 @@ async function fetchPendingRequests(token) {
   return rows;
 }
 
-/* Current inventory for a product code. Returns a number, or null if not found.
+/* Current inventory + discontinued flag for a product code. Returns
+ * { inventory:Number, discontinued:Boolean }, or null if not found.
  * Tries a direct record fetch (code === Airtable record id) in Variants then
- * Products; falls back to a Website-Product-Code lookup for any odd code. */
-async function inventoryForCode(code) {
+ * Products; falls back to a Website-Product-Code lookup for any odd code.
+ * Discontinued is an Airtable checkbox (present & true only when checked). */
+async function itemForCode(code) {
   if (RECORD_ID_RE.test(code)) {
     for (const table of [VARIANTS_TABLE, PRODUCTS_TABLE]) {
       const url = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${table}/${code}`;
       const res = await httpsReq(url, { headers: airtableHeaders() });
-      if (res.ok && res.json && res.json.fields) return toInt(res.json.fields.Inventory);
+      if (res.ok && res.json && res.json.fields) {
+        return { inventory: toInt(res.json.fields.Inventory), discontinued: res.json.fields.Discontinued === true };
+      }
       if (res.status !== 404) {
         console.error(`[bis-notify] inventory fetch ${table}/${code} → ${res.status}`);
       }
@@ -113,7 +117,8 @@ async function inventoryForCode(code) {
       + `?filterByFormula=${formula}&maxRecords=1`;
     const res = await httpsReq(url, { headers: airtableHeaders() });
     if (res.ok && res.json && (res.json.records || []).length) {
-      return toInt(res.json.records[0].fields.Inventory);
+      const f = res.json.records[0].fields;
+      return { inventory: toInt(f.Inventory), discontinued: f.Discontinued === true };
     }
   }
   return null;
@@ -162,8 +167,8 @@ async function runSweep() {
   if (!token) throw new Error('AIRTABLE_API_KEY not set');
 
   const pending = await fetchPendingRequests(token);
-  const invCache = new Map(); // code → inventory number|null (fetch each code once)
-  let notified = 0, stillOut = 0, unknown = 0, errors = 0;
+  const itemCache = new Map(); // code → {inventory,discontinued}|null (fetch each code once)
+  let notified = 0, stillOut = 0, unknown = 0, discontinued = 0, errors = 0;
 
   for (const row of pending) {
     const code = String(row.f['Product Code'] || '').trim();
@@ -171,10 +176,12 @@ async function runSweep() {
     if (!code || !email) { errors++; continue; }
 
     try {
-      if (!invCache.has(code)) invCache.set(code, await inventoryForCode(code));
-      const inv = invCache.get(code);
+      if (!itemCache.has(code)) itemCache.set(code, await itemForCode(code));
+      const item = itemCache.get(code);
 
-      if (inv === null) { unknown++; continue; }      // couldn't resolve the item — leave Pending
+      if (item === null) { unknown++; continue; }      // couldn't resolve the item — leave Pending
+      if (item.discontinued) { discontinued++; continue; } // discontinued — never notify, leave Pending
+      const inv = item.inventory;
       if (inv <= 0) { stillOut++; continue; }          // still out of stock — leave Pending
 
       // Back in stock → alert, then mark Notified (mark immediately so an
@@ -197,7 +204,7 @@ async function runSweep() {
     }
   }
 
-  const summary = { pending: pending.length, notified, stillOut, unknown, errors };
+  const summary = { pending: pending.length, notified, stillOut, unknown, discontinued, errors };
   console.log('[bis-notify] sweep complete', JSON.stringify(summary));
   return summary;
 }
