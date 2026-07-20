@@ -128,22 +128,13 @@
     return c;
   }
 
-  /* Render the widget. `targets` is a list of {code,label,name,image,price,itemType}.
-   * One target → simple email form. Many → a chooser of the sold-out options. */
-  function render(targets, subtitle) {
+  /* Render the notify box for ONE out-of-stock target
+   * ({code,label,name,image,price,itemType}). Re-rendering replaces any prior box,
+   * so it's safe to call again whenever the shopper switches variants. */
+  function render(target, subtitle) {
     var c = container();
-    if (!c || !targets.length) return;
+    if (!c || !target) return;
     injectStyles();
-
-    var many = targets.length > 1;
-    var optionsHtml = '';
-    if (many) {
-      optionsHtml = '<select id="gd-bis-target" aria-label="Choose a sold-out option">' +
-        '<option value="" disabled selected>Choose an option…</option>' +
-        targets.map(function (t, i) {
-          return '<option value="' + i + '">' + escapeHtml(t.label || t.name) + '</option>';
-        }).join('') + '</select>';
-    }
 
     // NB: this widget can be embedded inside another <form> (Foxy's #foxy-form add-to-cart
     // form, or a Webflow Form Block). HTML forbids nested <form> elements, so we must NOT
@@ -157,7 +148,6 @@
         '<p class="gd-bis-sub">' + escapeHtml(subtitle || "Enter your email and we'll let you know the moment it's back.") + '</p>' +
         '<div class="gd-bis-form">' +
           '<div class="gd-bis-row">' +
-            optionsHtml +
             '<input type="email" id="gd-bis-email" placeholder="you@email.com" autocomplete="email" required>' +
             '<button type="button" id="gd-bis-submit">Notify me</button>' +
           '</div>' +
@@ -168,7 +158,7 @@
       '</div>';
     c.style.display = '';
 
-    function go(e) { if (e) e.preventDefault(); submit(c, targets, many); }
+    function go(e) { if (e) e.preventDefault(); submit(c, target); }
     var btn = c.querySelector('#gd-bis-submit');
     if (btn) btn.addEventListener('click', go);
     // Enter in the email field submits our widget; preventDefault stops it bubbling up
@@ -177,17 +167,6 @@
     if (emailEl) emailEl.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.keyCode === 13) go(e);
     });
-
-    // If the shopper picks a variant in the product's own selector, pre-select the
-    // matching sold-out option here (progressive enhancement; no-op if it never fires).
-    c._targets = targets;
-    c._preselect = function (code) {
-      var sel = c.querySelector('#gd-bis-target');
-      if (!sel) return;
-      for (var i = 0; i < targets.length; i++) {
-        if (targets[i].code === code) { sel.value = String(i); break; }
-      }
-    };
   }
 
   function hide() {
@@ -195,18 +174,12 @@
     if (c) { c.style.display = 'none'; c.innerHTML = ''; }
   }
 
-  function submit(c, targets, many) {
+  function submit(c, target) {
     var msg = c.querySelector('#gd-bis-msg');
     var btn = c.querySelector('#gd-bis-submit');
     var email = (c.querySelector('#gd-bis-email').value || '').trim();
     var optIn = c.querySelector('#gd-bis-optin').checked;
 
-    var target = targets[0];
-    if (many) {
-      var idx = c.querySelector('#gd-bis-target').value;
-      if (idx === '') { setMsg(msg, 'err', 'Please choose which option you want.'); return; }
-      target = targets[Number(idx)];
-    }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setMsg(msg, 'err', 'Please enter a valid email.'); return; }
 
     btn.disabled = true;
@@ -253,24 +226,39 @@
     });
   }
 
+  /* Normalize a variant object dispatched by quickview (dgc:variantSelected) into
+   * a notify target. quickview's variant carries the per-attribute fields (strain/
+   * size/flavor/strength/type) rather than a single `label`, so derive the label the
+   * same way readVariants() does, and prefer the sale price. */
+  function eventVariantToTarget(product, v) {
+    var label = '';
+    for (var i = 0; i < VARIANT_ATTRS.length; i++) {
+      if (v[VARIANT_ATTRS[i]]) { label = v[VARIANT_ATTRS[i]]; break; }
+    }
+    return {
+      code: v.code,
+      label: label || v.name || '',
+      name: product.name,
+      image: v.image || '',
+      price: v.salePrice || v.price || '',
+      itemType: 'Variant',
+    };
+  }
+
   /* ─── Decide what (if anything) to show ───────────────────────────────────── */
   function init() {
     var product = readProduct();
     if (!product) return;
     var variants = readVariants();
 
-    var toTarget = {
-      product: {
-        code: product.sku, label: product.name, name: product.name,
-        image: productImage(), price: product.price, itemType: 'Product',
-      },
-      variant: function (v) {
-        return { code: v.code, label: v.label, name: product.name, image: v.image, price: v.price, itemType: 'Variant' };
-      },
+    var productTarget = {
+      code: product.sku, label: product.name, name: product.name,
+      image: productImage(), price: product.price, itemType: 'Product',
     };
 
+    // No variants: show the product-level form only if the product itself is OOS.
     if (!variants.length) {
-      if (isOOS(product)) render([toTarget.product]);
+      if (isOOS(product)) render(productTarget);
       return;
     }
 
@@ -278,20 +266,26 @@
     if (!oos.length) { hide(); return; }             // everything available
 
     if (oos.length === variants.length) {            // whole product sold out
-      render([toTarget.product], "This product is sold out. Enter your email and we'll let you know when it's restocked.");
+      render(productTarget, "This product is sold out. Enter your email and we'll let you know when it's restocked.");
       return;
     }
 
-    // Some options sold out — offer a chooser of just those.
-    render(oos.map(toTarget.variant),
-      "Some options are sold out. Pick one and we'll email you when it's back.");
-
-    // Sync the chooser with the product's own variant selector when possible.
+    // SOME options sold out, others available. Don't list the sold-out options in a
+    // dropdown of our own — instead follow the shopper's OWN variant selector: reveal
+    // the notify box only when the option they've selected is out of stock (targeting
+    // exactly that option), and hide it the moment they pick an in-stock option or
+    // clear the selection. quickview dispatches these events on every change.
     document.addEventListener('dgc:variantSelected', function (e) {
       var v = e && e.detail && e.detail.variant;
-      var c = document.getElementById('gd-back-in-stock');
-      if (v && v.code && c && c._preselect) c._preselect(v.code);
+      if (v && v.code && isOOS(v)) {
+        var target = eventVariantToTarget(product, v);
+        render(target, '"' + (target.label || 'This option') +
+          '" is sold out — enter your email and we\'ll let you know when it\'s back.');
+      } else {
+        hide();
+      }
     });
+    document.addEventListener('dgc:variantCleared', hide);
   }
 
   if (document.readyState === 'loading') {
