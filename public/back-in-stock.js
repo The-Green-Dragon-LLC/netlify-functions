@@ -39,6 +39,12 @@
 
   function txt(root, sel) { var el = root.querySelector(sel); return el ? (el.textContent || '').trim() : ''; }
   function isOOS(item) { return Number(item.inventory) <= 0 && item.allowBackorders !== 'true'; }
+  // Discontinued items never come back, so we never offer a notify signup for them.
+  // Webflow renders the CMS checkbox as the text "true"/"false"; an unexposed field
+  // is empty → treated as not discontinued (no effect).
+  function isDiscontinued(item) {
+    return String((item && item.discontinued) || '').trim().toLowerCase() === 'true';
+  }
 
   // The product page ALSO renders related-product cards (each wrapped in
   // .foxy_product_collection-item) that carry their own .foxy_product_item_info
@@ -60,6 +66,7 @@
       sku: txt(root, '.foxy_product_item_sku'),
       inventory: txt(root, '.foxy_product_item_inventory') || '0',
       allowBackorders: txt(root, '.foxy_product_item_allow-backorders'),
+      discontinued: txt(root, '.foxy_product_item_discontinued'),
       price: txt(root, '.foxy_product_item_sale-price') || txt(root, '.foxy_product_item_price'),
     };
   }
@@ -72,6 +79,7 @@
         name: txt(el, '.foxy_variants_item-name'),
         inventory: txt(el, '.foxy_variants_item-inventory') || '0',
         allowBackorders: txt(el, '.foxy_variants_item-allow-backorders'),
+        discontinued: txt(el, '.foxy_variants_item-discontinued'),
         image: (el.querySelector('.foxy_variants_item-image') || {}).src || '',
         price: txt(el, '.foxy_variants_item-sale-price') || txt(el, '.foxy_variants_item-price'),
       };
@@ -226,35 +234,23 @@
     });
   }
 
-  /* Normalize a variant object dispatched by quickview (dgc:variantSelected) into
-   * a notify target. quickview's variant carries the per-attribute fields (strain/
-   * size/flavor/strength/type) rather than a single `label`, so derive the label the
-   * same way readVariants() does, and prefer the sale price. */
-  function eventVariantToTarget(product, v) {
-    var label = '';
-    for (var i = 0; i < VARIANT_ATTRS.length; i++) {
-      if (v[VARIANT_ATTRS[i]]) { label = v[VARIANT_ATTRS[i]]; break; }
-    }
-    return {
-      code: v.code,
-      label: label || v.name || '',
-      name: product.name,
-      image: v.image || '',
-      price: v.salePrice || v.price || '',
-      itemType: 'Variant',
-    };
-  }
-
   /* ─── Decide what (if anything) to show ───────────────────────────────────── */
   function init() {
     var product = readProduct();
     if (!product) return;
+
+    // Discontinued products are never coming back — never offer a notify signup.
+    if (isDiscontinued(product)) { hide(); return; }
+
     var variants = readVariants();
 
     var productTarget = {
       code: product.sku, label: product.name, name: product.name,
       image: productImage(), price: product.price, itemType: 'Product',
     };
+    function variantTarget(v) {
+      return { code: v.code, label: v.label, name: product.name, image: v.image, price: v.price, itemType: 'Variant' };
+    }
 
     // No variants: show the product-level form only if the product itself is OOS.
     if (!variants.length) {
@@ -262,24 +258,34 @@
       return;
     }
 
-    var oos = variants.filter(isOOS);
-    if (!oos.length) { hide(); return; }             // everything available
+    // Discontinued individual options are excluded from everything below.
+    var live = variants.filter(function (v) { return !isDiscontinued(v); });
+    if (!live.length) { hide(); return; }
 
-    if (oos.length === variants.length) {            // whole product sold out
+    var oos = live.filter(isOOS);
+    if (!oos.length) { hide(); return; }             // every live option available
+
+    if (oos.length === live.length) {                // every live option sold out
       render(productTarget, "This product is sold out. Enter your email and we'll let you know when it's restocked.");
       return;
     }
 
-    // SOME options sold out, others available. Don't list the sold-out options in a
+    // SOME live options sold out, others available. Don't list the sold-out options in a
     // dropdown of our own — instead follow the shopper's OWN variant selector: reveal
     // the notify box only when the option they've selected is out of stock (targeting
     // exactly that option), and hide it the moment they pick an in-stock option or
     // clear the selection. quickview dispatches these events on every change.
+    //
+    // quickview's event object does NOT carry the discontinued flag (or a normalized
+    // label), so match the selected code back to our own readVariants() data by SKU.
+    var byCode = {};
+    variants.forEach(function (v) { if (v.code) byCode[v.code] = v; });
+
     document.addEventListener('dgc:variantSelected', function (e) {
-      var v = e && e.detail && e.detail.variant;
-      if (v && v.code && isOOS(v)) {
-        var target = eventVariantToTarget(product, v);
-        render(target, '"' + (target.label || 'This option') +
+      var sel = e && e.detail && e.detail.variant;
+      var v = (sel && sel.code) ? byCode[sel.code] : null;
+      if (v && isOOS(v) && !isDiscontinued(v)) {
+        render(variantTarget(v), '"' + (v.label || 'This option') +
           '" is sold out — enter your email and we\'ll let you know when it\'s back.');
       } else {
         hide();
