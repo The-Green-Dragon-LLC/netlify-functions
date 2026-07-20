@@ -97,9 +97,10 @@
   function injectStyles() {
     if (document.getElementById('gd-bis-styles')) return;
     var css =
-      '#gd-back-in-stock .gd-bis{border:1px solid #e2e2e2;border-radius:10px;padding:16px 18px;margin:16px 0;background:#fafafa;font-family:inherit}' +
-      '#gd-back-in-stock .gd-bis-title{font-weight:700;margin:0 0 4px;font-size:1.05rem}' +
-      '#gd-back-in-stock .gd-bis-sub{margin:0 0 12px;color:#555;font-size:.9rem}' +
+      '#gd-back-in-stock .gd-bis{border:2px solid ' + BRAND + ';border-left:6px solid ' + BRAND + ';border-radius:10px;padding:18px 20px;margin:20px 0;background:#eefaf2;box-shadow:0 2px 10px rgba(55,183,114,.18);font-family:inherit}' +
+      '#gd-back-in-stock .gd-bis-title{font-weight:800;margin:0 0 4px;font-size:1.2rem;color:' + BRAND + ';display:flex;align-items:center;gap:8px}' +
+      '#gd-back-in-stock .gd-bis-title::before{content:"";flex:0 0 auto;width:10px;height:10px;border-radius:50%;background:' + BRAND + ';box-shadow:0 0 0 4px rgba(55,183,114,.25)}' +
+      '#gd-back-in-stock .gd-bis-sub{margin:0 0 12px;color:#3a3a3a;font-size:.92rem}' +
       '#gd-back-in-stock .gd-bis-row{display:flex;flex-wrap:wrap;gap:8px}' +
       '#gd-back-in-stock select,#gd-back-in-stock input[type=email]{flex:1 1 220px;min-width:0;padding:10px 12px;border:1px solid #ccc;border-radius:8px;font-size:1rem;background:#fff}' +
       '#gd-back-in-stock button{background:' + BRAND + ';color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:1rem;font-weight:600;cursor:pointer}' +
@@ -144,27 +145,37 @@
         }).join('') + '</select>';
     }
 
+    // NB: this widget can be embedded inside another <form> (Foxy's #foxy-form add-to-cart
+    // form, or a Webflow Form Block). HTML forbids nested <form> elements, so we must NOT
+    // render our own <form> — the browser silently drops it, hoisting our fields into the
+    // surrounding form and making a type=submit button submit THAT form (Foxy's "re-select
+    // your variant" popup, or Webflow's "Thank you! Your submission has been received!").
+    // So: a plain <div>, a type=button button, and submission wired by hand (click + Enter).
     c.innerHTML =
       '<div class="gd-bis">' +
         '<p class="gd-bis-title">Out of stock — get notified</p>' +
         '<p class="gd-bis-sub">' + escapeHtml(subtitle || "Enter your email and we'll let you know the moment it's back.") + '</p>' +
-        '<form class="gd-bis-form" novalidate>' +
+        '<div class="gd-bis-form">' +
           '<div class="gd-bis-row">' +
             optionsHtml +
             '<input type="email" id="gd-bis-email" placeholder="you@email.com" autocomplete="email" required>' +
-            '<button type="submit" id="gd-bis-submit">Notify me</button>' +
+            '<button type="button" id="gd-bis-submit">Notify me</button>' +
           '</div>' +
           '<label class="gd-bis-consent"><input type="checkbox" id="gd-bis-optin">' +
             '<span>Also email me about news &amp; offers from The Green Dragon.</span></label>' +
           '<div class="gd-bis-msg" id="gd-bis-msg" role="status"></div>' +
-        '</form>' +
+        '</div>' +
       '</div>';
     c.style.display = '';
 
-    var form = c.querySelector('.gd-bis-form');
-    form.addEventListener('submit', function (e) {
-      e.preventDefault();
-      submit(c, targets, many);
+    function go(e) { if (e) e.preventDefault(); submit(c, targets, many); }
+    var btn = c.querySelector('#gd-bis-submit');
+    if (btn) btn.addEventListener('click', go);
+    // Enter in the email field submits our widget; preventDefault stops it bubbling up
+    // as an implicit submit of any surrounding Foxy / Webflow form.
+    var emailEl = c.querySelector('#gd-bis-email');
+    if (emailEl) emailEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.keyCode === 13) go(e);
     });
 
     // If the shopper picks a variant in the product's own selector, pre-select the
