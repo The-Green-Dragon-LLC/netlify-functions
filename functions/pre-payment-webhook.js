@@ -8,26 +8,70 @@ const {
 } = process.env;
 
 // ─── Cross-sell promo validation ────────────────────────────────────────────
-const CROSSELL_PROMO_CATEGORY  = "CROSSELL_PROMO";
-const CROSSELL_PROMO_LIMIT     = 3;
-const CROSSELL_PRICE_TOLERANCE = 0.01;
-const CROSSELL_PRODUCTS_TABLE  = "tblkLl9qqg654fWi7";
-const CROSSELL_VARIANTS_TABLE  = "tblEtb1aIH5Xk4Nh9";
+const CROSSELL_PROMO_CATEGORY       = "CROSSELL_PROMO";
+const CROSSELL_PROMO_LIMIT          = 3;
+const CROSSELL_PRICE_TOLERANCE      = 0.01;
+const CROSSELL_PRODUCTS_TABLE       = "tblkLl9qqg654fWi7";
+const CROSSELL_VARIANTS_TABLE       = "tblEtb1aIH5Xk4Nh9";
+const CROSSELL_PRIMARY_CATS_TABLE   = "tbliSkVUbug2MYAW7"; // Primary Categories
+const CROSSELL_GENERIC_TABLE        = "tblwkNLyvaTJaGgpD"; // Cross-Sells (generic)
 
 /**
  * Builds a map of { [Foxy code]: regularPrice } for all cross-sell products
  * AND their variants.  Pricing may live at the variant level (parent product
  * has no Price), so we fetch both tables.
+ *
+ * The set of cross-sell products is derived from the SAME sources the popup
+ * uses (see crossell-config.js), so the validator can never reject something
+ * the popup was allowed to offer:
+ *   • Primary Categories → "Cross-sell Product" links  (category cross-sells)
+ *   • active Cross-Sells → "Product" links             (generic cross-sells)
+ * No per-product checkbox is involved — linking a product as a cross-sell is
+ * all that's required for it to validate at checkout.
  */
 async function fetchCrossSellPriceMap(airtableBase) {
   const map = {};
 
-  // 1. Fetch parent products and collect any with a parent-level price + variant IDs
+  // 1. Collect cross-sell product record IDs from both offer sources.
+  const productIds = new Set();
+
+  await airtableBase(CROSSELL_PRIMARY_CATS_TABLE)
+    .select({
+      fields:          ["Cross-sell Product"],
+      filterByFormula: "COUNTA({Cross-sell Product}) > 0",
+    })
+    .eachPage((records, fetchNextPage) => {
+      records.forEach((r) => {
+        (r.get("Cross-sell Product") || []).forEach((id) => productIds.add(id));
+      });
+      fetchNextPage();
+    });
+
+  await airtableBase(CROSSELL_GENERIC_TABLE)
+    .select({
+      fields:          ["Product"],
+      filterByFormula: "{Active} = TRUE()",
+    })
+    .eachPage((records, fetchNextPage) => {
+      records.forEach((r) => {
+        (r.get("Product") || []).forEach((id) => productIds.add(id));
+      });
+      fetchNextPage();
+    });
+
+  if (productIds.size === 0) return map;
+
+  // 2. Fetch those parent products: record any parent-level price + variant IDs.
+  const parentIds     = [...productIds];
+  const parentFormula = parentIds.length === 1
+    ? `RECORD_ID() = "${parentIds[0]}"`
+    : `OR(${parentIds.map((id) => `RECORD_ID() = "${id}"`).join(",")})`;
+
   const allVariantIds = [];
   await airtableBase(CROSSELL_PRODUCTS_TABLE)
     .select({
       fields:          ["Website Product Code", "Price", "Variants"],
-      filterByFormula: "{Cross-sell Promo}",
+      filterByFormula: parentFormula,
     })
     .eachPage((records, fetchNextPage) => {
       records.forEach((r) => {
@@ -40,7 +84,7 @@ async function fetchCrossSellPriceMap(airtableBase) {
       fetchNextPage();
     });
 
-  // 2. Fetch all variant prices for those products
+  // 3. Fetch all variant prices for those products
   if (allVariantIds.length > 0) {
     const formula = allVariantIds.length === 1
       ? `RECORD_ID() = "${allVariantIds[0]}"`
