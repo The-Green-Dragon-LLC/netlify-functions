@@ -165,6 +165,9 @@
         '</div>' +
       '</div>';
     c.style.display = '';
+    // Sold out → there's nothing to buy, so hide the purchase options (subscription +
+    // one-time, both inside #dgc-sub-widget) while the notify box is shown.
+    setPurchaseOptions(false);
 
     function go(e) { if (e) e.preventDefault(); submit(c, target); }
     var btn = c.querySelector('#gd-bis-submit');
@@ -180,6 +183,16 @@
   function hide() {
     var c = document.getElementById('gd-back-in-stock');
     if (c) { c.style.display = 'none'; c.innerHTML = ''; }
+    // Back in (or never out of) stock → restore the normal purchase options.
+    setPurchaseOptions(true);
+  }
+
+  // Show/hide the product's purchase options (subscription + one-time purchase),
+  // which live together in #dgc-sub-widget. Passing false hides them (item sold out),
+  // true restores them (revert to the element's CSS default display).
+  function setPurchaseOptions(visible) {
+    var w = document.getElementById('dgc-sub-widget');
+    if (w) w.style.display = visible ? '' : 'none';
   }
 
   function submit(c, target) {
