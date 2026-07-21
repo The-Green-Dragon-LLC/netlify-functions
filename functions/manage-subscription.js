@@ -863,6 +863,12 @@ function subDetails(sub, subId) {
     nextChargeDate: String(s.next_transaction_date || '').slice(0, 10),
     endDate: String(s.end_date || '').slice(0, 10),
     isActive: s.is_active !== false,
+    // Money totals for the reminder/update email. Foxy gives these as DECIMAL
+    // DOLLARS on the transaction_template (do NOT convert to cents).
+    subtotal: Number(tt.total_item_price) || 0,
+    tax: Number(tt.total_tax) || 0,
+    shipping: Number(tt.total_shipping) || 0,
+    total: Number(tt.total_order) || 0,
     firstName: cust.first_name || '',
     lastName: cust.last_name || '',
     lineItems: items.map((it) => ({
