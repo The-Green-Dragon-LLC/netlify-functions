@@ -30,9 +30,9 @@
   var isProductPage = /\/product\//.test(PATH) || PATH.indexOf('/products-wholesale/') !== -1;
   if (!isProductPage) return;
 
-  // Netlify function endpoint. DEVELOP for staging; swap to prod on go-live:
-  //   prod: https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/back-in-stock-subscribe
-  var FN_URL = 'https://develop--wondrous-bublanina-d440ec.netlify.app/.netlify/functions/back-in-stock-subscribe';
+  // Netlify function endpoint — PRODUCTION. (Develop deploy for staging was:
+  //   https://develop--wondrous-bublanina-d440ec.netlify.app/.netlify/functions/back-in-stock-subscribe)
+  var FN_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/back-in-stock-subscribe';
 
   var VARIANT_ATTRS = ['strain', 'size', 'flavor', 'strength', 'type'];
   var BRAND = '#37b772';
