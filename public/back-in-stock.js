@@ -159,7 +159,7 @@
             '<input type="email" id="gd-bis-email" placeholder="you@email.com" autocomplete="email" required>' +
             '<button type="button" id="gd-bis-submit">Notify me</button>' +
           '</div>' +
-          '<label class="gd-bis-consent"><input type="checkbox" id="gd-bis-optin">' +
+          '<label class="gd-bis-consent"><input type="checkbox" id="gd-bis-optin" autocomplete="off">' +
             '<span>Also email me about news &amp; offers from The Green Dragon.</span></label>' +
           '<div class="gd-bis-msg" id="gd-bis-msg" role="status"></div>' +
         '</div>' +
@@ -178,6 +178,13 @@
     if (emailEl) emailEl.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.keyCode === 13) go(e);
     });
+
+    // Marketing consent must be an explicit user action. Browsers can silently pre-check
+    // this box via autofill or bfcache/form-state restoration, which would record opt-in
+    // the shopper never gave — so force it unchecked on every render (autocomplete="off"
+    // above tells the browser not to autofill it in the first place).
+    var optinEl = c.querySelector('#gd-bis-optin');
+    if (optinEl) optinEl.checked = false;
   }
 
   function hide() {
