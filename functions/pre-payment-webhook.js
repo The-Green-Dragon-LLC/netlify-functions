@@ -9,7 +9,7 @@ const {
 
 // ─── Cross-sell promo validation ────────────────────────────────────────────
 const CROSSELL_PROMO_CATEGORY       = "CROSSELL_PROMO";
-const CROSSELL_PROMO_LIMIT          = 3;
+const CROSSELL_DEFAULT_DISCOUNT_PCT = 40;   // used only when Airtable leaves the discount blank
 const CROSSELL_PRICE_TOLERANCE      = 0.01;
 const CROSSELL_PRODUCTS_TABLE       = "tblkLl9qqg654fWi7";
 const CROSSELL_VARIANTS_TABLE       = "tblEtb1aIH5Xk4Nh9";
@@ -17,48 +17,88 @@ const CROSSELL_PRIMARY_CATS_TABLE   = "tbliSkVUbug2MYAW7"; // Primary Categories
 const CROSSELL_GENERIC_TABLE        = "tblwkNLyvaTJaGgpD"; // Cross-Sells (generic)
 
 /**
- * Builds a map of { [Foxy code]: regularPrice } for all cross-sell products
- * AND their variants.  Pricing may live at the variant level (parent product
- * has no Price), so we fetch both tables.
+ * Builds a map of { [Foxy code]: { price, discountPct, maxQty } } for all
+ * cross-sell products AND their variants.  Pricing may live at the variant
+ * level (parent product has no Price), so we fetch both tables.
  *
- * The set of cross-sell products is derived from the SAME sources the popup
- * uses (see crossell-config.js), so the validator can never reject something
- * the popup was allowed to offer:
- *   • Primary Categories → "Cross-sell Product" links  (category cross-sells)
- *   • active Cross-Sells → "Product" links             (generic cross-sells)
+ * The offer terms — products, discount %, and max qty — are read from the SAME
+ * Airtable sources the popup uses (see crossell-config.js), so the validator
+ * can never reject something the popup was allowed to offer:
+ *   • Primary Categories → "Cross-sell Product" links, "Cross-sell Discount",
+ *     "Cross-sell Max Qty"                              (category cross-sells)
+ *   • active Cross-Sells → "Product" links, "Discount", "Max Qty"
+ *                                                       (generic cross-sells)
  * No per-product checkbox is involved — linking a product as a cross-sell is
  * all that's required for it to validate at checkout.
+ *
+ * Airtable percent fields return decimal fractions (0.5 = 50% off), matching
+ * how crossell-config.js normalises them.  A blank discount falls back to
+ * CROSSELL_DEFAULT_DISCOUNT_PCT and a blank max qty means "no cap", which is
+ * what the popup does (`effectiveMaxQty` → Infinity).
+ *
+ * When the same product is offered by more than one cross-sell row, the most
+ * permissive terms win (largest discount, largest qty cap) so a legitimate
+ * add from any one of those offers still validates.
  */
 async function fetchCrossSellPriceMap(airtableBase) {
   const map = {};
 
-  // 1. Collect cross-sell product record IDs from both offer sources.
-  const productIds = new Set();
+  // 1. Collect cross-sell product record IDs plus each product's offer terms.
+  //    terms: { [productRecordId]: { discountPct, maxQty } }
+  const terms = {};
+
+  const mergeTerms = (productId, discountPct, maxQty) => {
+    const prev = terms[productId];
+    if (!prev) {
+      terms[productId] = { discountPct, maxQty };
+      return;
+    }
+    // Most permissive wins: biggest discount, biggest cap (Infinity = no cap).
+    prev.discountPct = Math.max(prev.discountPct, discountPct);
+    prev.maxQty      = Math.max(prev.maxQty, maxQty);
+  };
 
   await airtableBase(CROSSELL_PRIMARY_CATS_TABLE)
     .select({
-      fields:          ["Cross-sell Product"],
+      fields:          ["Cross-sell Product", "Cross-sell Discount", "Cross-sell Max Qty"],
       filterByFormula: "COUNTA({Cross-sell Product}) > 0",
     })
     .eachPage((records, fetchNextPage) => {
       records.forEach((r) => {
-        (r.get("Cross-sell Product") || []).forEach((id) => productIds.add(id));
+        const rawDiscount = r.get("Cross-sell Discount");   // null | 0.0–1.0
+        const rawMaxQty   = r.get("Cross-sell Max Qty");    // null | integer
+        const discountPct = rawDiscount != null
+          ? Math.round(rawDiscount * 100)
+          : CROSSELL_DEFAULT_DISCOUNT_PCT;
+        const maxQty      = rawMaxQty != null ? rawMaxQty : Infinity;
+        (r.get("Cross-sell Product") || []).forEach((id) =>
+          mergeTerms(id, discountPct, maxQty)
+        );
       });
       fetchNextPage();
     });
 
   await airtableBase(CROSSELL_GENERIC_TABLE)
     .select({
-      fields:          ["Product"],
+      fields:          ["Product", "Discount", "Max Qty"],
       filterByFormula: "{Active} = TRUE()",
     })
     .eachPage((records, fetchNextPage) => {
       records.forEach((r) => {
-        (r.get("Product") || []).forEach((id) => productIds.add(id));
+        const rawDiscount = r.get("Discount");   // null | 0.0–1.0
+        const rawMaxQty   = r.get("Max Qty");    // null | integer
+        const discountPct = rawDiscount != null
+          ? Math.round(rawDiscount * 100)
+          : CROSSELL_DEFAULT_DISCOUNT_PCT;
+        const maxQty      = rawMaxQty != null ? rawMaxQty : Infinity;
+        (r.get("Product") || []).forEach((id) =>
+          mergeTerms(id, discountPct, maxQty)
+        );
       });
       fetchNextPage();
     });
 
+  const productIds = new Set(Object.keys(terms));
   if (productIds.size === 0) return map;
 
   // 2. Fetch those parent products: record any parent-level price + variant IDs.
@@ -68,6 +108,7 @@ async function fetchCrossSellPriceMap(airtableBase) {
     : `OR(${parentIds.map((id) => `RECORD_ID() = "${id}"`).join(",")})`;
 
   const allVariantIds = [];
+  const termsByVariantId = {};   // variants inherit their parent product's offer terms
   await airtableBase(CROSSELL_PRODUCTS_TABLE)
     .select({
       fields:          ["Website Product Code", "Price", "Variants"],
@@ -77,9 +118,17 @@ async function fetchCrossSellPriceMap(airtableBase) {
       records.forEach((r) => {
         const code  = r.get("Website Product Code");
         const price = r.get("Price");
-        if (code && price) map[code] = price;          // parent has a price
-        const varIds = r.get("Variants") || [];
-        varIds.forEach(id => allVariantIds.push(id));  // collect variant IDs
+        const t     = terms[r.id] || {
+          discountPct: CROSSELL_DEFAULT_DISCOUNT_PCT,
+          maxQty:      Infinity,
+        };
+        if (code && price) {
+          map[code] = { price, discountPct: t.discountPct, maxQty: t.maxQty };
+        }
+        (r.get("Variants") || []).forEach((id) => {
+          allVariantIds.push(id);          // collect variant IDs
+          termsByVariantId[id] = t;        // and the terms they inherit
+        });
       });
       fetchNextPage();
     });
@@ -99,7 +148,13 @@ async function fetchCrossSellPriceMap(airtableBase) {
         records.forEach((r) => {
           const code  = r.get("Website Product Code");
           const price = r.get("Price");
-          if (code && price) map[code] = price;        // variant-level price
+          const t     = termsByVariantId[r.id] || {
+            discountPct: CROSSELL_DEFAULT_DISCOUNT_PCT,
+            maxQty:      Infinity,
+          };
+          if (code && price) {           // variant-level price
+            map[code] = { price, discountPct: t.discountPct, maxQty: t.maxQty };
+          }
         });
         fetchNextPage();
       });
@@ -292,20 +347,23 @@ exports.handler = async (event, context) => {
         ) {
           // Cross-sell promo item: validate price against Airtable's live data.
           // Quantity limit is checked after this loop where we can sum across all items.
-          const regularPrice = crossellPriceMap[cartItem.code];
+          const offer = crossellPriceMap[cartItem.code];
 
-          if (regularPrice === undefined) {
+          if (offer === undefined) {
             // Code not found in Airtable's cross-sell products — reject.
             // This catches items added with a fabricated CROSSELL_PROMO category.
             console.log(`Unknown cross-sell promo code: ${cartItem.code}`);
             invalidProductCode.push(cartItem.code);
           } else {
-            // Expected price = 40% off the regular Airtable price
-            const expectedPrice = Math.round(regularPrice * 60) / 100;
+            // Expected price uses the discount % configured in Airtable for this
+            // offer (e.g. 50% off → pay 50%), not a hardcoded 40%.
+            const payPct        = 100 - offer.discountPct;
+            const expectedPrice = Math.round(offer.price * payPct) / 100;
             if (cartItem.price < expectedPrice - CROSSELL_PRICE_TOLERANCE) {
               console.log(
                 `Cross-sell price mismatch for ${cartItem.name}: ` +
-                `expected >= ${expectedPrice.toFixed(2)}, got ${cartItem.price}`
+                `expected >= ${expectedPrice.toFixed(2)} ` +
+                `(${offer.discountPct}% off ${offer.price}), got ${cartItem.price}`
               );
               crossellPriceMismatch.push(cartItem.name);
             }
@@ -370,21 +428,35 @@ exports.handler = async (event, context) => {
       })
     );
 
-    // Cross-sell quantity limit — checked here so we can sum across all items
-    const crossellPromoQty = cartItems
+    // Cross-sell quantity limit — checked here so we can sum across all items.
+    // The cap is per product code and comes from Airtable ("Max Qty" /
+    // "Cross-sell Max Qty"), matching how the popup enforces it. A blank value
+    // means no cap. Units beyond the cap are added by the popup at full price
+    // under the DEFAULT category, so they aren't counted here.
+    const crossellQtyByCode = {};
+    cartItems
       .filter(
         (item) =>
           item["_embedded"]["fx:item_category"].code === CROSSELL_PROMO_CATEGORY
       )
-      .reduce((sum, item) => sum + item.quantity, 0);
+      .forEach((item) => {
+        // Foxy can report quantity as a string — coerce before adding.
+        const qty = parseInt(item.quantity, 10) || 0;
+        crossellQtyByCode[item.code] = (crossellQtyByCode[item.code] || 0) + qty;
+      });
 
-    const crossellQtyExceeded = crossellPromoQty > CROSSELL_PROMO_LIMIT;
-
-    if (crossellQtyExceeded) {
-      console.log(
-        `Cross-sell promo qty exceeded: ${crossellPromoQty} > ${CROSSELL_PROMO_LIMIT}`
-      );
-    }
+    const crossellQtyExceeded = [];   // [{ code, qty, maxQty }]
+    Object.keys(crossellQtyByCode).forEach((code) => {
+      const offer = crossellPriceMap[code];
+      if (!offer) return;             // unknown code already rejected above
+      const qty = crossellQtyByCode[code];
+      if (qty > offer.maxQty) {
+        console.log(
+          `Cross-sell promo qty exceeded for ${code}: ${qty} > ${offer.maxQty}`
+        );
+        crossellQtyExceeded.push({ code, qty, maxQty: offer.maxQty });
+      }
+    });
 
     if (
       invalidProductCode.length > 0 ||
@@ -394,7 +466,7 @@ exports.handler = async (event, context) => {
       mismatchMembershipPrice.length > 0 ||
       hasActiveMembership ||
       crossellPriceMismatch.length > 0 ||
-      crossellQtyExceeded
+      crossellQtyExceeded.length > 0
     ) {
       return {
         statusCode: 200,
@@ -429,8 +501,10 @@ exports.handler = async (event, context) => {
               ? `The promotional price for ${crossellPriceMismatch.join(", ")} could not be validated. Please remove the item and add it again from the offer.`
               : ""
           }${
-            crossellQtyExceeded
-              ? `The promotional price is limited to ${CROSSELL_PROMO_LIMIT} units per order. Please reduce the quantity of the promotional item in your cart.`
+            crossellQtyExceeded.length > 0
+              ? `The promotional price is limited to ${crossellQtyExceeded
+                  .map((c) => c.maxQty)
+                  .join(", ")} units per order. Please reduce the quantity of the promotional item in your cart.`
               : ""
           }`,
         }),
