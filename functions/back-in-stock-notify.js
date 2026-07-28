@@ -1,11 +1,18 @@
 /**
  * BACK-IN-STOCK — SCHEDULED NOTIFIER
  * ────────────────────────────────────────────────────────────────────────────
- * Runs on a cron (schedule set in netlify.toml). For every Pending row in the
- * Airtable "Back In Stock Requests" table it checks the item's CURRENT inventory
- * in Airtable (the source of record). When an item is back in stock it fires the
- * Omnisend "back in stock" alert event to that customer and flips the row to
- * Notified so it never sends twice.
+ * Runs ONCE A DAY at 4pm Central. For every Pending row in the Airtable "Back In
+ * Stock Requests" table it checks the item's CURRENT inventory in Airtable (the
+ * source of record). When an item is back in stock it fires the Omnisend "back in
+ * stock" alert event to that customer and flips the row to Notified so it never
+ * sends twice.
+ *
+ * Why the schedule looks odd: Netlify cron is UTC-only and DST-blind, so 4pm Central
+ * is 21:00 UTC in summer and 22:00 UTC in winter. netlify.toml fires at BOTH hours
+ * ("0 21,22 * * *") and the hour guard below drops the one that isn't 4pm locally —
+ * so exactly one sweep runs per day year-round. Alerts therefore batch: an item that
+ * restocks at 9am is emailed at 4pm the same day; one that restocks at 5pm waits for
+ * tomorrow's run.
  *
  * Why Airtable (not Webflow): Airtable is the inventory source of record; Webflow
  * CMS inventory is a downstream sync. The Foxy `code`/SKU stored on each request
@@ -13,11 +20,13 @@
  * so matching a request to its item is a direct record fetch — variants first,
  * then products, with a slug/code fallback for any non-record-id code.
  *
- * Manual run (for testing): the handler also responds to a direct HTTP hit. If
- * env BIS_NOTIFY_KEY is set, an HTTP call must pass ?key=<that value>; scheduled
- * invocations (no httpMethod) always run.
+ * Manual run (for testing): the handler also responds to a direct HTTP hit, and an
+ * HTTP hit BYPASSES the 4pm hour guard so you can test at any time of day. If env
+ * BIS_NOTIFY_KEY is set, an HTTP call must pass ?key=<that value>.
  *
- * Env: AIRTABLE_API_KEY (or AIRTABLE_TOKEN), OMNISEND_API_KEY, optional BIS_NOTIFY_KEY.
+ * Env: AIRTABLE_API_KEY (or AIRTABLE_TOKEN), OMNISEND_API_KEY, optional BIS_NOTIFY_KEY,
+ *      optional BIS_TZ (default America/Chicago) and BIS_SEND_HOUR (default 16).
+ *      If you change BIS_SEND_HOUR or BIS_TZ, revisit the UTC hours in netlify.toml.
  */
 
 const https = require('https');
@@ -33,6 +42,17 @@ const OMNISEND_VERSION = '2026-03-15';
 const ALERT_EVENT_NAME = 'back in stock';
 
 const RECORD_ID_RE = /^rec[A-Za-z0-9]{14}$/;
+
+// Send window: the scheduled sweep only runs when it is this hour in this timezone.
+const TZ = process.env.BIS_TZ || 'America/Chicago';
+const SEND_HOUR = Number(process.env.BIS_SEND_HOUR || 16); // 16 = 4pm store-local
+
+/* Current hour (0–23) in the store timezone. */
+function localHour(date) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour: '2-digit', hour12: false }).formatToParts(date);
+  const h = parseInt(((parts.find((p) => p.type === 'hour') || {}).value) || '0', 10);
+  return h === 24 ? 0 : h;
+}
 
 /* ─── HTTPS helper ────────────────────────────────────────────────────────── */
 function httpsReq(url, opts, bodyObj) {
@@ -211,12 +231,27 @@ async function runSweep() {
 
 /* ─── Handler (scheduled + manual HTTP) ───────────────────────────────────── */
 exports.handler = async (event) => {
+  const isHttp = !!(event && event.httpMethod);
+
   // Direct HTTP invocation (manual test) — optionally gate with BIS_NOTIFY_KEY.
-  if (event && event.httpMethod) {
+  if (isHttp) {
     const key = process.env.BIS_NOTIFY_KEY;
     const given = (event.queryStringParameters || {}).key || '';
     if (key && given !== key) return { statusCode: 401, body: 'unauthorized' };
   }
+
+  // Scheduled runs fire at both 21:00 and 22:00 UTC so that one of them is 4pm
+  // Central in either DST offset; drop the one that isn't. Manual HTTP runs are
+  // exempt so testing works at any hour.
+  if (!isHttp) {
+    const hour = localHour(new Date());
+    if (hour !== SEND_HOUR) {
+      const skipped = `local hour ${hour} in ${TZ}, sends at ${SEND_HOUR}`;
+      console.log('[bis-notify] skipped —', skipped);
+      return { statusCode: 200, body: JSON.stringify({ ok: true, skipped }) };
+    }
+  }
+
   try {
     const summary = await runSweep();
     return { statusCode: 200, body: JSON.stringify({ ok: true, ...summary }) };

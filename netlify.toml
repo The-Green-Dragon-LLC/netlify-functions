@@ -45,10 +45,15 @@
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
 
-# Back-in-stock notifier runs on a cron: every 15 min it checks Airtable inventory
-# for Pending signups and fires the Omnisend "back in stock" alert for restocks.
+# Back-in-stock notifier: once a day at 4pm Central it checks Airtable inventory for
+# Pending signups and fires the Omnisend "back in stock" alert for restocks.
+# Netlify cron is UTC-only with no DST handling, and 4pm Central is 21:00 UTC in
+# summer (CDT) but 22:00 UTC in winter (CST). So we fire at BOTH hours and the
+# function itself drops the wrong one (it proceeds only when the America/Chicago
+# hour is 16 — see BIS_SEND_HOUR / BIS_TZ in back-in-stock-notify.js). Exactly one
+# sweep per day runs year-round. Manual HTTP invocations skip the hour check.
 [functions."back-in-stock-notify"]
-  schedule = "*/15 * * * *"
+  schedule = "0 21,22 * * *"
 
 # Daily subscription stock check. Foxy bills all renewals ~7am store-local and does
 # NOT check inventory first. This runs each weekday MORNING (after 7am, business
