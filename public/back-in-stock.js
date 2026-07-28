@@ -19,9 +19,13 @@
  * Out-of-stock rule (mirrors quickview): inventory <= 0 AND backorders not allowed.
  * Cases handled:
  *   • no variants, product OOS            → email form for the product
- *   • variants, ALL OOS                   → email form for the product
- *   • variants, SOME OOS                  → a chooser of the sold-out options + email
- *                                           (works whether or not the option is selectable)
+ *   • variants, ALL OOS                   → "select an option" prompt first, then the
+ *                                           email form for whichever sold-out option the
+ *                                           shopper picks. A VARIANT IS REQUIRED here —
+ *                                           we never take a product-level signup for a
+ *                                           product that has variants.
+ *   • variants, SOME OOS                  → email form only while a sold-out option is
+ *                                           selected, targeting exactly that option
  */
 (function () {
   'use strict';
@@ -36,6 +40,10 @@
 
   var VARIANT_ATTRS = ['strain', 'size', 'flavor', 'strength', 'type'];
   var BRAND = '#37b772';
+
+  // Set true on a variant product whose every live option is sold out. The shopper must
+  // still say WHICH option they want, so submit() refuses a product-level signup.
+  var variantRequired = false;
 
   function txt(root, sel) { var el = root.querySelector(sel); return el ? (el.textContent || '').trim() : ''; }
   function isOOS(item) { return Number(item.inventory) <= 0 && item.allowBackorders !== 'true'; }
@@ -187,6 +195,26 @@
     if (optinEl) optinEl.checked = false;
   }
 
+  /* Every live option is sold out: there's nothing to buy and no in-stock option to
+   * pick, but we still make the shopper choose one before taking their email. A
+   * product-level signup here would be resolved against the PRODUCT's inventory, so
+   * they'd be alerted as soon as ANY option restocked — likely not the flavor/size they
+   * wanted, and the email couldn't name it. So show the box with the instruction and no
+   * email field; the dgc:variantSelected handler swaps in the real form once they pick. */
+  function renderPrompt(subtitle) {
+    var c = container();
+    if (!c) return;
+    injectStyles();
+    c.innerHTML =
+      '<div class="gd-bis">' +
+        '<p class="gd-bis-title">Out of stock — get notified</p>' +
+        '<p class="gd-bis-sub">' + escapeHtml(subtitle) + '</p>' +
+      '</div>';
+    c.style.display = '';
+    // Everything is sold out, so there is nothing to purchase.
+    setPurchaseOptions(false);
+  }
+
   function hide() {
     var c = document.getElementById('gd-back-in-stock');
     if (c) { c.style.display = 'none'; c.innerHTML = ''; }
@@ -208,6 +236,12 @@
     var email = (c.querySelector('#gd-bis-email').value || '').trim();
     var optIn = c.querySelector('#gd-bis-optin').checked;
 
+    // Belt and braces: on an all-sold-out variant product the prompt state has no email
+    // field at all, so this shouldn't be reachable — but never let a product-level signup
+    // through for a product that has options.
+    if (variantRequired && target.itemType !== 'Variant') {
+      setMsg(msg, 'err', 'Please select an option first.'); return;
+    }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setMsg(msg, 'err', 'Please enter a valid email.'); return; }
 
     btn.disabled = true;
@@ -285,21 +319,30 @@
     var oos = live.filter(isOOS);
     if (!oos.length) { hide(); return; }             // every live option available
 
-    if (oos.length === live.length) {                // every live option sold out
-      render(productTarget, "This product is sold out. Enter your email and we'll let you know when it's restocked.");
-      return;
+    // EVERY live option sold out. Show the box straight away so the signup is
+    // discoverable, but in the "pick an option" state — a variant is required, so no
+    // email field until they choose one. (This used to render a product-level form,
+    // which let a shopper sign up without saying which option they wanted.)
+    var allOut = oos.length === live.length;
+    var PROMPT = "This product is sold out. Select an option above and we'll let you"
+      + " know when that one is back in stock.";
+    if (allOut) {
+      variantRequired = true;
+      renderPrompt(PROMPT);
     }
 
-    // SOME live options sold out, others available. Don't list the sold-out options in a
-    // dropdown of our own — instead follow the shopper's OWN variant selector: reveal
-    // the notify box only when the option they've selected is out of stock (targeting
-    // exactly that option), and hide it the moment they pick an in-stock option or
-    // clear the selection. quickview dispatches these events on every change.
+    // Both cases now follow the shopper's OWN variant selector rather than a dropdown of
+    // our own: reveal the email form only while the selected option is out of stock,
+    // targeting exactly that option. What "nothing usable selected" falls back to differs:
+    //   • ALL sold out  → back to the prompt (still nothing to buy, keep the affordance)
+    //   • SOME sold out → hide entirely, so the normal purchase options come back
     //
     // quickview's event object does NOT carry the discontinued flag (or a normalized
     // label), so match the selected code back to our own readVariants() data by SKU.
     var byCode = {};
     variants.forEach(function (v) { if (v.code) byCode[v.code] = v; });
+
+    function reset() { if (allOut) renderPrompt(PROMPT); else hide(); }
 
     document.addEventListener('dgc:variantSelected', function (e) {
       var sel = e && e.detail && e.detail.variant;
@@ -308,10 +351,10 @@
         render(variantTarget(v), '"' + (v.label || 'This option') +
           '" is sold out — enter your email and we\'ll let you know when it\'s back.');
       } else {
-        hide();
+        reset();
       }
     });
-    document.addEventListener('dgc:variantCleared', hide);
+    document.addEventListener('dgc:variantCleared', reset);
   }
 
   if (document.readyState === 'loading') {
