@@ -173,7 +173,7 @@ https.request = function (options, cb) {
 
 /* ─── RUN ────────────────────────────────────────────────────────────────────── */
 
-process.env.WEBFLOW_API_TOKEN = 'test';
+process.env.WEBFLOW_SEARCH_TOKEN = 'test';
 process.env.AIRTABLE_API_KEY = 'test';
 process.env.SEARCH_INDEX_KEY = 'test-key';
 
