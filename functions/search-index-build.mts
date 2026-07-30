@@ -26,10 +26,15 @@
 // Env: WEBFLOW_SEARCH_TOKEN, AIRTABLE_API_KEY (or AIRTABLE_TOKEN).
 
 import type { Config } from "@netlify/functions";
-import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
-const { build, writeIndex } = require("../lib/search-index-builder.js");
+/* Static import, NOT createRequire(). esbuild cannot statically analyse a
+ * require() obtained from createRequire, so it left the call as a runtime
+ * lookup and never bundled the file — the deploy crashed with
+ * "Cannot find module '../lib/search-index-builder.js'". A static import is
+ * bundled; the default export of a CommonJS module is its module.exports. */
+import builder from "../lib/search-index-builder.js";
+import { writeIndex, codeVersion } from "../lib/search-index-store.mjs";
+const { build } = builder as any;
 
 export default async () => {
   const started = Date.now();

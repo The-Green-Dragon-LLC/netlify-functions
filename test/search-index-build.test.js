@@ -22,9 +22,7 @@
  */
 'use strict';
 
-const https = require('https');
 const path = require('path');
-const { EventEmitter } = require('events');
 
 /* ─── FIXTURES ───────────────────────────────────────────────────────────────── */
 
@@ -147,35 +145,22 @@ function route(p) {
 }
 
 const seenPaths = [];
-/* Flipped by the degradation scenario to simulate WEBFLOW_API_TOKEN lacking the
- * `pages:read` scope — the real 403 that this policy exists to survive. */
+/* Flipped by the degradation scenario to simulate WEBFLOW_SEARCH_TOKEN lacking the
+ * `pages:read` scope — the real 403 that policy exists to survive. */
 let failPages = false;
-https.request = function (options, cb) {
-  const p = options.path || '';
+
+/* The builder uses global fetch, not node:https — it must stay import-free so it
+ * can be bundled into an ESM v2 function. So the stub replaces fetch. */
+globalThis.fetch = async (url) => {
+  const p = String(url);
   seenPaths.push(p);
   if (failPages && p.includes('/pages')) {
-    const res = new EventEmitter();
-    res.statusCode = 403;
-    const body = JSON.stringify({ message: "OAuthForbidden: You are missing the following scopes - 'pages:read'", code: 'missing_scopes' });
-    process.nextTick(() => {
-      cb(res);
-      process.nextTick(() => { res.emit('data', Buffer.from(body)); res.emit('end'); });
-    });
-    const rq = new EventEmitter(); rq.write = () => {}; rq.end = () => {};
-    return rq;
+    return new Response(
+      JSON.stringify({ message: "OAuthForbidden: You are missing the following scopes - 'pages:read'", code: 'missing_scopes' }),
+      { status: 403, headers: { 'content-type': 'application/json' } },
+    );
   }
-  const payload = JSON.stringify(route(p));
-  const res = new EventEmitter();
-  res.statusCode = 200;
-  // Hand the response over BEFORE emitting, so the caller can attach listeners.
-  process.nextTick(() => {
-    cb(res);
-    process.nextTick(() => { res.emit('data', Buffer.from(payload)); res.emit('end'); });
-  });
-  const req = new EventEmitter();
-  req.write = () => {};
-  req.end = () => {};
-  return req;
+  return new Response(JSON.stringify(route(p)), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 
 /* ─── RUN ────────────────────────────────────────────────────────────────────── */

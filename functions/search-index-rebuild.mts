@@ -32,10 +32,15 @@
 // Env: SEARCH_INDEX_KEY, plus everything lib/search-index-builder.js needs.
 
 import type { Config, Context } from "@netlify/functions";
-import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
-const { build, writeIndex, keyMatches } = require("../lib/search-index-builder.js");
+/* Static import, NOT createRequire(). esbuild cannot statically analyse a
+ * require() obtained from createRequire, so it left the call as a runtime
+ * lookup and never bundled the file — the deploy crashed with
+ * "Cannot find module '../lib/search-index-builder.js'". A static import is
+ * bundled; the default export of a CommonJS module is its module.exports. */
+import builder from "../lib/search-index-builder.js";
+import { writeIndex, codeVersion } from "../lib/search-index-store.mjs";
+const { build, keyMatches } = builder as any;
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body, null, 2), {
@@ -74,6 +79,7 @@ export default async (req: Request, _context: Context) => {
           error: String(blobErr?.message || blobErr),
           stack: blobErr?.stack ? String(blobErr.stack).split("\n").slice(0, 6) : undefined,
           buildOk: true,
+          codeVersion: codeVersion(),
           bytes,
           ms: Date.now() - started,
           ...stats,
@@ -81,7 +87,7 @@ export default async (req: Request, _context: Context) => {
       }
     }
 
-    const report = { ok: true, trigger: "manual", dry, bytes, ms: Date.now() - started, blobs, ...stats };
+    const report = { ok: true, trigger: "manual", dry, bytes, ms: Date.now() - started, blobs, ...stats, codeVersion: codeVersion() };
     console.log("[search-index-rebuild]", JSON.stringify(report));
     // Sample docs make it obvious at a glance whether the join actually worked —
     // null prices or zero sales across the board mean it did not.
