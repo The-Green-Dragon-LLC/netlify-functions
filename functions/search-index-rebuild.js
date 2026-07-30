@@ -90,8 +90,9 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: JSON_HEADERS,
-      // A few sample docs make it obvious at a glance whether the join worked.
-      body: JSON.stringify(dry ? { ...report, sample: index.docs.slice(0, 3) } : report, null, 2),
+      // Sample docs make it obvious at a glance whether the join actually worked
+      // — a null price or zero sales across the board means it did not.
+      body: JSON.stringify(dry ? { ...report, sample: index.docs.slice(0, 8) } : report, null, 2),
     };
   } catch (err) {
     console.error('[search-index-rebuild] FAILED', (err && err.stack) || err);
