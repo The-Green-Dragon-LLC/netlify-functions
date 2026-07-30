@@ -145,7 +145,8 @@ process.env.WEBFLOW_API_TOKEN = 'test';
 process.env.AIRTABLE_API_KEY = 'test';
 process.env.SEARCH_INDEX_KEY = 'test-key';
 
-const fn = require(path.join(__dirname, '..', 'functions', 'search-index-build.js'));
+// Test through the HTTP wrapper: it exercises the shared builder AND the key check.
+const fn = require(path.join(__dirname, '..', 'functions', 'search-index-rebuild.js'));
 
 let fails = 0;
 function ok(cond, label, extra) {

@@ -49,10 +49,29 @@ const BROWSER_CACHE = 'public, max-age=300, must-revalidate';
 exports.handler = async (event) => {
   if (event && event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: CORS };
 
+  let index = null;
   try {
     const { getStore } = require('@netlify/blobs');
-    const index = await getStore(BLOB_STORE).get(BLOB_KEY, { type: 'json' });
+    index = await getStore(BLOB_STORE).get(BLOB_KEY, { type: 'json' });
+  } catch (err) {
+    // A read can throw rather than return null when the store does not exist yet
+    // (nothing ever written) or when Blobs is not initialised. Both mean "no index
+    // to serve", so treat them the same and let the detail explain which.
+    // Detail is an infrastructure message only — no stack, since this is public.
+    // For a full diagnosis use search-index-rebuild (key-protected, verbose).
+    console.error('[search-index] blob read threw:', (err && err.stack) || err);
+    return {
+      statusCode: 503,
+      headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({
+        error: 'index unavailable',
+        detail: String((err && err.message) || err).slice(0, 200),
+        hint: 'run search-index-rebuild?key=…&dry=1 to diagnose',
+      }),
+    };
+  }
 
+  try {
     // No blob yet means the builder has not run (or has never succeeded). Say so
     // plainly and DO NOT cache it — otherwise a first-deploy miss would be pinned
     // at the edge for six hours.
@@ -60,7 +79,7 @@ exports.handler = async (event) => {
       return {
         statusCode: 503,
         headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-        body: JSON.stringify({ error: 'index not built yet', hint: 'run search-index-build' }),
+        body: JSON.stringify({ error: 'index not built yet', hint: 'run search-index-rebuild' }),
       };
     }
 
