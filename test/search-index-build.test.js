@@ -93,7 +93,8 @@ const atProducts = {
     // Duplicate slug — one of these must be discarded and counted, not silently dropped.
     { id: 'a1b', fields: { Name: 'Blue Dream Gummies DUPE', Slug: 'blue-dream-gummies', 'Number of Sales': 1 } },
     { id: 'a3', fields: { Name: '7-OH Tablets', Slug: '7oh-tablets', Price: 19.99, Inventory: 5, 'Number of Sales': 3000 } },
-    { id: 'a4', fields: { Name: 'Discontinued Thing', Slug: 'disc-thing', Discontinued: true, Inventory: 9 } },
+    // Discontinued but IN STOCK — must stay searchable, flagged not filtered.
+    { id: 'a4', fields: { Name: 'Discontinued Thing', Slug: 'disc-thing', Discontinued: true, Inventory: 9, Price: 5.55, 'Number of Sales': 20 } },
     // Variant parent: no own Price, so the Lowest Price rollup must be used.
     { id: 'a6', fields: { Name: 'TRE House Carts', Slug: 'tre-house-carts', 'Lowest Price': 24.99, 'Highest Price': 34.99, Inventory: 0, 'Allow Backorders': true, 'Number of Sales': 55 } },
     // Slug was changed in Webflow but not Airtable — must fall back to item id.
@@ -224,8 +225,15 @@ function ok(cond, label, extra) {
   ok(!/Cost|Wholesale|MSRP/i.test(decodeURIComponent(atCall)), 'allowlist requests no cost fields');
 
   console.log(' exclusions');
-  ok(s.byType.product === 5, '5 products indexed (draft + 7-OH + discontinued excluded)', s.byType);
-  ok((s.excluded['product:discontinued'] || 0) === 1, 'discontinued product excluded', s.excluded);
+  ok(s.byType.product === 6, '6 products indexed (draft + 7-OH excluded; discontinued KEPT)', s.byType);
+  /* Discontinued means "not reordering", NOT unavailable. Excluding it removed
+   * 114 live, sellable products from search. */
+  ok(!s.excluded['product:discontinued'], 'discontinued is NOT an exclusion reason', s.excluded);
+  ok(s.discontinuedIndexed === 1, 'discontinued product counted as indexed', s.discontinuedIndexed);
+  const disc = (s.sample || []).find((d) => d.n === 'Discontinued Thing');
+  ok(!!disc, 'discontinued product IS in the index', (s.sample || []).map((d) => d.n));
+  ok(disc && disc.dc === 1, 'carries the dc flag so the UI can badge it', disc && disc.dc);
+  ok(disc && disc.st === 1, 'and is in stock, since it still has inventory', disc && disc.st);
   ok((s.excluded['brand:don-t-display'] || 0) === 1, "brand flagged don't-display excluded", s.excluded);
   ok((s.excluded['page:draft/archived'] || 0) === 1, 'draft page excluded', s.excluded);
   ok((s.excluded['page:operational'] || 0) === 1, 'operational /portal/ page excluded', s.excluded);
@@ -285,7 +293,7 @@ function ok(cond, label, extra) {
   ok(ds.degraded === true, 'flags itself as degraded', ds.degraded);
   ok((ds.sourceErrors || []).some((e) => e.source === 'webflow:pages'), 'names the failed source', ds.sourceErrors);
   ok(/pages:read/.test(JSON.stringify(ds.sourceErrors || [])), 'preserves the underlying scope error', ds.sourceErrors);
-  ok(ds.byType.product === 5, 'products still indexed', ds.byType);
+  ok(ds.byType.product === 6, 'products still indexed', ds.byType);
   ok(ds.byType.brand === 1 && ds.byType.category === 3, 'brands and categories still indexed', ds.byType);
   ok(!ds.byType.page, 'no page docs, since that source was unavailable', ds.byType);
   failPages = false;
