@@ -40,6 +40,8 @@ const wfProducts = {
     // Legal kratom product. Its FAQ mentions 7-hydroxymitragynine because that is
     // the active alkaloid in kratom — it must stay indexed, only flagged.
     { id: 'wf8', isDraft: false, isArchived: false, fieldData: { name: 'OPiA - Kratom Extract Tablets', slug: 'opia-kratom-tablets' } },
+    // Description DISCLAIMS 7-OH, in raw markdown exactly as production does.
+    { id: 'wf9', isDraft: false, isArchived: false, fieldData: { name: 'Buzzers - Botanical Tablets', slug: 'buzzers-botanical-tablets' } },
   ],
   pagination: { total: 8 },
 };
@@ -65,6 +67,9 @@ const wfPages = {
     { slug: 'detail_product', publishedPath: '/product', draft: false, collectionId: 'X', title: 'Products Template' },
     { slug: 'faq', publishedPath: '/faq', draft: false, title: 'FAQ', seo: { title: 'FAQs' } },
     { slug: '7oh-info', publishedPath: '/7oh-info', draft: false, title: '7-OH Information' },
+    // Title is clean; the SEO description carries a disclaimer. Must NOT be dropped
+    // — matching page descriptions is what removed /simple-brands in production.
+    { slug: 'simple-brands', publishedPath: '/simple-brands', draft: false, title: 'Simple Brands', seo: { title: 'Simple Brands', description: 'Our tablets do not contain 7OH or MGM.' } },
     { slug: 'search', publishedPath: '/search', draft: false, title: 'Search Results' },
   ],
   pagination: { total: 7 },
@@ -101,6 +106,8 @@ const atProducts = {
     { id: 'a8', fields: { Name: 'Renamed Product', Slug: 'old-slug-in-airtable', 'Webflow Item ID': 'wf7', Price: 12.34, 'Number of Sales': 7, Inventory: 3 } },
     { id: 'a7', fields: { Name: 'In Store Only Item', Slug: 'in-store-only', 'In-Store Only': true } },
     { id: 'a9', fields: { Name: 'OPiA - Kratom Extract Tablets', Slug: 'opia-kratom-tablets', Price: 9.99, 'Number of Sales': 2281, Inventory: 12, FAQs: ['q5'] } },
+    { id: 'a10', fields: { Name: 'Buzzers - Botanical Tablets', Slug: 'buzzers-botanical-tablets', Price: 34.99, 'Number of Sales': 282, Inventory: 7,
+      Summary: '75mg per tablet. **_Does not contain 7OH or MGM._**' } },
   ],
 };
 
@@ -214,6 +221,15 @@ function ok(cond, label, extra) {
   const opia = (s.sample || []).find((d) => /OPiA/.test(d.n || ''));
   ok(!s.prohibitedDropped.some((x) => /OPiA/.test(x)), 'does NOT drop legal kratom whose FAQ mentions the compound', s.prohibitedDropped);
   ok((s.flaggedForReview || []).some((x) => /OPiA/.test(x)), 'flags it for human review instead', s.flaggedForReview);
+  /* NEGATIONS ARE NOT MENTIONS. Several real descriptions read "Does not contain
+   * 7OH or MGM" — a compliance statement. Treating those as risks flagged 8 clean
+   * products and dropped the /simple-brands page, and a review list that is all
+   * false alarms does not get read. */
+  ok(!(s.flaggedForReview || []).some((x) => /Buzzers/.test(x)), '"Does not contain 7OH" is a disclaimer, not a mention', s.flaggedForReview);
+  ok(!s.prohibitedDropped.some((x) => /simple-brands/.test(x)), 'page with a disclaimer in its SEO description survives', s.prohibitedDropped);
+  ok(!(s.flaggedForReview || []).some((x) => /simple-brands/.test(x)), 'and is not flagged either', s.flaggedForReview);
+  const buzz = (s.sample || []).find((d) => /Buzzers/.test(d.n || ''));
+  ok(buzz && !/[*_]{2}/.test(String(buzz.d || '')), 'markdown emphasis stripped from descriptions', buzz && buzz.d);
   ok(!!opia && opia.s === 2281, 'and keeps it indexed with its signals', opia && [opia.n, opia.s]);
   ok(s.prohibitedDropped.some((x) => /7oh-info/.test(x)), 'drops a 7-OH static page', s.prohibitedDropped);
 
@@ -225,7 +241,7 @@ function ok(cond, label, extra) {
   ok(!/Cost|Wholesale|MSRP/i.test(decodeURIComponent(atCall)), 'allowlist requests no cost fields');
 
   console.log(' exclusions');
-  ok(s.byType.product === 6, '6 products indexed (draft + 7-OH excluded; discontinued KEPT)', s.byType);
+  ok(s.byType.product === 7, '7 products indexed (draft + 7-OH excluded; discontinued KEPT)', s.byType);
   /* Discontinued means "not reordering", NOT unavailable. Excluding it removed
    * 114 live, sellable products from search. */
   ok(!s.excluded['product:discontinued'], 'discontinued is NOT an exclusion reason', s.excluded);
@@ -246,10 +262,10 @@ function ok(cond, label, extra) {
    * it; asserting that joined products actually CARRY signals does. */
   console.log(' join (slug primary, item id fallback)');
   // Counted before exclusions, so the 7-OH and discontinued rows join then drop.
-  ok(s.joinedBySlug === 5, 'joins on slug, case-insensitively', s.joinedBySlug);
+  ok(s.joinedBySlug === 6, 'joins on slug, case-insensitively', s.joinedBySlug);
   ok(s.joinedByItemId === 1, 'falls back to Webflow Item ID when the slug moved', s.joinedByItemId);
   ok(s.slugCollisions === 1, 'duplicate Airtable slug counted, not silently dropped', s.slugCollisions);
-  ok(s.joinedBySlug + s.joinedByItemId === 6, 'all Airtable-backed products joined by some key', [s.joinedBySlug, s.joinedByItemId]);
+  ok(s.joinedBySlug + s.joinedByItemId === 7, 'all Airtable-backed products joined by some key', [s.joinedBySlug, s.joinedByItemId]);
   const byName = (n) => (s.sample || []).find((d) => d.n === n);
   const renamed = byName('Renamed Product');
   ok(renamed && renamed.s === 7 && renamed.p === 12.34, 'item-id fallback still carries signals', renamed);
@@ -282,7 +298,7 @@ function ok(cond, label, extra) {
   console.log(' coverage');
   ok(s.byType.brand === 1, 'brands indexed', s.byType);
   ok(s.byType.category === 3, 'all three category levels indexed', s.byType);
-  ok(s.byType.page === 2, 'landing + info pages indexed', s.byType);
+  ok(s.byType.page === 3, 'landing + info pages indexed', s.byType);
 
   console.log(' degradation (an optional source failing must not kill the build)');
   failPages = true;
@@ -293,7 +309,7 @@ function ok(cond, label, extra) {
   ok(ds.degraded === true, 'flags itself as degraded', ds.degraded);
   ok((ds.sourceErrors || []).some((e) => e.source === 'webflow:pages'), 'names the failed source', ds.sourceErrors);
   ok(/pages:read/.test(JSON.stringify(ds.sourceErrors || [])), 'preserves the underlying scope error', ds.sourceErrors);
-  ok(ds.byType.product === 6, 'products still indexed', ds.byType);
+  ok(ds.byType.product === 7, 'products still indexed', ds.byType);
   ok(ds.byType.brand === 1 && ds.byType.category === 3, 'brands and categories still indexed', ds.byType);
   ok(!ds.byType.page, 'no page docs, since that source was unavailable', ds.byType);
   failPages = false;
