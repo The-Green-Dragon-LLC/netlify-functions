@@ -184,8 +184,11 @@ process.env.WEBFLOW_SEARCH_TOKEN = 'test';
 process.env.AIRTABLE_API_KEY = 'test';
 process.env.SEARCH_INDEX_KEY = 'test-key';
 
-// Test through the HTTP wrapper: it exercises the shared builder AND the key check.
-const fn = require(path.join(__dirname, '..', 'functions', 'search-index-rebuild.js'));
+/* Test the shared builder directly. The HTTP wrappers are v2 (.mts) functions —
+ * required because @netlify/blobs only auto-configures on the v2 runtime — and a
+ * CommonJS test cannot require those. The auth check therefore lives in the lib as
+ * keyMatches() so it stays covered here. */
+const { build, keyMatches } = require(path.join(__dirname, '..', 'lib', 'search-index-builder.js'));
 
 let fails = 0;
 function ok(cond, label, extra) {
@@ -194,21 +197,18 @@ function ok(cond, label, extra) {
 }
 
 (async () => {
-  const r = await fn.handler({ httpMethod: 'GET', queryStringParameters: { key: 'test-key', dry: '1' } });
-  const s = JSON.parse(r.body);
-  if (r.statusCode !== 200) {
-    console.error('handler failed:', JSON.stringify(s, null, 2));
-    process.exitCode = 1;
-    return;
-  }
+  const built = await build();
+  // Shape the stats the way the wrapper reports them, so assertions read the same.
+  const s = { ...built.stats, sample: built.index.docs.slice(0, 8) };
 
   console.log('\nsearch-index-build\n');
 
   console.log(' auth');
-  const unauth = await fn.handler({ httpMethod: 'GET', queryStringParameters: {} });
-  ok(unauth.statusCode === 401, 'rejects manual calls without the key', unauth.statusCode);
-  const wrongKey = await fn.handler({ httpMethod: 'GET', queryStringParameters: { key: 'nope' } });
-  ok(wrongKey.statusCode === 401, 'rejects a wrong key', wrongKey.statusCode);
+  ok(keyMatches('test-key', 'test-key') === true, 'accepts the correct key');
+  ok(keyMatches(null, 'test-key') === false, 'rejects a missing key');
+  ok(keyMatches('nope', 'test-key') === false, 'rejects a wrong key');
+  ok(keyMatches('test-ke', 'test-key') === false, 'rejects a truncated key');
+  ok(keyMatches('anything', '') === false, 'rejects everything when no key is configured');
 
   console.log(' compliance (7-OH must never be indexed)');
   ok(s.prohibitedDropped.some((x) => /7-OH Tablets/.test(x)), 'drops a product named for 7-OH', s.prohibitedDropped);
@@ -302,10 +302,10 @@ function ok(cond, label, extra) {
 
   console.log(' degradation (an optional source failing must not kill the build)');
   failPages = true;
-  const d = await fn.handler({ httpMethod: 'GET', queryStringParameters: { key: 'test-key', dry: '1' } });
-  const ds = JSON.parse(d.body);
-  ok(d.statusCode === 200, 'build still succeeds when pages:read is missing', d.statusCode);
-  ok(ds.ok === true, 'reports ok', ds.ok);
+  const dbuilt = await build();
+  const ds = { ...dbuilt.stats, sample: dbuilt.index.docs.slice(0, 8) };
+  ok(!!dbuilt.index, 'build still succeeds when pages:read is missing', !!dbuilt.index);
+  ok(Array.isArray(dbuilt.index.docs) && dbuilt.index.docs.length > 0, 'still returns documents', dbuilt.index.docs.length);
   ok(ds.degraded === true, 'flags itself as degraded', ds.degraded);
   ok((ds.sourceErrors || []).some((e) => e.source === 'webflow:pages'), 'names the failed source', ds.sourceErrors);
   ok(/pages:read/.test(JSON.stringify(ds.sourceErrors || [])), 'preserves the underlying scope error', ds.sourceErrors);
