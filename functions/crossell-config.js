@@ -54,8 +54,20 @@ exports.handler = async (event) => {
       statusCode: 200,
       headers: {
         ...CORS,
-        'Content-Type':  'application/json',
-        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json',
+        // crossell-popup.js is embedded site-wide, so this endpoint is hit on
+        // every page view. Uncached ('no-store') that meant ~15 Airtable reads
+        // per view — enough on its own to push the workspace to 1.77M API calls
+        // against a 100k/month quota. Cross-sell config is merchandising data
+        // that changes rarely, so serve it from cache instead.
+        //
+        // 'durable' persists the response in Netlify's global object store, so
+        // ALL edge nodes share one cached copy. Without it each POP would miss
+        // separately and re-invoke, multiplying Airtable reads by POP count.
+        // Origin hits drop to ~4/day.
+        'Netlify-CDN-Cache-Control': 'public, durable, s-maxage=21600, stale-while-revalidate=86400',
+        // Browsers cache only briefly, so an edge purge propagates quickly.
+        'Cache-Control': 'public, max-age=60',
       },
       body: JSON.stringify({ categoryCrossSells, genericCrossSells }),
     };
