@@ -37,8 +37,11 @@ const wfProducts = {
     { id: 'wf5', isDraft: false, isArchived: false, fieldData: { name: 'Orphan No Airtable', slug: 'orphan' } },
     { id: 'wf6', isDraft: false, isArchived: false, fieldData: { name: 'TRE House Carts', slug: 'tre-house-carts' } },
     { id: 'wf7', isDraft: false, isArchived: false, fieldData: { name: 'Renamed Product', slug: 'new-slug-in-webflow' } },
+    // Legal kratom product. Its FAQ mentions 7-hydroxymitragynine because that is
+    // the active alkaloid in kratom — it must stay indexed, only flagged.
+    { id: 'wf8', isDraft: false, isArchived: false, fieldData: { name: 'OPiA - Kratom Extract Tablets', slug: 'opia-kratom-tablets' } },
   ],
-  pagination: { total: 7 },
+  pagination: { total: 8 },
 };
 
 const wfBrands = {
@@ -96,6 +99,7 @@ const atProducts = {
     // Slug was changed in Webflow but not Airtable — must fall back to item id.
     { id: 'a8', fields: { Name: 'Renamed Product', Slug: 'old-slug-in-airtable', 'Webflow Item ID': 'wf7', Price: 12.34, 'Number of Sales': 7, Inventory: 3 } },
     { id: 'a7', fields: { Name: 'In Store Only Item', Slug: 'in-store-only', 'In-Store Only': true } },
+    { id: 'a9', fields: { Name: 'OPiA - Kratom Extract Tablets', Slug: 'opia-kratom-tablets', Price: 9.99, 'Number of Sales': 2281, Inventory: 12, FAQs: ['q5'] } },
   ],
 };
 
@@ -115,6 +119,7 @@ const atFaqs = {
     { id: 'q2', fields: { Question: 'How many mg per gummy?', Answer: 'Ten.' } },
     { id: 'q3', fields: { Question: 'What is your shipping policy?', Answer: 'Fast.', 'Display on FAQ Page': true } },
     { id: 'q4', fields: { Question: 'Truly orphaned question', Answer: 'Nobody links me.' } },
+    { id: 'q5', fields: { Question: 'What is 7-hydroxymitragynine?', Answer: 'An alkaloid found in kratom.' } },
   ],
 };
 
@@ -198,7 +203,17 @@ function ok(cond, label, extra) {
   ok(wrongKey.statusCode === 401, 'rejects a wrong key', wrongKey.statusCode);
 
   console.log(' compliance (7-OH must never be indexed)');
-  ok(s.prohibitedDropped.some((x) => /7-OH Tablets/.test(x)), 'drops the 7-OH product', s.prohibitedDropped);
+  ok(s.prohibitedDropped.some((x) => /7-OH Tablets/.test(x)), 'drops a product named for 7-OH', s.prohibitedDropped);
+  // Page/brand/category drops are prefixed; bare entries are products.
+  const droppedProducts = s.prohibitedDropped.filter((x) => !/^(page|brand|cat)/.test(x));
+  ok(droppedProducts.length === 1, 'drops ONLY that one product — no false positives', droppedProducts);
+  /* The expensive false positive: kratom FAQs legitimately discuss
+   * 7-hydroxymitragynine. Matching body text dropped 8 legal products including
+   * OPiA, the third most-searched brand on the site. */
+  const opia = (s.sample || []).find((d) => /OPiA/.test(d.n || ''));
+  ok(!s.prohibitedDropped.some((x) => /OPiA/.test(x)), 'does NOT drop legal kratom whose FAQ mentions the compound', s.prohibitedDropped);
+  ok((s.flaggedForReview || []).some((x) => /OPiA/.test(x)), 'flags it for human review instead', s.flaggedForReview);
+  ok(!!opia && opia.s === 2281, 'and keeps it indexed with its signals', opia && [opia.n, opia.s]);
   ok(s.prohibitedDropped.some((x) => /7oh-info/.test(x)), 'drops a 7-OH static page', s.prohibitedDropped);
 
   console.log(' security (public index must carry no margin data)');
@@ -209,7 +224,7 @@ function ok(cond, label, extra) {
   ok(!/Cost|Wholesale|MSRP/i.test(decodeURIComponent(atCall)), 'allowlist requests no cost fields');
 
   console.log(' exclusions');
-  ok(s.byType.product === 4, '4 products indexed (draft + 7-OH + discontinued excluded)', s.byType);
+  ok(s.byType.product === 5, '5 products indexed (draft + 7-OH + discontinued excluded)', s.byType);
   ok((s.excluded['product:discontinued'] || 0) === 1, 'discontinued product excluded', s.excluded);
   ok((s.excluded['brand:don-t-display'] || 0) === 1, "brand flagged don't-display excluded", s.excluded);
   ok((s.excluded['page:draft/archived'] || 0) === 1, 'draft page excluded', s.excluded);
@@ -223,10 +238,10 @@ function ok(cond, label, extra) {
    * it; asserting that joined products actually CARRY signals does. */
   console.log(' join (slug primary, item id fallback)');
   // Counted before exclusions, so the 7-OH and discontinued rows join then drop.
-  ok(s.joinedBySlug === 4, 'joins on slug, case-insensitively', s.joinedBySlug);
+  ok(s.joinedBySlug === 5, 'joins on slug, case-insensitively', s.joinedBySlug);
   ok(s.joinedByItemId === 1, 'falls back to Webflow Item ID when the slug moved', s.joinedByItemId);
   ok(s.slugCollisions === 1, 'duplicate Airtable slug counted, not silently dropped', s.slugCollisions);
-  ok(s.joinedBySlug + s.joinedByItemId === 5, 'all Airtable-backed products joined by some key', [s.joinedBySlug, s.joinedByItemId]);
+  ok(s.joinedBySlug + s.joinedByItemId === 6, 'all Airtable-backed products joined by some key', [s.joinedBySlug, s.joinedByItemId]);
   const byName = (n) => (s.sample || []).find((d) => d.n === n);
   const renamed = byName('Renamed Product');
   ok(renamed && renamed.s === 7 && renamed.p === 12.34, 'item-id fallback still carries signals', renamed);
@@ -237,7 +252,7 @@ function ok(cond, label, extra) {
 
   console.log(' folds');
   ok(s.variantsFolded === 3, '3 variants folded into their parent', s.variantsFolded);
-  ok(s.faqsFolded === 2, '2 product FAQs folded', s.faqsFolded);
+  ok(s.faqsFolded === 3, 'product FAQs folded', s.faqsFolded);
   ok(s.faqsToFaqPage === 1, 'general FAQ routed to /faq instead of its own doc', s.faqsToFaqPage);
   ok(s.faqsOrphanedDropped === 1, 'unattached FAQ dropped', s.faqsOrphanedDropped);
 
@@ -252,7 +267,7 @@ function ok(cond, label, extra) {
     ok(/Blue Raspberry/.test(bd.x || '') && /Watermelon/.test(bd.x || ''), 'variant flavours searchable', bd.x);
     ok((String(bd.x).match(/Blue Raspberry/g) || []).length === 1, 'repeated variant text deduped', bd.x);
     ok(/drug test/.test(bd.q || ''), 'FAQ question searchable', String(bd.q).slice(0, 60));
-    ok(String(bd.q).length < 500, 'FAQ answer truncated, not indexed whole', String(bd.q).length);
+    ok(!/Possibly\./.test(String(bd.q)), 'FAQ answers omitted by default to control payload size', String(bd.q));
     ok(!/<strong>/.test(bd.d || ''), 'HTML stripped from the description', bd.d);
   }
 
@@ -270,7 +285,7 @@ function ok(cond, label, extra) {
   ok(ds.degraded === true, 'flags itself as degraded', ds.degraded);
   ok((ds.sourceErrors || []).some((e) => e.source === 'webflow:pages'), 'names the failed source', ds.sourceErrors);
   ok(/pages:read/.test(JSON.stringify(ds.sourceErrors || [])), 'preserves the underlying scope error', ds.sourceErrors);
-  ok(ds.byType.product === 4, 'products still indexed', ds.byType);
+  ok(ds.byType.product === 5, 'products still indexed', ds.byType);
   ok(ds.byType.brand === 1 && ds.byType.category === 3, 'brands and categories still indexed', ds.byType);
   ok(!ds.byType.page, 'no page docs, since that source was unavailable', ds.byType);
   failPages = false;
