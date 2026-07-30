@@ -122,9 +122,23 @@ function route(p) {
 }
 
 const seenPaths = [];
+/* Flipped by the degradation scenario to simulate WEBFLOW_API_TOKEN lacking the
+ * `pages:read` scope — the real 403 that this policy exists to survive. */
+let failPages = false;
 https.request = function (options, cb) {
   const p = options.path || '';
   seenPaths.push(p);
+  if (failPages && p.includes('/pages')) {
+    const res = new EventEmitter();
+    res.statusCode = 403;
+    const body = JSON.stringify({ message: "OAuthForbidden: You are missing the following scopes - 'pages:read'", code: 'missing_scopes' });
+    process.nextTick(() => {
+      cb(res);
+      process.nextTick(() => { res.emit('data', Buffer.from(body)); res.emit('end'); });
+    });
+    const rq = new EventEmitter(); rq.write = () => {}; rq.end = () => {};
+    return rq;
+  }
   const payload = JSON.stringify(route(p));
   const res = new EventEmitter();
   res.statusCode = 200;
@@ -216,6 +230,20 @@ function ok(cond, label, extra) {
   ok(s.byType.brand === 1, 'brands indexed', s.byType);
   ok(s.byType.category === 3, 'all three category levels indexed', s.byType);
   ok(s.byType.page === 2, 'landing + info pages indexed', s.byType);
+
+  console.log(' degradation (an optional source failing must not kill the build)');
+  failPages = true;
+  const d = await fn.handler({ httpMethod: 'GET', queryStringParameters: { key: 'test-key', dry: '1' } });
+  const ds = JSON.parse(d.body);
+  ok(d.statusCode === 200, 'build still succeeds when pages:read is missing', d.statusCode);
+  ok(ds.ok === true, 'reports ok', ds.ok);
+  ok(ds.degraded === true, 'flags itself as degraded', ds.degraded);
+  ok((ds.sourceErrors || []).some((e) => e.source === 'webflow:pages'), 'names the failed source', ds.sourceErrors);
+  ok(/pages:read/.test(JSON.stringify(ds.sourceErrors || [])), 'preserves the underlying scope error', ds.sourceErrors);
+  ok(ds.byType.product === 3, 'products still indexed', ds.byType);
+  ok(ds.byType.brand === 1 && ds.byType.category === 3, 'brands and categories still indexed', ds.byType);
+  ok(!ds.byType.page, 'no page docs, since that source was unavailable', ds.byType);
+  failPages = false;
 
   console.log('\n' + (fails ? fails + ' failing' : 'all assertions passed') + '\n');
   process.exitCode = fails ? 1 : 0;
