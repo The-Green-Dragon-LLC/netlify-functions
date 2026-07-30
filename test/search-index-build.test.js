@@ -36,8 +36,9 @@ const wfProducts = {
     { id: 'wf4', isDraft: false, isArchived: false, fieldData: { name: 'Discontinued Thing', slug: 'disc-thing' } },
     { id: 'wf5', isDraft: false, isArchived: false, fieldData: { name: 'Orphan No Airtable', slug: 'orphan' } },
     { id: 'wf6', isDraft: false, isArchived: false, fieldData: { name: 'TRE House Carts', slug: 'tre-house-carts' } },
+    { id: 'wf7', isDraft: false, isArchived: false, fieldData: { name: 'Renamed Product', slug: 'new-slug-in-webflow' } },
   ],
-  pagination: { total: 6 },
+  pagination: { total: 7 },
 };
 
 const wfBrands = {
@@ -66,13 +67,19 @@ const wfPages = {
   pagination: { total: 7 },
 };
 
-/* Cost/wholesale fields are present in this RESPONSE on purpose: the allowlist
+/* Records join on SLUG, mirroring production: `Webflow Item ID` is populated on
+ * only 7% of real records, so most fixtures deliberately omit it. Casing differs
+ * from the Webflow slug on purpose — the join normalises, and a case-only
+ * difference silently costing a product its entire ranking signal is exactly the
+ * bug this pins.
+ *
+ * Cost/wholesale fields are present in this RESPONSE on purpose: the allowlist
  * should never request them, and the leak guard must keep them out of output
  * even if Airtable returns them anyway. */
 const atProducts = {
   records: [
     { id: 'a1', fields: {
-      Name: 'Blue Dream Gummies', 'Webflow Item ID': 'wf1', Price: 29.99, 'Sale Price': 19.99, 'On Sale': true,
+      Name: 'Blue Dream Gummies', Slug: 'Blue-Dream-Gummies', Price: 29.99, 'Sale Price': 19.99, 'On Sale': true,
       'Lowest Price': 19.99, 'Highest Price': 39.99, 'Number of Sales': 812, Inventory: 0,
       'Variants Total Inventory': 14, 'Primary Image Webflow URL': 'https://img/bd.png',
       Summary: '<p>A <strong>tasty</strong> gummy.</p>', 'Name (from Brand)': ['TRĒ House'],
@@ -80,10 +87,15 @@ const atProducts = {
       Variants: ['v1', 'v2', 'v3'], FAQs: ['q1', 'q2'],
       Cost: 4.20, 'Wholesale Cost (Tier 1)': 9.99, MSRP: 49.99,
     } },
-    { id: 'a3', fields: { Name: '7-OH Tablets', 'Webflow Item ID': 'wf3', Price: 19.99, Inventory: 5, 'Number of Sales': 3000 } },
-    { id: 'a4', fields: { Name: 'Discontinued Thing', 'Webflow Item ID': 'wf4', Discontinued: true, Inventory: 9 } },
-    { id: 'a6', fields: { Name: 'TRE House Carts', 'Webflow Item ID': 'wf6', Price: 24.99, Inventory: 0, 'Allow Backorders': true, 'Number of Sales': 55 } },
-    { id: 'a7', fields: { Name: 'In Store Only Item', 'Webflow Item ID': 'wf-none', 'In-Store Only': true } },
+    // Duplicate slug — one of these must be discarded and counted, not silently dropped.
+    { id: 'a1b', fields: { Name: 'Blue Dream Gummies DUPE', Slug: 'blue-dream-gummies', 'Number of Sales': 1 } },
+    { id: 'a3', fields: { Name: '7-OH Tablets', Slug: '7oh-tablets', Price: 19.99, Inventory: 5, 'Number of Sales': 3000 } },
+    { id: 'a4', fields: { Name: 'Discontinued Thing', Slug: 'disc-thing', Discontinued: true, Inventory: 9 } },
+    // Variant parent: no own Price, so the Lowest Price rollup must be used.
+    { id: 'a6', fields: { Name: 'TRE House Carts', Slug: 'tre-house-carts', 'Lowest Price': 24.99, 'Highest Price': 34.99, Inventory: 0, 'Allow Backorders': true, 'Number of Sales': 55 } },
+    // Slug was changed in Webflow but not Airtable — must fall back to item id.
+    { id: 'a8', fields: { Name: 'Renamed Product', Slug: 'old-slug-in-airtable', 'Webflow Item ID': 'wf7', Price: 12.34, 'Number of Sales': 7, Inventory: 3 } },
+    { id: 'a7', fields: { Name: 'In Store Only Item', Slug: 'in-store-only', 'In-Store Only': true } },
   ],
 };
 
@@ -197,13 +209,31 @@ function ok(cond, label, extra) {
   ok(!/Cost|Wholesale|MSRP/i.test(decodeURIComponent(atCall)), 'allowlist requests no cost fields');
 
   console.log(' exclusions');
-  ok(s.byType.product === 3, '3 products indexed (draft + 7-OH + discontinued excluded)', s.byType);
+  ok(s.byType.product === 4, '4 products indexed (draft + 7-OH + discontinued excluded)', s.byType);
   ok((s.excluded['product:discontinued'] || 0) === 1, 'discontinued product excluded', s.excluded);
   ok((s.excluded['brand:don-t-display'] || 0) === 1, "brand flagged don't-display excluded", s.excluded);
   ok((s.excluded['page:draft/archived'] || 0) === 1, 'draft page excluded', s.excluded);
   ok((s.excluded['page:operational'] || 0) === 1, 'operational /portal/ page excluded', s.excluded);
   ok((s.excluded['page:excluded slug'] || 0) === 1, 'legacy /search page excluded', s.excluded);
   ok(s.unjoinedProducts === 1, 'product with no Airtable row still indexed, and counted', s.unjoinedProducts);
+
+  /* THE REGRESSION GUARD. Joining on `Webflow Item ID` failed for 100% of real
+   * products while still producing a plausible-looking index: right doc count,
+   * right URLs, every ranking signal null. Counting docs would not have caught
+   * it; asserting that joined products actually CARRY signals does. */
+  console.log(' join (slug primary, item id fallback)');
+  // Counted before exclusions, so the 7-OH and discontinued rows join then drop.
+  ok(s.joinedBySlug === 4, 'joins on slug, case-insensitively', s.joinedBySlug);
+  ok(s.joinedByItemId === 1, 'falls back to Webflow Item ID when the slug moved', s.joinedByItemId);
+  ok(s.slugCollisions === 1, 'duplicate Airtable slug counted, not silently dropped', s.slugCollisions);
+  ok(s.joinedBySlug + s.joinedByItemId === 5, 'all Airtable-backed products joined by some key', [s.joinedBySlug, s.joinedByItemId]);
+  const byName = (n) => (s.sample || []).find((d) => d.n === n);
+  const renamed = byName('Renamed Product');
+  ok(renamed && renamed.s === 7 && renamed.p === 12.34, 'item-id fallback still carries signals', renamed);
+  const tre = byName('TRE House Carts');
+  ok(tre && tre.p === 24.99, 'variant parent falls back to Lowest Price for display', tre && tre.p);
+  const orph = byName('Orphan No Airtable');
+  ok(orph && orph.s === 0 && orph.p == null, 'unjoined product indexed but flagged by zero signals', orph);
 
   console.log(' folds');
   ok(s.variantsFolded === 3, '3 variants folded into their parent', s.variantsFolded);
@@ -240,7 +270,7 @@ function ok(cond, label, extra) {
   ok(ds.degraded === true, 'flags itself as degraded', ds.degraded);
   ok((ds.sourceErrors || []).some((e) => e.source === 'webflow:pages'), 'names the failed source', ds.sourceErrors);
   ok(/pages:read/.test(JSON.stringify(ds.sourceErrors || [])), 'preserves the underlying scope error', ds.sourceErrors);
-  ok(ds.byType.product === 3, 'products still indexed', ds.byType);
+  ok(ds.byType.product === 4, 'products still indexed', ds.byType);
   ok(ds.byType.brand === 1 && ds.byType.category === 3, 'brands and categories still indexed', ds.byType);
   ok(!ds.byType.page, 'no page docs, since that source was unavailable', ds.byType);
   failPages = false;
