@@ -44,8 +44,10 @@ const CORS: Record<string, string> = {
 // 6h at the edge, matching the build cadence; serve stale for a day while
 // revalidating so a late or failed build never leaves the box without an index.
 const CDN_CACHE = "public, durable, s-maxage=21600, stale-while-revalidate=86400";
-// Short browser TTL — the ETag makes revalidation a cheap 304.
-const BROWSER_CACHE = "public, max-age=300, must-revalidate";
+/* Browser TTL. The index only changes every 6h, so 300s was needlessly chatty —
+ * 15 minutes still propagates a rebuild quickly while cutting revalidations by 3x.
+ * must-revalidate plus the ETag below keeps a stale copy from being served. */
+const BROWSER_CACHE = "public, max-age=900, must-revalidate";
 
 export default async (req: Request, _context: Context) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -84,8 +86,15 @@ export default async (req: Request, _context: Context) => {
   const body = JSON.stringify(index);
   const etag = '"' + createHash("sha1").update(body).digest("base64") + '"';
 
+  /* Compare NORMALISED ETags. Netlify rewrites ours when it applies its own
+   * content encoding, appending a suffix: we send "abc=" and the edge serves
+   * "abc=-df", so the browser echoes back the suffixed form and a literal
+   * comparison never matches — every revalidation then re-sent ~93KB instead of a
+   * 304. Strip weak prefixes, quotes and any trailing -suffix before comparing. */
+  const normalise = (t: string) =>
+    t.trim().replace(/^W\//, "").replace(/"/g, "").replace(/-[0-9a-z]+$/i, "");
   const inm = req.headers.get("if-none-match") || "";
-  if (inm && inm.split(",").some((t) => t.trim() === etag)) {
+  if (inm && inm.split(",").some((t) => normalise(t) === normalise(etag))) {
     return new Response(null, {
       status: 304,
       headers: { ...CORS, etag, "cache-control": BROWSER_CACHE, "netlify-cdn-cache-control": CDN_CACHE },
