@@ -65,6 +65,21 @@
 [functions."subscription-stock-check"]
   schedule = "0 14 * * 1-5"
 
+# Search index rebuild. Joins Webflow (live URLs) to Airtable (ranking signals,
+# variant/FAQ graph) and writes the index to Netlify Blobs; search-index.js serves it.
+#
+# 6-HOURLY IS A COST DECISION, NOT A GUESS. A full build makes ~40 Airtable calls.
+# Hourly would be ~30k calls/month = 30% of the 100k monthly quota; 6-hourly is
+# ~5k = ~5%. That quota was already blown once (1.77M/100k) by uncached reads in
+# crossell-config.js, so this stays conservative. Still 24-72x fresher than
+# Webflow's native reindex, which is gated on a full-site publish.
+#
+# Off-cycle rebuilds (e.g. after editing the search synonym/pin tables) should be
+# triggered by hitting the function with ?key=SEARCH_INDEX_KEY rather than by
+# tightening this schedule.
+[functions."search-index-build"]
+  schedule = "0 */6 * * *"
+
 # Production — deploys from main branch
 [context.production]
   # Production function URL: https://YOUR-SITE-NAME.netlify.app/.netlify/functions/
