@@ -45,6 +45,13 @@
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
 
+# Header instant-search script — same revalidate policy, so a fix reaches the site on
+# the next page load without editing the Webflow footer or busting a query string.
+[[headers]]
+  for = "/search-dropdown.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
 # Back-in-stock notifier: once a day at 4pm Central it checks Airtable inventory for
 # Pending signups and fires the Omnisend "back in stock" alert for restocks.
 # Netlify cron is UTC-only with no DST handling, and 4pm Central is 21:00 UTC in
