@@ -41,13 +41,23 @@ const CORS: Record<string, string> = {
   "access-control-allow-methods": "GET, OPTIONS",
 };
 
-// 6h at the edge, matching the build cadence; serve stale for a day while
-// revalidating so a late or failed build never leaves the box without an index.
-const CDN_CACHE = "public, durable, s-maxage=21600, stale-while-revalidate=86400";
-/* Browser TTL. The index only changes every 6h, so 300s was needlessly chatty —
- * 15 minutes still propagates a rebuild quickly while cutting revalidations by 3x.
- * must-revalidate plus the ETag below keeps a stale copy from being served. */
-const BROWSER_CACHE = "public, max-age=900, must-revalidate";
+/* CDN TTL was 6h to match the build cadence, which looked tidy and was wrong: a
+ * rebuild then took up to 6h to reach anyone, and a deploy does NOT invalidate the
+ * durable cache — measured, a cached copy kept serving with age=6852s straight through
+ * a production deploy. Combined with the 6-hourly schedule that meant up to 12h between
+ * a data change and a customer seeing it, which defeats the point of rebuilding at all.
+ *
+ * 10 minutes instead. `durable` means the cache is SHARED globally rather than per edge
+ * POP, so an expiry costs roughly one function invocation every 10 minutes in total —
+ * about 4.3k/month, and each one is a single Blobs read. This endpoint never touches
+ * Airtable, so nothing here can repeat the quota incident that motivated the long TTL.
+ *
+ * stale-while-revalidate stays long so a late or failed build never leaves the search
+ * box without an index. */
+const CDN_CACHE = "public, durable, s-maxage=600, stale-while-revalidate=86400";
+/* Browser TTL, deliberately shorter than the CDN's so a client is never the last to
+ * know. must-revalidate plus the ETag keeps a stale copy from being served. */
+const BROWSER_CACHE = "public, max-age=300, must-revalidate";
 
 export default async (req: Request, _context: Context) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });

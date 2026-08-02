@@ -39,7 +39,18 @@
 (function () {
   'use strict';
 
-  var INDEX_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/search-index';
+  /* The `v` is the index SCHEMA version, and it is a cache key, not decoration.
+   *
+   * The index response is held in Netlify's durable cache, which a new deploy does NOT
+   * invalidate — measured: a cached copy kept serving with age=6852s straight through a
+   * production deploy. So when the builder starts emitting new fields, every client
+   * keeps getting the old shape until the TTL happens to lapse. Changing this URL
+   * changes the cache key, which is the only way to guarantee a client sees the new
+   * shape immediately.
+   *
+   * BUMP THIS whenever the builder adds or renames an index field. v2 = the addition of
+   * `r`/`rc` (Yotpo aggregate) and `br` (brands per category). */
+  var INDEX_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/search-index?v=2';
 
   /* ─── TEXT NORMALISATION ──────────────────────────────────────────────────── */
 
