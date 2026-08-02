@@ -144,6 +144,16 @@ ok(/ev\.preventDefault\(\)[\s\S]{0,80}scrollToGroup/.test(src),
   'intercepts the jump click rather than trusting the native anchor jump');
 ok(/replaceState/.test(src), 'updates the hash without triggering a second un-offset jump');
 
+console.log(' brand cards (logo grid, like products)');
+ok(/grp\.t === 'product' \|\| grp\.t === 'brand'/.test(src), 'brands render as a card grid, not a text list');
+ok(/tgd-card-brand/.test(src), 'brand cards get their own class so the logo tile can differ from a product shot');
+ok(/tgd-card-init/.test(src), 'a brand with no logo in the CMS falls back to initials rather than a hole');
+ok(/data-grid="' \+ grp\.t/.test(src) && !/data-grid="1"/.test(src),
+  'each grid is keyed by type, so "show more products" cannot inject into the brand grid');
+ok(/var shown = RESULTS_PAGE_SIZE;[\s\S]{0,400}btn\.addEventListener/.test(src),
+  'the show-more counter is per type — one shared counter would page the second grid from the first grid position');
+ok(/object-fit:contain/.test(src), 'logos are contain-fitted so wordmarks are not cropped');
+
 console.log(' escaping');
 ok(S.fold('<script>') === 'script', 'folding strips markup characters');
 ok(/replace\(\/&\/g, '&amp;'\)/.test(src), 'output is HTML-escaped before innerHTML');

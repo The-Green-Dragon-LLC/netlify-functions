@@ -705,6 +705,11 @@
     '.tgd-card-m{display:block;font-size:13px;color:#6b6b6b;margin-bottom:6px}',
     '.tgd-card-p{font-weight:700}',
     '.tgd-card-p s{color:#9a9a9a;font-weight:400;margin-right:5px}',
+    '.tgd-card-brand img{height:96px;padding:10px;background:#fff;border:1px solid #f2f2f2}',
+    '.tgd-card-init{display:flex;align-items:center;justify-content:center;height:96px;',
+    'margin-bottom:10px;border-radius:6px;background:#f1f5f2;color:#276749;',
+    'font-weight:700;font-size:26px;letter-spacing:1px}',
+    '.tgd-card-d{display:block;font-size:12px;color:#6b6b6b;line-height:1.45}',
     '.tgd-list a{display:block;padding:9px 0;border-bottom:1px solid #eee;text-decoration:none;color:inherit}',
     '.tgd-more{margin-top:14px;padding:9px 16px;border:1px solid #276749;background:#fff;color:#276749;',
     'border-radius:6px;font-weight:600;cursor:pointer}',
@@ -765,34 +770,148 @@
     return Math.round(covered);
   }
 
-  /* Scroll to a heading with the measured offset applied, rather than trusting the
-   * browser's anchor jump. Also keeps the URL hash in step without triggering a
-   * second, un-offset jump. */
+  var SCROLL_GAP = 16;                 // breathing room between header and heading
+
+  /* What is ACTUALLY covering the top of the viewport — asked of the browser rather
+   * than inferred from CSS.
+   *
+   * Two earlier attempts modelled the header, and both were wrong in the same
+   * direction, because what they measured is not what ends up covering the heading:
+   *
+   *   1. A hardcoded 110px. Wrong at every breakpoint but one.
+   *   2. Enumerating fixed/sticky elements — but it ran BEFORE the scroll, while the
+   *      page was still at the top and a sticky bar had not yet stuck. At rest such a
+   *      bar sits in normal flow below y=0, so nothing straddled the top edge and the
+   *      offset came out ~0. It only reaches top: 0 once the page moves, which is
+   *      exactly when it matters.
+   *
+   * And "which elements count as top chrome" is a guess however it is written:
+   * announcement bars, promo strips and scroll-aware navs each break a different rule.
+   *
+   * So put the heading at y=0 FIRST, then hit-test straight down through whatever sits
+   * on top of it. elementFromPoint answers "what would a click land on here", which is
+   * the real question. Walking up to each hit's nearest pinned ancestor stops a
+   * statically-positioned child inside a fixed bar from ending the walk early, and
+   * stopping at unpinned content keeps it from wandering off into the page. */
+  function chromeOver(el) {
+    if (typeof document.elementFromPoint !== 'function') return stickyOffset();
+    var r = el.getBoundingClientRect();
+    var vw = window.innerWidth || 1024;
+    var x = Math.round(Math.min(vw - 2, Math.max(2, r.left + r.width / 2)));
+    var covered = 0;
+    for (var i = 0; i < 8; i++) {
+      var hit = document.elementFromPoint(x, covered + 1);
+      if (!hit || hit === el || el.contains(hit) || hit.contains(el)) break;  // heading is clear
+      var bar = hit, pinned = null;
+      while (bar && bar !== document.body) {
+        var cs;
+        try { cs = window.getComputedStyle(bar); } catch (_) { break; }
+        if (cs && (cs.position === 'fixed' || cs.position === 'sticky')) { pinned = bar; break; }
+        bar = bar.parentElement;
+      }
+      if (!pinned) break;                              // page content, not pinned chrome
+      var hr = pinned.getBoundingClientRect();
+      if (hr.bottom <= covered + 1 || hr.height > 300) break;  // no progress / full-height overlay
+      covered = hr.bottom;
+    }
+    return Math.round(covered);
+  }
+
+  /* Instant even when the site sets `scroll-behavior: smooth` in CSS, which would
+   * otherwise animate the measuring hops below and defeat them. */
+  function instantScroll(y) {
+    var de = document.documentElement;
+    var prev = de.style.scrollBehavior;
+    de.style.scrollBehavior = 'auto';
+    window.scrollTo(0, Math.max(0, y));
+    de.style.scrollBehavior = prev;
+  }
+
+  /* Run fn once the scroll has come to rest. */
+  function settle(fn) {
+    var done = false;
+    var run = function () { if (done) return; done = true; try { fn(); } catch (_) {} };
+    if ('onscrollend' in window) {
+      window.addEventListener('scrollend', run, { once: true });
+      setTimeout(run, 1200);                           // scrollend never fires if nothing moved
+    } else {
+      setTimeout(run, 450);
+    }
+  }
+
   function scrollToGroup(type) {
     var target = document.getElementById('tgd-g-' + type);
     if (!target) return;
-    var offset = stickyOffset();
-    document.documentElement.style.setProperty('--tgd-sticky', (offset + 16) + 'px');
-    var y = target.getBoundingClientRect().top + window.scrollY - offset - 16;
-    try {
-      window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
-    } catch (_) {
-      window.scrollTo(0, Math.max(0, y));             // older browsers
-    }
+
+    var startY = window.scrollY || window.pageYOffset || 0;
+    var naive = target.getBoundingClientRect().top + startY;
+
+    /* Hop to the target, measure the settled layout, hop back. All in one task, so the
+     * browser only paints the final position — none of this is visible. */
+    instantScroll(naive);
+    var offset = chromeOver(target);
+    instantScroll(startY);
+
+    document.documentElement.style.setProperty('--tgd-sticky', (offset + SCROLL_GAP) + 'px');
+    var finalY = Math.max(0, naive - offset - SCROLL_GAP);
+    try { window.scrollTo({ top: finalY, behavior: 'smooth' }); }
+    catch (_) { instantScroll(finalY); }
+
+    /* Self-correcting, because some chrome cannot be measured in advance at all: a nav
+     * that reveals itself on scroll-up, or a bar that animates in, does not exist until
+     * the scroll has finished. Re-check then, and nudge if the heading is still under it. */
+    settle(function () {
+      var left = chromeOver(target);
+      var top = target.getBoundingClientRect().top;
+      if (left && top < left + 4) {
+        instantScroll((window.scrollY || 0) - (left + SCROLL_GAP - top));
+      }
+    });
+
     if (window.history && window.history.replaceState) {
       window.history.replaceState(null, '', '#tgd-g-' + type);
     }
+  }
+
+  /* Fallback tile for a brand whose CMS record has no logo, so the grid does not show a
+   * hole where a card should be. Two initials at most — three starts reading as an
+   * acronym for something else. */
+  function initials(name) {
+    var words = String(name || '').replace(/[^A-Za-z0-9 ]/g, ' ').trim().split(/\s+/);
+    var out = '';
+    for (var i = 0; i < words.length && out.length < 2; i++) {
+      if (words[i]) out += words[i].charAt(0).toUpperCase();
+    }
+    return out || '?';
+  }
+
+  function clip(text, n) {
+    var t = String(text || '').trim();
+    if (t.length <= n) return t;
+    var cut = t.slice(0, n);
+    var sp = cut.lastIndexOf(' ');
+    return (sp > n * 0.6 ? cut.slice(0, sp) : cut).replace(/[,;:.\s]+$/, '') + '\u2026';
   }
 
   function cardHtml(d) {
     var badge = '';
     if (d.t === 'product' && !d.st) badge += '<span class="tgd-b tgd-oos">Out of stock</span>';
     if (d.dc) badge += '<span class="tgd-b tgd-dc">While supplies last</span>';
-    return '<a class="tgd-card" href="' + esc(d.u) + '">'
-      + (d.img ? '<img src="' + esc(d.img) + '" alt="" loading="lazy">' : '')
+
+    /* Brands use the same card as products so the two grids line up, but a logo is not a
+     * product shot: it wants a shorter, padded, white tile so wordmarks stay legible and
+     * transparent PNGs do not disappear into the page. */
+    var isBrand = d.t === 'brand';
+    var media = d.img
+      ? '<img src="' + esc(d.img) + '" alt="" loading="lazy">'
+      : (isBrand ? '<span class="tgd-card-init" aria-hidden="true">' + esc(initials(d.n)) + '</span>' : '');
+
+    return '<a class="tgd-card' + (isBrand ? ' tgd-card-brand' : '') + '" href="' + esc(d.u) + '">'
+      + media
       + '<span class="tgd-card-n">' + esc(d.n) + badge + '</span>'
       + (d.b ? '<span class="tgd-card-m">' + esc(d.b) + '</span>' : '')
       + (d.t === 'product' && stars(d) ? '<span class="tgd-card-m">' + stars(d) + '</span>' : '')
+      + (isBrand ? '<span class="tgd-card-d">' + (d.d ? esc(clip(d.d, 90)) : 'Shop ' + esc(d.n)) + '</span>' : '')
       + (d.t === 'product' ? '<span class="tgd-card-p">' + money(d) + '</span>' : '')
       + '</a>';
   }
@@ -851,16 +970,18 @@
       var list = byType[grp.t];
       if (!list || !list.length) continue;
       html += '<h2 id="tgd-g-' + grp.t + '">' + grp.label + ' (' + list.length + ')</h2>';
-      if (grp.t === 'product') {
-        html += '<div class="tgd-res-grid" data-grid="1">';
+      if (grp.t === 'product' || grp.t === 'brand') {
+        html += '<div class="tgd-res-grid" data-grid="' + grp.t + '">';
         for (var pi = 0; pi < Math.min(list.length, RESULTS_PAGE_SIZE); pi++) html += cardHtml(list[pi]);
         html += '</div>';
         if (list.length > RESULTS_PAGE_SIZE) {
-          html += '<button class="tgd-more" data-more="product">Show more products</button>';
+          html += '<button class="tgd-more" data-more="' + grp.t + '">Show more '
+            + esc(grp.label.toLowerCase()) + '</button>';
         }
       } else {
-        /* Brands, categories and pages are navigational, so a compact list beats a
-         * grid of near-identical cards. */
+        /* Categories and pages stay a compact list: they are navigational and carry no
+         * artwork, so a grid would just be rows of near-identical text cards. Brands do
+         * have logos, so they get the grid above. */
         html += '<div class="tgd-list">';
         for (var li = 0; li < list.length; li++) {
           html += '<a href="' + esc(list[li].u) + '">' + esc(list[li].n) + '</a>';
@@ -879,18 +1000,26 @@
 
     host.innerHTML = html;
 
-    var shown = RESULTS_PAGE_SIZE;
-    var moreBtn = host.querySelector('[data-more="product"]');
-    if (moreBtn) {
-      moreBtn.addEventListener('click', function () {
-        var grid = host.querySelector('[data-grid="1"]');
-        var next = byType.product.slice(shown, shown + RESULTS_PAGE_SIZE);
-        var frag = '';
-        for (var k = 0; k < next.length; k++) frag += cardHtml(next[k]);
-        grid.insertAdjacentHTML('beforeend', frag);
-        shown += next.length;
-        if (shown >= byType.product.length) moreBtn.parentNode.removeChild(moreBtn);
-      });
+    /* Per type, not just products, now that brands are a grid too. The counter has to
+     * be per type as well — one shared `shown` would page the second grid from wherever
+     * the first one had got to. */
+    var moreBtns = host.querySelectorAll('.tgd-more');
+    for (var mb = 0; mb < moreBtns.length; mb++) {
+      (function (btn) {
+        var type = btn.getAttribute('data-more');
+        var list = byType[type] || [];
+        var shown = RESULTS_PAGE_SIZE;
+        btn.addEventListener('click', function () {
+          var grid = host.querySelector('[data-grid="' + type + '"]');
+          if (!grid) return;
+          var next = list.slice(shown, shown + RESULTS_PAGE_SIZE);
+          var frag = '';
+          for (var k = 0; k < next.length; k++) frag += cardHtml(next[k]);
+          grid.insertAdjacentHTML('beforeend', frag);
+          shown += next.length;
+          if (shown >= list.length && btn.parentNode) btn.parentNode.removeChild(btn);
+        });
+      }(moreBtns[mb]));
     }
 
     /* Handle the jump links ourselves so the measured offset is applied. Leaving it
@@ -1000,6 +1129,7 @@
     fold: fold, squash: squash, tokens: tokens, expand: expand, within: within,
     prepare: prepare, search: search, retiredFor: retiredFor,
     stars: stars, ratingBoost: ratingBoost, stickyOffset: stickyOffset,
+    chromeOver: chromeOver, scrollToGroup: scrollToGroup, initials: initials, clip: clip,
     resultsUrl: resultsUrl, fallbackUrl: fallbackUrl, queryFromUrl: queryFromUrl,
     SYNONYMS: SYNONYMS, WEIGHTS: WEIGHTS,
   };
