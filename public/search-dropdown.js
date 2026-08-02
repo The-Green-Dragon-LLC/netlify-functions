@@ -217,7 +217,12 @@
    * name on purpose — measurement says people type "blue raspberry", and that text
    * lives nowhere else. `q` (FAQ questions) and `d` (description) stay low so a
    * passing mention cannot outrank a product actually named for the term. */
-  var WEIGHTS = { n: 10, b: 6, c: 4, x: 7, q: 2, d: 1.5 };
+  /* `br` is the list of brands sold inside a category, and it is weighted BELOW a
+   * product's own brand field (6) on purpose. A brand query should return the brand
+   * page, then its products, then the categories it sells into — not the other way
+   * round. It only needs to be strong enough to bring the category into its own
+   * section at all, which is where the results page shows it. */
+  var WEIGHTS = { n: 10, b: 6, c: 4, x: 7, q: 2, d: 1.5, br: 3.5 };
 
   /* An exact brand-name query jumps the brand page above its own products. 18% of
    * searches are brand-seeking, and someone typing "flying horse" wants the brand,
@@ -277,10 +282,15 @@
           x: tokens(d.x),
           q: tokens(d.q),
           d: tokens(d.d),
+          br: tokens((d.br || []).join(' ')),
         },
         nameFolded: fold(d.n),
         // Only the identity-ish fields; squashing a description is meaningless.
         sq: { n: squash(d.n), b: squash(d.b), x: squash(d.x) },
+        /* Each brand squashed SEPARATELY. Joining them first would concatenate
+         * neighbours into strings that match nothing real — "trehousespacegods" — and
+         * could produce matches spanning two different brand names. */
+        sqbr: (d.br || []).map(squash),
         maxSales: 0,
       };
     }
@@ -294,6 +304,21 @@
   function scoreDoc(entry, qTokens, expanded, foldedQuery) {
     var d = entry.doc, f = entry.f, total = 0, matchedAny = false;
 
+    /* A category's brand list only counts when the query actually NAMES one of its
+     * brands — every token of that brand present, or the squashed form contained.
+     *
+     * Deliberately NO fuzzy tolerance here, unlike every other field. Typo tolerance is
+     * right when matching the thing itself, but this is an INDIRECT association, and
+     * compounding a guessed match with a derived link produces confident nonsense:
+     * "house" and "horse" are one edit apart, so "tre house" matched Flying Horse and
+     * inherited its Kratom categories, while "flying horse" pulled in all nine of TRĒ
+     * House's. Both looked authoritative and both were wrong.
+     *
+     * Nothing is lost by being strict: a misspelled brand still matches the brand page
+     * and its products through their own fields, which is where the typo tolerance
+     * belongs. Only the category link requires certainty. */
+    var brandNamed = (d.br && d.br.length) ? !!matchedBrand(d, foldedQuery) : false;
+
     for (var i = 0; i < expanded.length; i++) {
       var qt = expanded[i];
       // Expanded synonyms count for less than what the user actually typed.
@@ -302,6 +327,7 @@
       var bestForToken = 0;
       for (var key in WEIGHTS) {
         if (!f[key] || !f[key].length) continue;
+        if (key === 'br' && !brandNamed) continue;
         var s = tokenScore(qt, f[key]) * WEIGHTS[key];
         if (s > bestForToken) bestForToken = s;
       }
@@ -309,6 +335,13 @@
       for (var sk in entry.sq) {
         var ss = squashScore(qt, entry.sq[sk]) * WEIGHTS[sk];
         if (ss > bestForToken) bestForToken = ss;
+      }
+      // Same, for the brands inside a category: "trehouse" should find Delta 8.
+      if (brandNamed) {
+        for (var bi = 0; bi < entry.sqbr.length; bi++) {
+          var bss = squashScore(qt, entry.sqbr[bi]) * WEIGHTS.br;
+          if (bss > bestForToken) bestForToken = bss;
+        }
       }
       if (bestForToken > 0) { matchedAny = true; total += bestForToken * weightScale; }
     }
@@ -321,6 +354,7 @@
       for (var t = 0; t < qTokens.length; t++) {
         var landed = false;
         for (var key2 in WEIGHTS) {
+          if (key2 === 'br' && !brandNamed) continue;
           if (f[key2] && f[key2].length && tokenScore(qTokens[t], f[key2]) > 0) { landed = true; break; }
         }
         if (!landed) {
@@ -711,6 +745,7 @@
     'font-weight:700;font-size:26px;letter-spacing:1px}',
     '.tgd-card-d{display:block;font-size:12px;color:#6b6b6b;line-height:1.45}',
     '.tgd-list a{display:block;padding:9px 0;border-bottom:1px solid #eee;text-decoration:none;color:inherit}',
+    '.tgd-list-m{color:#7a8a80;font-size:12px;margin-left:8px}',
     '.tgd-more{margin-top:14px;padding:9px 16px;border:1px solid #276749;background:#fff;color:#276749;',
     'border-radius:6px;font-weight:600;cursor:pointer}',
     '.tgd-res-empty{padding:24px 0;color:#5a5a5a}',
@@ -885,6 +920,39 @@
     return out || '?';
   }
 
+  /* Which brand in this category the query NAMES — used twice: to gate whether the
+   * brand list scores at all (see scoreDoc), and to label the result so it explains
+   * itself. "Delta 8" on its own looks like a stray hit for a brand search.
+   *
+   * Exact by design. A brand counts as named when every one of its tokens appears in
+   * the query, or when the squashed forms contain one another ("trehouse"). One token
+   * of a multi-word brand is not enough: "house" alone must not claim TRĒ House's
+   * categories. */
+  function matchedBrand(d, query) {
+    if (!d.br || !d.br.length) return '';
+    var qs = squash(query), qt = tokens(query);
+    for (var i = 0; i < d.br.length; i++) {
+      var bf = fold(d.br[i]), bs = squash(d.br[i]);
+      /* The query must contain the WHOLE brand — not the brand containing the query.
+       * The reverse direction let one common word inside a brand name claim that
+       * brand's categories: "kratom" matched "Rave Kratom" and so returned Kanna and
+       * Kava, and "cbd" matched "The Green Dragon CBD" and returned CBG for Pain. Both
+       * are real brands in those categories, but neither is what the query meant. */
+      if (qs && qs.indexOf(bs) !== -1 && bs.length >= 4) return d.br[i];
+      /* EVERY token of the brand must appear in the query — not the other way round.
+       * Checking that the query's tokens appear in the brand is the same trap in token
+       * form: the single word "kratom" is present in "Rave Kratom", which handed the
+       * query that brand's Kanna and Kava categories. */
+      var bts = bf ? bf.split(' ') : [];
+      var all = bts.length > 0 && qt.length > 0;
+      for (var j = 0; j < bts.length; j++) {
+        if (qt.indexOf(bts[j]) === -1) { all = false; break; }
+      }
+      if (all) return d.br[i];
+    }
+    return '';
+  }
+
   function clip(text, n) {
     var t = String(text || '').trim();
     if (t.length <= n) return t;
@@ -984,7 +1052,9 @@
          * have logos, so they get the grid above. */
         html += '<div class="tgd-list">';
         for (var li = 0; li < list.length; li++) {
-          html += '<a href="' + esc(list[li].u) + '">' + esc(list[li].n) + '</a>';
+          var mb = matchedBrand(list[li], query);
+          html += '<a href="' + esc(list[li].u) + '">' + esc(list[li].n)
+            + (mb ? '<span class="tgd-list-m">' + esc(mb) + '</span>' : '') + '</a>';
         }
         html += '</div>';
       }
@@ -1129,6 +1199,7 @@
     fold: fold, squash: squash, tokens: tokens, expand: expand, within: within,
     prepare: prepare, search: search, retiredFor: retiredFor,
     stars: stars, ratingBoost: ratingBoost, stickyOffset: stickyOffset,
+    matchedBrand: matchedBrand,
     chromeOver: chromeOver, scrollToGroup: scrollToGroup, initials: initials, clip: clip,
     resultsUrl: resultsUrl, fallbackUrl: fallbackUrl, queryFromUrl: queryFromUrl,
     SYNONYMS: SYNONYMS, WEIGHTS: WEIGHTS,

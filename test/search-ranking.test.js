@@ -147,5 +147,63 @@ ok(run('') .length === 0, 'empty query returns nothing');
 ok(run('   ').length === 0, 'whitespace returns nothing');
 ok(run('zzzqqxx').length === 0, 'nonsense returns nothing rather than everything', run('zzzqqxx'));
 
+/* ─── CATEGORY ↔ BRAND ASSOCIATION ──────────────────────────────────────────────
+ *
+ * A brand search should return the categories that brand sells into. Nothing in a
+ * category record names its brands, so the index carries a derived `br` list.
+ *
+ * The cases below are the false positives that derivation produced on real data, all
+ * from the same root cause — a loose match on an INDIRECT association reads as
+ * authoritative but is fabricated:
+ *
+ *   • "house" and "horse" are one edit apart, so "tre house" fuzzy-matched Flying Horse
+ *     and returned its Kratom categories, while "flying horse" claimed all nine of TRĒ
+ *     House's.
+ *   • the single word "kratom" appears inside "Rave Kratom", so it claimed that brand's
+ *     Kanna and Kava categories.
+ *   • "cbd" appears inside "The Green Dragon CBD", so it claimed CBG for Pain.
+ *
+ * So a brand only counts as named when the query contains ALL of its tokens, or its
+ * whole squashed form. Typo tolerance stays on the brand page and the products, where
+ * the match is direct. */
+console.log(' category ↔ brand association');
+
+const CB = S.prepare({ docs: [
+  { t: 'brand', n: 'TRĒ House', u: '/brand/tre-house' },
+  { t: 'brand', n: 'Flying Horse', u: '/brand/flying-horse' },
+  { t: 'category', n: 'Delta 8', u: '/product-parent-categories/delta-8', br: ['TRĒ House', 'Flying Horse'] },
+  { t: 'category', n: 'Mushroom Gummies', u: '/product-parent-categories/mushroom-gummies', br: ['TRĒ House'] },
+  { t: 'category', n: 'Kratom Powder', u: '/product-parent-categories/kratom-powder', br: ['Flying Horse'] },
+  { t: 'category', n: 'Kanna', u: '/product-parent-categories/kanna', br: ['Rave Kratom'] },
+  { t: 'category', n: 'CBG for Pain', u: '/product-parent-categories/cbg-for-pain', br: ['The Green Dragon CBD'] },
+  { t: 'category', n: 'Vape Pens', u: '/product-subcategories/vape-pens' },
+] });
+const cats = (q) => S.search(CB, q, 50).filter((r) => r.doc.t === 'category').map((r) => r.doc.n);
+
+ok(cats('tre house').indexOf('Mushroom Gummies') !== -1,
+  'a brand query returns the categories it sells into', cats('tre house'));
+ok(cats('trehouse').indexOf('Mushroom Gummies') !== -1,
+  'the squashed spelling works too — "trehouse" drew 111 views a year', cats('trehouse'));
+ok(cats('tre house').indexOf('Kratom Powder') === -1,
+  'NOT another brand\'s categories: "house" is one edit from "horse"', cats('tre house'));
+ok(cats('flying horse').indexOf('Mushroom Gummies') === -1,
+  'and not in the other direction either', cats('flying horse'));
+ok(cats('kratom').indexOf('Kanna') === -1,
+  'one shared word does not claim a brand: "kratom" is inside "Rave Kratom"', cats('kratom'));
+ok(cats('cbd').indexOf('CBG for Pain') === -1,
+  'nor does "cbd" inside "The Green Dragon CBD"', cats('cbd'));
+ok(cats('tre house').indexOf('Vape Pens') === -1,
+  'a category with no brand list is not dragged in');
+
+/* Ranking order: the brand page itself must stay on top of its own categories. */
+const order = S.search(CB, 'tre house', 50);
+ok(order[0].doc.t === 'brand', 'the brand page still outranks its categories', order[0].doc);
+
+/* The label that explains why a category is in the results. */
+ok(S.matchedBrand({ br: ['TRĒ House'] }, 'tre house') === 'TRĒ House', 'the matched brand is named for the label');
+ok(S.matchedBrand({ br: ['TRĒ House'] }, 'flying horse') === '', 'and stays empty when nothing is named');
+ok(S.matchedBrand({ br: ['Rave Kratom'] }, 'kratom') === '', 'a partial word does not produce a label');
+ok(S.matchedBrand({}, 'tre house') === '', 'a category with no brand list has no label');
+
 console.log('\n' + (fails ? fails + ' failing' : 'all assertions passed') + '\n');
 process.exitCode = fails ? 1 : 0;
