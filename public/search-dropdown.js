@@ -715,8 +715,74 @@
     'text-decoration:none;color:#276749;font-size:13px;font-weight:600;background:#fff}',
     '.tgd-jump a:hover{background:#f1f5f2;border-color:#276749}',
     '.tgd-jump a .tgd-jump-n{color:#7a8a80;font-weight:400;margin-left:4px}',
-    '.tgd-res h2{scroll-margin-top:110px}'
+    /* Offset is MEASURED at runtime, not guessed — see stickyOffset(). The fallback
+     * only applies before the measurement runs or if it fails. */
+    '.tgd-res h2{scroll-margin-top:var(--tgd-sticky, 120px)}'
   ].join('');
+
+  /* How much of the top of the viewport is covered by fixed or sticky chrome.
+   *
+   * This site stacks a fixed search bar and an announcement bar, and their combined
+   * height differs between breakpoints and changes if the announcement bar is
+   * dismissed — so a hardcoded offset is wrong somewhere by construction. A first
+   * version used 110px and overshot, hiding the heading behind the header.
+   *
+   * Measures every fixed/sticky element that actually straddles y=0 and takes the
+   * lowest bottom edge, which handles stacked bars without double-counting overlaps. */
+  function stickyOffset() {
+    /* Collect candidate top chrome once. */
+    var bars = [];
+    var els = document.querySelectorAll('body *');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el.className && String(el.className).indexOf('tgd-') === 0) continue;  // our own UI
+      var cs;
+      try { cs = window.getComputedStyle(el); } catch (_) { continue; }
+      if (!cs) continue;
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+      var r = el.getBoundingClientRect();
+      if (r.height <= 0 || r.height > 300) continue;   // not a bar; skip full-height overlays
+      if (r.bottom <= 0) continue;                     // scrolled out above
+      bars.push(r);
+    }
+
+    /* Grow the covered band. A second bar STACKED under the first has top > 0, so
+     * requiring every bar to straddle y=0 misses it — that returned 56 instead of 100
+     * for this site's search bar plus announcement bar. Extend the band while any bar
+     * starts within it, which also ignores unrelated floating chrome further down. */
+    var covered = 0;
+    for (var pass = 0; pass < 5; pass++) {
+      var grew = false;
+      for (var b = 0; b < bars.length; b++) {
+        if (bars[b].top <= covered + 4 && bars[b].bottom > covered) {
+          covered = bars[b].bottom;
+          grew = true;
+        }
+      }
+      if (!grew) break;
+    }
+    return Math.round(covered);
+  }
+
+  /* Scroll to a heading with the measured offset applied, rather than trusting the
+   * browser's anchor jump. Also keeps the URL hash in step without triggering a
+   * second, un-offset jump. */
+  function scrollToGroup(type) {
+    var target = document.getElementById('tgd-g-' + type);
+    if (!target) return;
+    var offset = stickyOffset();
+    document.documentElement.style.setProperty('--tgd-sticky', (offset + 16) + 'px');
+    var y = target.getBoundingClientRect().top + window.scrollY - offset - 16;
+    try {
+      window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+    } catch (_) {
+      window.scrollTo(0, Math.max(0, y));             // older browsers
+    }
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', '#tgd-g-' + type);
+    }
+  }
 
   function cardHtml(d) {
     var badge = '';
@@ -827,6 +893,24 @@
       });
     }
 
+    /* Handle the jump links ourselves so the measured offset is applied. Leaving it
+     * to the browser's native anchor behaviour is what put the heading under the
+     * header. */
+    var jumps = host.querySelectorAll('.tgd-jump a');
+    for (var jj = 0; jj < jumps.length; jj++) {
+      jumps[jj].addEventListener('click', function (ev) {
+        var href = this.getAttribute('href') || '';
+        var m = /^#tgd-g-(.+)$/.exec(href);
+        if (!m) return;
+        ev.preventDefault();
+        scrollToGroup(m[1]);
+      });
+    }
+
+    /* Set the CSS fallback from the real measurement too, so any anchor that is not
+     * intercepted (a pasted #tgd-g-brand URL, say) still clears the header. */
+    document.documentElement.style.setProperty('--tgd-sticky', (stickyOffset() + 16) + 'px');
+
     host.querySelectorAll('.tgd-card, .tgd-list a').forEach(function (a, idx) {
       a.addEventListener('click', function () {
         track('search_result_click', {
@@ -915,7 +999,7 @@
   var api = {
     fold: fold, squash: squash, tokens: tokens, expand: expand, within: within,
     prepare: prepare, search: search, retiredFor: retiredFor,
-    stars: stars, ratingBoost: ratingBoost,
+    stars: stars, ratingBoost: ratingBoost, stickyOffset: stickyOffset,
     resultsUrl: resultsUrl, fallbackUrl: fallbackUrl, queryFromUrl: queryFromUrl,
     SYNONYMS: SYNONYMS, WEIGHTS: WEIGHTS,
   };
