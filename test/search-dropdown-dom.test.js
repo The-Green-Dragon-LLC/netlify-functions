@@ -47,7 +47,7 @@ const body = makeEl('body');
 
 global.window = {
   scrollX: 0, scrollY: 0, dataLayer: [],
-  addEventListener() {}, location: { href: '' },
+  addEventListener() {}, location: { href: '', search: '?q=blue+raspberry', replace() {} },
 };
 global.document = {
   readyState: 'complete',
@@ -83,7 +83,12 @@ ok(src.indexOf("autocomplete") !== -1, 'disables native autocomplete so it canno
 console.log(' progressive enhancement — the live form must never get worse');
 ok(/shop-all-products\?\*=/.test(src), 'keeps the current /shop-all-products?*= fallback URL');
 ok(/Enter[\s\S]{0,400}active >= 0/.test(src),
-  'Enter only intercepts when a row is highlighted, otherwise the form submits');
+  'Enter prefers a highlighted row when there is one');
+/* The property that must hold is narrower than it was: Enter now also routes to the
+ * results page, so the fallback is specifically "no usable index -> let the form
+ * submit", not "no highlighted row -> let the form submit". */
+ok(/if \(prepared && q\.length >= 2\)/.test(src),
+  'and only overrides the form submit when an index is actually loaded');
 ok(/catch\s*\(\s*function|\.catch\(/.test(src), 'a failed index fetch is caught, not thrown');
 ok(global.window.__tgdSearch !== undefined, 'a rejected fetch did not break module load');
 
@@ -105,6 +110,21 @@ ok(/results_count/.test(src), 'reports result count, which is what makes zero-re
 console.log(' compliance surface');
 ok(/retiredFor\(q\)/.test(src), 'checks the retired-term list before searching');
 ok(/results_count: 0, retired: true/.test(src), 'and reports the retired case distinctly in analytics');
+
+console.log(' results page routing (Enter and "See all" must not land on the old filter page)');
+ok(S.resultsUrl('blue raspberry') === '/search?q=blue%20raspberry' ||
+   S.resultsUrl('blue raspberry') === '/search?q=blue+raspberry',
+  'results URL points at /search with the query', S.resultsUrl('blue raspberry'));
+ok(S.fallbackUrl('x').indexOf('/shop-all-products') === 0, 'the filter page remains the no-index fallback', S.fallbackUrl('x'));
+ok(S.queryFromUrl() === 'blue raspberry', 'reads ?q= from the URL', S.queryFromUrl());
+ok(/prepared && q\.length >= 2[\s\S]{0,700}resultsUrl\(q\)/.test(src),
+  'Enter with no highlighted row goes to the results page when the index loaded');
+ok(/if \(prepared\) \{[\s\S]{0,200}\}[\s\S]{0,300}fallbackUrl\(query\)/.test(src) || /seeAllUrl/.test(src),
+  '"See all" switches to the filter page only when there is no index');
+ok(/p\.get\('q'\) \|\| p\.get\('\*'\)/.test(src),
+  'also accepts the legacy ?*= parameter so old links keep working');
+ok(/RESULTS_SELECTOR/.test(src) && /tgd-search-results/.test(src),
+  'renders into a container the Webflow page provides');
 
 console.log(' escaping');
 ok(S.fold('<script>') === 'script', 'folding strips markup characters');

@@ -343,6 +343,14 @@
    * it filters the product list in place and works. Hooking it would mean fighting
    * Finsweet for control of the same list. */
   var INPUT_SELECTOR = '#search-bar, input.search-input.navbar';
+
+  /* The full results page. /search is reused deliberately: it already exists, and it
+   * drew 1 pageview in twelve months, so there is no traffic or ranking to protect.
+   * The page needs one Embed element containing <div id="tgd-search-results"></div>;
+   * everything else is rendered here. */
+  var RESULTS_PATH = '/search';
+  var RESULTS_SELECTOR = '#tgd-search-results';
+  var RESULTS_PAGE_SIZE = 24;
   var GROUPS = [
     { t: 'product',  label: 'Products',   max: 6 },
     { t: 'brand',    label: 'Brands',     max: 3 },
@@ -444,10 +452,23 @@
     rows = [];
   }
 
-  /* Exactly what the box does today, so "See all results" and a bare Enter both keep
-   * working even if this script is doing nothing useful. */
+  /* The full results page, which can show every content type. */
+  function resultsUrl(q) {
+    return RESULTS_PATH + '?q=' + encodeURIComponent(q);
+  }
+
+  /* Exactly what the box does today. Used when the index could not load, so a bare
+   * Enter and the fallback link still reach Finsweet's filter rather than a page that
+   * cannot render anything. */
   function fallbackUrl(q) {
     return '/shop-all-products?*=' + encodeURIComponent(q);
+  }
+
+  /* Which URL "See all" should use depends on whether the index is usable: sending
+   * someone to a JS-rendered results page that has no index would show them an empty
+   * screen, whereas the filter page still works on its own. */
+  function seeAllUrl(q) {
+    return prepared ? resultsUrl(q) : fallbackUrl(q);
   }
 
   function rowHtml(d, i) {
@@ -492,7 +513,7 @@
           html += rowHtml(hits[hi], rows.length - 1);
         }
       }
-      html += '<a class="tgd-all" href="' + esc(fallbackUrl(query))
+      html += '<a class="tgd-all" href="' + esc(seeAllUrl(query))
         + '">See all results for \u201c' + esc(query) + '\u201d</a>';
     }
 
@@ -560,17 +581,32 @@
       if (e.key === 'ArrowDown' && open) { e.preventDefault(); highlight(1); }
       else if (e.key === 'ArrowUp' && open) { e.preventDefault(); highlight(-1); }
       else if (e.key === 'Escape') { close(); }
-      else if (e.key === 'Enter' && open && active >= 0 && rows[active]) {
-        e.preventDefault();
-        var d = rows[active];
-        track('search_result_click', {
-          search_term: input.value.trim(), position: active + 1,
-          item_id: d.u, result_type: d.t
-        });
-        window.location.href = d.u;
+      else if (e.key === 'Enter') {
+        if (open && active >= 0 && rows[active]) {
+          // A highlighted row wins: go straight to that result.
+          e.preventDefault();
+          var d = rows[active];
+          track('search_result_click', {
+            search_term: input.value.trim(), position: active + 1,
+            item_id: d.u, result_type: d.t
+          });
+          window.location.href = d.u;
+          return;
+        }
+        var q = input.value.trim();
+        if (prepared && q.length >= 2) {
+          /* Nothing highlighted: go to the full results page, which can show brands,
+           * categories and pages. Letting this fall through to the form would land on
+           * Finsweet's substring-filtered product list - the very thing being
+           * replaced. */
+          e.preventDefault();
+          window.location.href = resultsUrl(q);
+          return;
+        }
+        /* No index (or too short): fall through to the form and let Finsweet filter.
+         * A page that renders from an index we do not have would be blank, so the old
+         * behaviour is genuinely the better outcome here. */
       }
-      /* Enter with nothing highlighted deliberately falls through to the form, so it
-       * behaves exactly as it does today. */
     });
   }
 
@@ -590,9 +626,172 @@
     if (!e.target.closest('.tgd-search-panel')) close();
   }
 
+  /* ─── FULL RESULTS PAGE ───────────────────────────────────────────────────── */
+
+  var RESULTS_CSS = [
+    '.tgd-res{font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a}',
+    '.tgd-res h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#7a7a7a;margin:28px 0 10px}',
+    '.tgd-res h2:first-child{margin-top:0}',
+    '.tgd-res-sum{color:#5a5a5a;margin-bottom:8px}',
+    '.tgd-res-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px}',
+    '.tgd-card{display:block;text-decoration:none;color:inherit;border:1px solid #e6e6e6;border-radius:8px;padding:12px;background:#fff}',
+    '.tgd-card:hover{border-color:#276749;box-shadow:0 4px 14px rgba(0,0,0,.07)}',
+    '.tgd-card img{width:100%;height:150px;object-fit:contain;background:#fafafa;border-radius:6px;margin-bottom:10px}',
+    '.tgd-card-n{display:block;font-weight:600;margin-bottom:2px}',
+    '.tgd-card-m{display:block;font-size:13px;color:#6b6b6b;margin-bottom:6px}',
+    '.tgd-card-p{font-weight:700}',
+    '.tgd-card-p s{color:#9a9a9a;font-weight:400;margin-right:5px}',
+    '.tgd-list a{display:block;padding:9px 0;border-bottom:1px solid #eee;text-decoration:none;color:inherit}',
+    '.tgd-more{margin-top:14px;padding:9px 16px;border:1px solid #276749;background:#fff;color:#276749;',
+    'border-radius:6px;font-weight:600;cursor:pointer}',
+    '.tgd-res-empty{padding:24px 0;color:#5a5a5a}',
+    '.tgd-res-note{padding:16px;background:#f7f4e8;border:1px solid #e4dcc0;border-radius:8px;color:#5d4f22}'
+  ].join('');
+
+  function cardHtml(d) {
+    var badge = '';
+    if (d.t === 'product' && !d.st) badge += '<span class="tgd-b tgd-oos">Out of stock</span>';
+    if (d.dc) badge += '<span class="tgd-b tgd-dc">While supplies last</span>';
+    return '<a class="tgd-card" href="' + esc(d.u) + '">'
+      + (d.img ? '<img src="' + esc(d.img) + '" alt="" loading="lazy">' : '')
+      + '<span class="tgd-card-n">' + esc(d.n) + badge + '</span>'
+      + (d.b ? '<span class="tgd-card-m">' + esc(d.b) + '</span>' : '')
+      + (d.t === 'product' ? '<span class="tgd-card-p">' + money(d) + '</span>' : '')
+      + '</a>';
+  }
+
+  function renderResults(host, query) {
+    var retired = retiredFor(query);
+    if (retired) {
+      host.innerHTML = '<div class="tgd-res"><div class="tgd-res-note">' + esc(retired) + '</div></div>';
+      track('search', { search_term: query, results_count: 0, retired: true, surface: 'results_page' });
+      return;
+    }
+
+    var all = search(prepared, query, 400);
+    track('search', { search_term: query, results_count: all.length, surface: 'results_page' });
+    track('view_search_results', { search_term: query, results_count: all.length });
+
+    if (!all.length) {
+      host.innerHTML = '<div class="tgd-res"><div class="tgd-res-empty">No results for \u201c'
+        + esc(query) + '\u201d.</div>'
+        + '<a class="tgd-all" href="' + esc(fallbackUrl(query)) + '">Browse all products</a></div>';
+      return;
+    }
+
+    var byType = { product: [], brand: [], category: [], page: [] };
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i].doc.t;
+      if (byType[t]) byType[t].push(all[i].doc);
+    }
+
+    var html = '<div class="tgd-res">';
+    html += '<div class="tgd-res-sum">' + all.length + ' result' + (all.length === 1 ? '' : 's')
+      + ' for \u201c' + esc(query) + '\u201d</div>';
+
+    for (var gi = 0; gi < GROUPS.length; gi++) {
+      var grp = GROUPS[gi];
+      var list = byType[grp.t];
+      if (!list || !list.length) continue;
+      html += '<h2>' + grp.label + ' (' + list.length + ')</h2>';
+      if (grp.t === 'product') {
+        html += '<div class="tgd-res-grid" data-grid="1">';
+        for (var pi = 0; pi < Math.min(list.length, RESULTS_PAGE_SIZE); pi++) html += cardHtml(list[pi]);
+        html += '</div>';
+        if (list.length > RESULTS_PAGE_SIZE) {
+          html += '<button class="tgd-more" data-more="product">Show more products</button>';
+        }
+      } else {
+        /* Brands, categories and pages are navigational, so a compact list beats a
+         * grid of near-identical cards. */
+        html += '<div class="tgd-list">';
+        for (var li = 0; li < list.length; li++) {
+          html += '<a href="' + esc(list[li].u) + '">' + esc(list[li].n) + '</a>';
+        }
+        html += '</div>';
+      }
+    }
+
+    /* Faceted narrowing stays on the Finsweet page rather than being rebuilt here.
+     * This page's job is relevance across every content type; that page's job is
+     * filtering products, and it already does it. */
+    html += '<h2>Narrow by brand, category or price</h2>';
+    html += '<a class="tgd-all" href="' + esc(fallbackUrl(query)) + '">Filter products for \u201c'
+      + esc(query) + '\u201d</a>';
+    html += '</div>';
+
+    host.innerHTML = html;
+
+    var shown = RESULTS_PAGE_SIZE;
+    var moreBtn = host.querySelector('[data-more="product"]');
+    if (moreBtn) {
+      moreBtn.addEventListener('click', function () {
+        var grid = host.querySelector('[data-grid="1"]');
+        var next = byType.product.slice(shown, shown + RESULTS_PAGE_SIZE);
+        var frag = '';
+        for (var k = 0; k < next.length; k++) frag += cardHtml(next[k]);
+        grid.insertAdjacentHTML('beforeend', frag);
+        shown += next.length;
+        if (shown >= byType.product.length) moreBtn.parentNode.removeChild(moreBtn);
+      });
+    }
+
+    host.querySelectorAll('.tgd-card, .tgd-list a').forEach(function (a, idx) {
+      a.addEventListener('click', function () {
+        track('search_result_click', {
+          search_term: query, position: idx + 1,
+          item_id: a.getAttribute('href'), result_type: 'results_page'
+        });
+      });
+    });
+  }
+
+  function queryFromUrl() {
+    try {
+      var p = new URLSearchParams(window.location.search);
+      /* `*` is accepted as well as `q` so existing links and the Finsweet-style URL
+       * both land here rather than showing an empty page. */
+      return (p.get('q') || p.get('*') || p.get('query') || '').trim();
+    } catch (_) { return ''; }
+  }
+
+  function initResultsPage() {
+    var host = document.querySelector(RESULTS_SELECTOR);
+    if (!host || host.getAttribute('data-tgd-done') === '1') return;
+
+    var query = queryFromUrl();
+    if (!query) {
+      host.innerHTML = '<div class="tgd-res"><div class="tgd-res-empty">'
+        + 'Type in the search box above to find products, brands and articles.</div></div>';
+      return;
+    }
+    host.setAttribute('data-tgd-done', '1');
+
+    var css = document.createElement('style');
+    css.textContent = CSS + RESULTS_CSS;   // reuse the badge styles from the dropdown
+    document.head.appendChild(css);
+
+    host.innerHTML = '<div class="tgd-res"><div class="tgd-res-empty">Searching\u2026</div></div>';
+
+    /* Prefill the header box so the query is visible and editable, which it is not on
+     * the Finsweet page today. */
+    var input = document.querySelector(INPUT_SELECTOR);
+    if (input && !input.value) input.value = query;
+
+    loadIndex().then(function () {
+      if (!prepared) {
+        // Nothing to render from; send them somewhere that works on its own.
+        window.location.replace(fallbackUrl(query));
+        return;
+      }
+      renderResults(host, query);
+    });
+  }
+
   function init() {
     var inputs = document.querySelectorAll(INPUT_SELECTOR);
     for (var i = 0; i < inputs.length; i++) attach(inputs[i]);
+    initResultsPage();
   }
 
   if (typeof document !== 'undefined') {
@@ -614,6 +813,7 @@
   var api = {
     fold: fold, squash: squash, tokens: tokens, expand: expand, within: within,
     prepare: prepare, search: search, retiredFor: retiredFor,
+    resultsUrl: resultsUrl, fallbackUrl: fallbackUrl, queryFromUrl: queryFromUrl,
     SYNONYMS: SYNONYMS, WEIGHTS: WEIGHTS,
   };
   if (typeof window !== 'undefined') window.__tgdSearch = api;
