@@ -133,6 +133,17 @@ ok(/id="tgd-g-' \+ grp\.t/.test(src), 'headings carry anchor ids for the nav to 
 ok(/scroll-margin-top/.test(src), 'anchored headings clear the fixed header rather than hiding behind it');
 ok(/totalOfType > hits\.length/.test(src), 'dropdown group labels show the full count when more exists behind "See all"');
 
+console.log(' sticky-header scroll offset (the header covered the heading)');
+ok(/stickyOffset/.test(src), 'measures the sticky chrome instead of hardcoding a height');
+ok(!/scroll-margin-top:\s*110px/.test(src), 'the guessed 110px is gone');
+ok(/var\(--tgd-sticky/.test(src), 'CSS fallback reads the measured value');
+ok(/top <= covered \+ 4/.test(src),
+  'grows the covered band so a STACKED second bar counts — requiring every bar to straddle y=0 returned 56 instead of 100');
+ok(/height > 300/.test(src), 'ignores full-height overlays, which are not top chrome');
+ok(/ev\.preventDefault\(\)[\s\S]{0,80}scrollToGroup/.test(src),
+  'intercepts the jump click rather than trusting the native anchor jump');
+ok(/replaceState/.test(src), 'updates the hash without triggering a second un-offset jump');
+
 console.log(' escaping');
 ok(S.fold('<script>') === 'script', 'folding strips markup characters');
 ok(/replace\(\/&\/g, '&amp;'\)/.test(src), 'output is HTML-escaped before innerHTML');
