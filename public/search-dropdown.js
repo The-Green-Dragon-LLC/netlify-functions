@@ -507,7 +507,12 @@
           if (results[ri].doc.t === grp.t) hits.push(results[ri].doc);
         }
         if (!hits.length) continue;
-        html += '<div class="tgd-g">' + grp.label + '</div>';
+        /* Show the total for the type, not just how many fit here, so "Brands 4" tells
+         * you more exists behind "See all". */
+        var totalOfType = 0;
+        for (var ci = 0; ci < results.length; ci++) if (results[ci].doc.t === grp.t) totalOfType++;
+        html += '<div class="tgd-g">' + grp.label
+          + (totalOfType > hits.length ? ' (' + totalOfType + ')' : '') + '</div>';
         for (var hi = 0; hi < hits.length; hi++) {
           rows.push(hits[hi]);
           html += rowHtml(hits[hi], rows.length - 1);
@@ -645,7 +650,13 @@
     '.tgd-more{margin-top:14px;padding:9px 16px;border:1px solid #276749;background:#fff;color:#276749;',
     'border-radius:6px;font-weight:600;cursor:pointer}',
     '.tgd-res-empty{padding:24px 0;color:#5a5a5a}',
-    '.tgd-res-note{padding:16px;background:#f7f4e8;border:1px solid #e4dcc0;border-radius:8px;color:#5d4f22}'
+    '.tgd-res-note{padding:16px;background:#f7f4e8;border:1px solid #e4dcc0;border-radius:8px;color:#5d4f22}',
+    '.tgd-jump{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 22px}',
+    '.tgd-jump a{display:inline-block;padding:6px 12px;border:1px solid #d6ddd8;border-radius:999px;',
+    'text-decoration:none;color:#276749;font-size:13px;font-weight:600;background:#fff}',
+    '.tgd-jump a:hover{background:#f1f5f2;border-color:#276749}',
+    '.tgd-jump a .tgd-jump-n{color:#7a8a80;font-weight:400;margin-left:4px}',
+    '.tgd-res h2{scroll-margin-top:110px}'
   ].join('');
 
   function cardHtml(d) {
@@ -689,11 +700,31 @@
     html += '<div class="tgd-res-sum">' + all.length + ' result' + (all.length === 1 ? '' : 's')
       + ' for \u201c' + esc(query) + '\u201d</div>';
 
+    /* Quick nav. Only groups with hits appear, so this never advertises an empty
+     * section, and it is skipped entirely when just one group matched — a single chip
+     * that scrolls nowhere useful is noise.
+     *
+     * scroll-margin-top on the headings keeps the target clear of the fixed header;
+     * without it an anchor jump lands with the heading hidden behind the nav bar. */
+    var present = [];
+    for (var pi2 = 0; pi2 < GROUPS.length; pi2++) {
+      var g2 = GROUPS[pi2];
+      if (byType[g2.t] && byType[g2.t].length) present.push(g2);
+    }
+    if (present.length > 1) {
+      html += '<nav class="tgd-jump" aria-label="Jump to result type">';
+      for (var ji = 0; ji < present.length; ji++) {
+        html += '<a href="#tgd-g-' + present[ji].t + '">' + present[ji].label
+          + '<span class="tgd-jump-n">' + byType[present[ji].t].length + '</span></a>';
+      }
+      html += '</nav>';
+    }
+
     for (var gi = 0; gi < GROUPS.length; gi++) {
       var grp = GROUPS[gi];
       var list = byType[grp.t];
       if (!list || !list.length) continue;
-      html += '<h2>' + grp.label + ' (' + list.length + ')</h2>';
+      html += '<h2 id="tgd-g-' + grp.t + '">' + grp.label + ' (' + list.length + ')</h2>';
       if (grp.t === 'product') {
         html += '<div class="tgd-res-grid" data-grid="1">';
         for (var pi = 0; pi < Math.min(list.length, RESULTS_PAGE_SIZE); pi++) html += cardHtml(list[pi]);

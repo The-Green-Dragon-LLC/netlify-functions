@@ -126,6 +126,13 @@ ok(/p\.get\('q'\) \|\| p\.get\('\*'\)/.test(src),
 ok(/RESULTS_SELECTOR/.test(src) && /tgd-search-results/.test(src),
   'renders into a container the Webflow page provides');
 
+console.log(' quick nav for result types');
+ok(/tgd-jump/.test(src), 'renders a jump nav on the results page');
+ok(/present\.length > 1/.test(src), 'but only when more than one type matched — a lone chip is noise');
+ok(/id="tgd-g-' \+ grp\.t/.test(src), 'headings carry anchor ids for the nav to target');
+ok(/scroll-margin-top/.test(src), 'anchored headings clear the fixed header rather than hiding behind it');
+ok(/totalOfType > hits\.length/.test(src), 'dropdown group labels show the full count when more exists behind "See all"');
+
 console.log(' escaping');
 ok(S.fold('<script>') === 'script', 'folding strips markup characters');
 ok(/replace\(\/&\/g, '&amp;'\)/.test(src), 'output is HTML-escaped before innerHTML');
