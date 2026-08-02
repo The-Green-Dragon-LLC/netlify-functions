@@ -757,7 +757,18 @@
 
   function initResultsPage() {
     var host = document.querySelector(RESULTS_SELECTOR);
-    if (!host || host.getAttribute('data-tgd-done') === '1') return;
+    if (!host) {
+      /* Say something when we are clearly ON the results page but the container is
+       * absent. Returning silently meant a missing Webflow Embed looked identical to
+       * "the script is broken", and the page reads as blank apart from Webflow's own
+       * native search element reporting zero results. */
+      if (window.location.pathname.replace(/\/$/, '') === RESULTS_PATH) {
+        console.warn('[tgd-search] no ' + RESULTS_SELECTOR + ' on ' + RESULTS_PATH +
+          ' — add an Embed containing <div id="tgd-search-results"></div> to that page.');
+      }
+      return;
+    }
+    if (host.getAttribute('data-tgd-done') === '1') return;
 
     var query = queryFromUrl();
     if (!query) {
