@@ -645,3 +645,80 @@ Slots in as **step 5**, replacing the thinner "query logging" item: GA4 events +
 - ~~Product Variants as standalone results?~~ **Decided: no — fold into parent products,** never linked directly. See §3b.
 - ~~Should search cover wholesale products?~~ **Resolved: moot.** The `Wholesale Products` collection has **0 items** on this site — wholesale lives on the separate Distro site (greendragondistribution.com, site ID `6781b33b9cffc0281c28d38d`), which is out of scope.
 - ~~Include `Cost` / wholesale pricing fields?~~ **Decided: no — hard exclusion.** Enforced as a field allowlist, not a denylist. See §3b.
+
+---
+
+## 8. Category ↔ brand association (added 2026-08-02)
+
+**Reported:** searching a brand returned almost none of the categories that brand
+appears in. "tre house" returned exactly one category, and it was a false positive
+(`CBD for Pets`).
+
+**Cause:** nothing in the data links a category to its brands. Category records carry
+only their own name and meta description, and brand records carry no categories. The
+relationship exists **only on products**, so it has to be derived at index time.
+
+### What the index now carries
+
+Each category document gets `br` — the brands sold inside it — accumulated from the
+products as they are indexed. Only products that survive every guard contribute, so a
+filtered or non-compliant product cannot introduce a brand.
+
+Measured on the 2026-08-02 index: 63 of 77 category docs get a brand list, max 31
+brands, median 6. Gzipped index grows 91.9KB → 93.0KB.
+
+### Matching is exact here, unlike everywhere else
+
+A brand counts as *named* only when the query contains **all** of its tokens, or its
+whole squashed form ("trehouse"). No fuzzy tolerance, no partial words. Three false
+positives on real data forced this, all the same root cause — a loose match on an
+**indirect** association produces a confident-looking result that is simply wrong:
+
+| Query | Wrongly returned | Why |
+|---|---|---|
+| `tre house` | Kratom Capsules, Kratom Powder | "house" is one edit from "horse" → matched *Flying Horse* |
+| `flying horse` | all 9 of TRĒ House's categories | the same collision, reversed |
+| `kratom` | Kanna, Kava | "kratom" is a word inside *Rave Kratom* |
+| `cbd` | CBG for Pain | "cbd" is a word inside *The Green Dragon CBD* |
+
+Nothing is lost by being strict: a misspelled brand still matches the brand page and its
+products through their own fields, which is where typo tolerance belongs. Only the
+derived link demands certainty.
+
+Verified against the live index — the categories returned now match ground truth
+exactly: TRĒ House 9, Flying Horse 6, Space Gods 1. Generic queries (`gummies`,
+`vape pens`, `delta 8`, `cbd`, `mushroom`) are byte-for-byte unchanged.
+
+### Rollup: up only, and why not down
+
+Products carry only **parent** categories (`Name (from Parent Categories)`), so each
+parent's brand list is rolled **up** into the primary category above it via the parent's
+primary reference — populated on 55 of 59 parents. That is what makes a brand search
+return `Shrooms`.
+
+⚠️ **Field-slug trap:** on Product Parent Categories the field *slug* is `sub-category`,
+but its display name is "Primary Categories" and it references the **primary**
+collection. The slug is wrong. Reading it as a subcategory files every brand under the
+wrong level.
+
+**Downward propagation is deliberately not done**, although the data is available and it
+would have filled all 11 empty subcategories — including `Vape Pens`, the
+highest-volume search term on the site. It would also have been wrong. Parent categories
+are **cannabinoid types** (Delta 8, THCa, Live Resin); subcategories are **form factors**
+(Vape Pens, Gummies & Edibles, Dabs, Tinctures). Every cannabinoid parent lists all 7
+forms beneath it, so inheriting downward would claim a brand selling only Delta 8 gummies
+also sells Delta 8 vape pens. The two axes are orthogonal.
+
+Nothing available closes that gap honestly: the subcategory `products` field is empty on
+all 11 records, and products carry no subcategory reference. **Decision needed** — if
+form-factor subcategories should be brand-searchable, the product→subcategory link has
+to be populated in the CMS.
+
+### Also found
+
+- The **`THC` primary category is a draft in Webflow** (`isDraft: true`), so it is
+  correctly excluded from the index and can never be a search result — despite being one
+  of the largest product groupings. Publish it if it should be findable.
+- `gummies` returns 24 categories and `cbd` returns 26. This is **pre-existing** and not
+  caused by the brand list (verified: 24 → 24, 26 → 26). Those come from synonym
+  expansion against category meta descriptions. Worth tightening separately.
