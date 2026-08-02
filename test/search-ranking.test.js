@@ -103,6 +103,26 @@ ok(g.indexOf('Out Of Stock Gummies') !== -1, 'but still present, not hidden', g)
 ok(g.indexOf('Discontinued Gummies') < g.indexOf('Generic Gummies'),
   'discontinued is NOT demoted — it still has stock and outsells', g);
 
+console.log(' Yotpo ratings (counts on this catalogue are 1-14, so evidence matters)');
+ok(S.ratingBoost({}) === 0, 'unrated is neutral — 3 of the 12 best-sellers have no reviews', S.ratingBoost({}));
+ok(S.ratingBoost({ r: 4.6, rc: 5 }) === 0, 'an average rating is neutral', S.ratingBoost({ r: 4.6, rc: 5 }));
+/* The point of the shrinkage: a lone perfect review must not outrank a strong one
+ * backed by real volume. */
+ok(S.ratingBoost({ r: 4.9, rc: 8 }) > S.ratingBoost({ r: 5, rc: 1 }),
+  '4.9 from 8 reviews beats 5.0 from 1', [S.ratingBoost({ r: 4.9, rc: 8 }), S.ratingBoost({ r: 5, rc: 1 })]);
+ok(S.ratingBoost({ r: 5, rc: 200 }) > S.ratingBoost({ r: 5, rc: 8 }),
+  'more reviews at the same score counts for more');
+/* Asymmetry check: an earlier version scaled against the 0.4 headroom above the mean,
+ * so a 4.0 product lost 2.4 while a perfect one could gain only 0.4. */
+ok(Math.abs(S.ratingBoost({ r: 4, rc: 14 })) <= S.ratingBoost({ r: 5, rc: 200 }) * 1.2,
+  'a good-not-great rating is not punished harder than a perfect one is rewarded',
+  [S.ratingBoost({ r: 4, rc: 14 }), S.ratingBoost({ r: 5, rc: 200 })]);
+ok(Math.abs(S.ratingBoost({ r: 1, rc: 999 })) <= 2.5,
+  'the boost is clamped so rating can never dominate text relevance', S.ratingBoost({ r: 1, rc: 999 }));
+ok(S.stars({ r: 4.9, rc: 8 }).indexOf('★') !== -1, 'renders filled stars');
+ok(S.stars({}) === '', 'renders nothing when there is no rating');
+ok(/aria-label/.test(S.stars({ r: 4.5, rc: 3 })), 'stars carry an accessible label', S.stars({ r: 4.5, rc: 3 }));
+
 console.log(' popularity ranking (the signal current search cannot see)');
 const gum = run('gummies', 10);
 ok(gum.indexOf('Flying Horse - Delta 9 Gummies') < gum.indexOf('Generic Gummies'),

@@ -226,6 +226,43 @@
 
   var TYPE_BASE = { product: 0, brand: 1.5, category: 1.2, page: 1.0 };
 
+  /* RATING AS A RANKING SIGNAL — DELIBERATELY SMALL.
+   *
+   * Review counts on this catalogue are tiny: the twelve best-sellers carry 1, 1, 1,
+   * 2, 3, 5, 8, 8 and 14 reviews, and three have none at all. A raw average would be
+   * mostly noise — a single 5.0 review would outrank a 4.9 backed by eight, and a
+   * quarter of top products would be penalised for having no reviews yet rather than
+   * for being worse.
+   *
+   * So the score is shrunk toward the catalogue mean in proportion to how few reviews
+   * back it (Bayesian shrinkage). With PRIOR_WEIGHT = 8, a lone 5.0 barely moves while
+   * a 4.9 with 14 reviews moves most of the way. RATING_WEIGHT is then kept low so
+   * rating breaks ties rather than deciding them: text relevance and actual sales
+   * remain the primary signals.
+   *
+   * Revisit PRIOR_WEIGHT if review volume grows by an order of magnitude. */
+  var PRIOR_MEAN = 4.6;
+  var PRIOR_WEIGHT = 8;
+  var RATING_WEIGHT = 2.5;
+  /* Scale the deviation against ONE STAR, not against the 0.4 of headroom between the
+   * mean and 5.0. Dividing by that headroom made the scale wildly asymmetric: a 4.0
+   * rated product lost 2.4 points while a perfect score could only gain 0.4 worth —
+   * punishing a perfectly good product harder than it rewarded an excellent one.
+   * Clamped so no rating can dominate text relevance. */
+  var RATING_SPAN = 1;
+
+  function ratingBoost(d) {
+    var r = Number(d.r), c = Number(d.rc);
+    if (!isFinite(r) || r <= 0) return 0;              // unrated is neutral, not penalised
+    if (!isFinite(c) || c < 0) c = 0;
+    var adjusted = (c * r + PRIOR_WEIGHT * PRIOR_MEAN) / (c + PRIOR_WEIGHT);
+    // Centre on the prior so an average product gets no advantage either way.
+    var delta = (adjusted - PRIOR_MEAN) / RATING_SPAN;
+    if (delta > 1) delta = 1;
+    if (delta < -1) delta = -1;
+    return RATING_WEIGHT * delta;
+  }
+
   function prepare(index) {
     var docs = index && index.docs ? index.docs : [];
     var prepared = new Array(docs.length);
@@ -317,6 +354,8 @@
      * being discontinued — that flag means "not reordering", and they still sell. */
     if (d.t === 'product' && !d.st) total *= 0.55;
 
+    if (d.t === 'product') total += ratingBoost(d);
+
     return total;
   }
 
@@ -389,6 +428,23 @@
     return fmt(base);
   }
 
+  /* Stars as text rather than SVG or an icon font: no extra requests, no font
+   * dependency, and it survives the CMS having no rating at all (renders nothing). */
+  function stars(d) {
+    var r = Number(d.r), c = Number(d.rc);
+    if (!isFinite(r) || r <= 0) return '';
+    var full = Math.floor(r + 0.001);
+    var half = r - full >= 0.25 && r - full < 0.75;
+    var body = '';
+    for (var i = 0; i < 5; i++) {
+      body += i < full ? '\u2605' : (i === full && half ? '\u00bd' : '\u2606');
+    }
+    var count = isFinite(c) && c > 0 ? ' <span class="tgd-rc">(' + c + ')</span>' : '';
+    return '<span class="tgd-stars" title="' + r.toFixed(1) + ' out of 5'
+      + (isFinite(c) && c > 0 ? ' from ' + c + ' review' + (c === 1 ? '' : 's') : '')
+      + '" aria-label="Rated ' + r.toFixed(1) + ' out of 5">' + body + '</span>' + count;
+  }
+
   function esc(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -411,6 +467,8 @@
     '.tgd-p s{color:#9a9a9a;font-weight:400;margin-right:4px}',
     '.tgd-b{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;font-size:10px;vertical-align:1px}',
     '.tgd-oos{background:#f3e3e3;color:#8a2b2b}',
+    '.tgd-stars{color:#e0a01a;letter-spacing:1px;font-size:12px}',
+    '.tgd-rc{color:#8a8a8a;font-size:11px}',
     '.tgd-dc{background:#f1ecd8;color:#7a6320}',
     '.tgd-msg{padding:14px 12px;color:#5a5a5a}',
     '.tgd-all{display:block;padding:10px 12px;border-top:1px solid #eee;color:#276749;text-decoration:none;font-weight:600}'
@@ -480,7 +538,8 @@
     return '<a class="tgd-r" role="option" href="' + esc(d.u) + '" data-i="' + i + '">'
       + (d.img ? '<img src="' + esc(d.img) + '" alt="" loading="lazy">' : '')
       + '<span class="tgd-t"><span class="tgd-n">' + esc(d.n) + badge + '</span>'
-      + (d.b && d.t === 'product' ? '<span class="tgd-m">' + esc(d.b) + '</span>' : '')
+      + (d.b && d.t === 'product' ? '<span class="tgd-m">' + esc(d.b) + ' ' + stars(d) + '</span>'
+         : (d.t === 'product' && stars(d) ? '<span class="tgd-m">' + stars(d) + '</span>' : ''))
       + '</span>'
       + (d.t === 'product' ? '<span class="tgd-p">' + money(d) + '</span>' : '')
       + '</a>';
@@ -667,6 +726,7 @@
       + (d.img ? '<img src="' + esc(d.img) + '" alt="" loading="lazy">' : '')
       + '<span class="tgd-card-n">' + esc(d.n) + badge + '</span>'
       + (d.b ? '<span class="tgd-card-m">' + esc(d.b) + '</span>' : '')
+      + (d.t === 'product' && stars(d) ? '<span class="tgd-card-m">' + stars(d) + '</span>' : '')
       + (d.t === 'product' ? '<span class="tgd-card-p">' + money(d) + '</span>' : '')
       + '</a>';
   }
@@ -855,6 +915,7 @@
   var api = {
     fold: fold, squash: squash, tokens: tokens, expand: expand, within: within,
     prepare: prepare, search: search, retiredFor: retiredFor,
+    stars: stars, ratingBoost: ratingBoost,
     resultsUrl: resultsUrl, fallbackUrl: fallbackUrl, queryFromUrl: queryFromUrl,
     SYNONYMS: SYNONYMS, WEIGHTS: WEIGHTS,
   };
