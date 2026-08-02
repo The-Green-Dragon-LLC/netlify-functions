@@ -4,9 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "npm run test:index && npm run test:ranking && npm run test:dom",
+    "test": "npm run test:index && npm run test:ranking && npm run test:dom && npm run test:sticky",
     "test:index": "node test/search-index-build.test.js",
     "test:ranking": "node test/search-ranking.test.js",
+    "test:sticky": "node test/search-sticky-dom.test.js",
     "test:dom": "node test/search-dropdown-dom.test.js"
   },
   "keywords": [],
