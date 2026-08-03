@@ -166,6 +166,50 @@ ok(run('zzzqqxx').length === 0, 'nonsense returns nothing rather than everything
  * So a brand only counts as named when the query contains ALL of its tokens, or its
  * whole squashed form. Typo tolerance stays on the brand page and the products, where
  * the match is direct. */
+/* ─── MATCH TIGHTNESS ────────────────────────────────────────────────────────────
+ *
+ * Searching "tre house" returned five brands and only the first was right. Daily Pet
+ * Co., Gigli and The Functional Chocolate Company all matched because "tre" is a prefix
+ * of "treats"/"treat" in their MARKETING DESCRIPTION, while "house" matched nothing at
+ * all — and the coverage rule let that through because ceil(2/2) = 1, so half a query
+ * landing anywhere was enough.
+ *
+ * Both rules are tightened, and both tightenings had a cost that had to be measured
+ * rather than assumed:
+ *   • requiring 4 characters for a prefix broke "oil" → "oils", losing the CBD Oils /
+ *     Tinctures category from "cbd oil for dogs". So 3 characters may still reach a word
+ *     ONE character longer — a plural, not an unrelated word.
+ *   • requiring 60% of tokens punished natural language: "cbd oil for dogs" is four
+ *     tokens, so three had to land, and "for" lands nowhere. Coverage is now judged on
+ *     the meaningful tokens only. */
+console.log(' match tightness');
+
+const TT = S.prepare({ docs: [
+  { t: 'brand', n: 'TRĒ House', u: '/brand/tre-house' },
+  { t: 'brand', n: 'Daily Pet Co.', u: '/brand/daily-pet-co',
+    d: 'Daily Pet Co. is a trusted brand that delivers CBD treats and drops for dogs and cats.' },
+  { t: 'brand', n: 'Gigli', u: '/brand/gigli',
+    d: 'Enjoy colorful, alcohol-free THC drinks and treats that will have you giggling.' },
+  { t: 'category', n: 'CBD Oils / Tinctures', u: '/product-parent-categories/cbd-oils' },
+  { t: 'product', n: 'Some Gummies', u: '/product/some-gummies' },
+] });
+const tnames = (q) => S.search(TT, q, 50).map((r) => r.doc.n);
+
+ok(tnames('tre house').indexOf('Daily Pet Co.') === -1,
+  '"tre" no longer prefix-matches "treats" in a description', tnames('tre house'));
+ok(tnames('tre house').indexOf('Gigli') === -1, 'nor "treats" in the copy of an unrelated brand');
+ok(tnames('tre house').indexOf('TRĒ House') !== -1, 'while the brand the query names is still found');
+ok(tnames('tre house').length === 1, 'a two-word brand query returns only what it names', tnames('tre house'));
+ok(tnames('gumm').indexOf('Some Gummies') !== -1, 'a 4-char prefix still works: "gumm" → gummies');
+ok(tnames('cbd oil for dogs').indexOf('CBD Oils / Tinctures') !== -1,
+  '"oil" still reaches "oils" — a 3-char token may match one char longer', tnames('cbd oil for dogs'));
+
+/* Stopwords must not count toward coverage. */
+ok(S.contentTokens(['cbd', 'oil', 'for', 'dogs']).join(' ') === 'cbd oil dogs',
+  'filler words are excluded from the coverage test', S.contentTokens(['cbd','oil','for','dogs']));
+ok(S.contentTokens(['best', 'the']).length === 2,
+  'an all-stopword query falls back to all tokens rather than matching everything');
+
 console.log(' category ↔ brand association');
 
 const CB = S.prepare({ docs: [
