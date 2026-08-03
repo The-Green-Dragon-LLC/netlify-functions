@@ -52,6 +52,26 @@ const wfBrands = {
   pagination: { total: 2 },
 };
 
+/* Blog posts. 307 published articles were unreachable by search: the box filters the
+ * product list, and the index had no blog documents either. The draft below must not be
+ * indexed, and the body must NOT be folded in — only title and summary. */
+const wfBlog = {
+  items: [
+    { id: 'bl1', isDraft: false, isArchived: false, fieldData: {
+      name: 'How To Store Your Gummies', slug: 'how-to-store-gummies',
+      'post-summary': 'Keep them cool and dry so they last.',
+      'post-body': '<p>A very long article body that must never reach the index because it would multiply the payload for prose nobody searches.</p>',
+      'thumbnail-image': { url: 'https://img/gummies-thumb.png' } } },
+    { id: 'bl2', isDraft: true, isArchived: false, fieldData: {
+      name: 'Unpublished Draft Article', slug: 'draft-article', 'post-summary': 'Not live yet.' } },
+    // Educational article that DISCUSSES 7-OH: flagged for review, not dropped.
+    { id: 'bl3', isDraft: false, isArchived: false, fieldData: {
+      name: 'Understanding Kratom Alkaloids', slug: 'kratom-alkaloids',
+      'post-summary': 'A look at mitragynine and 7-hydroxymitragynine in kratom leaf.' } },
+  ],
+  pagination: { total: 3 },
+};
+
 const wfCats = (name, slug) => ({
   items: [{ id: 'c-' + slug, isDraft: false, isArchived: false, fieldData: { name, slug, 'meta-description': 'Shop ' + name } }],
   pagination: { total: 1 },
@@ -137,6 +157,7 @@ function route(p) {
   if (p.includes('/collections/62f17faae806deec81029076/items')) return wfCats('THC', 'thc');
   if (p.includes('/collections/62a16fe92a02f92cb0875359/items')) return wfCats('Vape Pens', 'vape-pens');
   if (p.includes('/collections/630d7bfa22283f5107c694e2/items')) return wfCats('THC Vape Pens & Carts', 'thc-vape-pens-carts');
+  if (p.includes('/collections/6282946248e4a660f233ed15/items')) return wfBlog;
   if (p.includes('/pages')) return wfPages;
   if (p.includes('tblkLl9qqg654fWi7')) return atProducts;
   if (p.includes('tblEtb1aIH5Xk4Nh9')) return atVariants;
@@ -185,6 +206,8 @@ function ok(cond, label, extra) {
   const built = await build();
   // Shape the stats the way the wrapper reports them, so assertions read the same.
   const s = { ...built.stats, sample: built.index.docs.slice(0, 8) };
+  // `sample` is only the first 8 docs; the blog assertions below need the full set.
+  const docs = built.index.docs;
 
   console.log('\nsearch-index-build\n');
 
@@ -282,6 +305,21 @@ function ok(cond, label, extra) {
 
   console.log(' coverage');
   ok(s.byType.brand === 1, 'brands indexed', s.byType);
+
+  /* Blog posts — 307 published articles that search could not reach at all. */
+  ok(s.byType.blog === 2, 'published blog posts indexed, the draft excluded', s.byType);
+  const post = docs.find((d) => d.t === 'blog' && /Store Your Gummies/.test(d.n));
+  ok(!!post, 'a blog document is produced');
+  ok(post && post.u === '/blog/how-to-store-gummies', 'blog URL uses the /blog/ prefix', post && post.u);
+  ok(post && post.d === 'Keep them cool and dry so they last.', 'summary is indexed', post && post.d);
+  ok(post && /gummies-thumb/.test(post.img || ''), 'thumbnail carried for the card', post && post.img);
+  ok(!docs.some((d) => d.t === 'blog' && /very long article body/.test(JSON.stringify(d))),
+    'post-body is NOT folded in — it would multiply the payload for prose nobody types');
+  ok(!docs.some((d) => d.u === '/blog/draft-article'), 'a draft article cannot be linked to');
+  ok((s.flaggedForReview || []).some((x) => /Kratom Alkaloids/.test(x)),
+    'an article discussing 7-OH is flagged for review, not dropped', s.flaggedForReview);
+  ok(!s.prohibitedDropped.some((x) => /Kratom Alkaloids/.test(x)),
+    'and stays in the index — educational text is not a compliance failure');
   ok(s.byType.category === 3, 'all three category levels indexed', s.byType);
   ok(s.byType.page === 3, 'landing + info pages indexed', s.byType);
 

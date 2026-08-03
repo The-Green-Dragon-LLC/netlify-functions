@@ -48,9 +48,10 @@
    * changes the cache key, which is the only way to guarantee a client sees the new
    * shape immediately.
    *
-   * BUMP THIS whenever the builder adds or renames an index field. v2 = the addition of
-   * `r`/`rc` (Yotpo aggregate) and `br` (brands per category). */
-  var INDEX_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/search-index?v=2';
+   * BUMP THIS whenever the builder adds or renames an index field, or adds a document
+   * type. v2 = `r`/`rc` (Yotpo aggregate) and `br` (brands per category). v3 = `blog`
+   * documents. */
+  var INDEX_URL = 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/search-index?v=3';
 
   /* ─── TEXT NORMALISATION ──────────────────────────────────────────────────── */
 
@@ -117,6 +118,29 @@
     drink: ['drinks', 'beverage', 'beverages'],
     drinks: ['drink', 'beverage', 'beverages'],
   };
+
+  /* Words that carry no matching signal. They are NOT stripped from the query — they
+   * still contribute score if they happen to match — they are excluded from the
+   * COVERAGE test below, where counting them does real damage: "cbd oil for dogs" is
+   * four tokens, so requiring 60% meant three had to land, and "for" almost never
+   * lands anywhere useful. That dropped the CBD Oils / Tinctures category from a query
+   * plainly asking for it. Judging coverage on the words that carry meaning keeps a
+   * two-word brand query strict without punishing a sentence. */
+  var STOPWORDS = {
+    a: 1, an: 1, and: 1, are: 1, as: 1, at: 1, be: 1, best: 1, but: 1, by: 1, can: 1,
+    do: 1, does: 1, for: 1, from: 1, get: 1, good: 1, in: 1, is: 1, it: 1, me: 1, my: 1,
+    of: 1, on: 1, or: 1, our: 1, s: 1, that: 1, the: 1, their: 1, to: 1, top: 1, use: 1,
+    what: 1, which: 1, with: 1, you: 1, your: 1,
+  };
+
+  function contentTokens(qTokens) {
+    var out = [];
+    for (var i = 0; i < qTokens.length; i++) {
+      if (!STOPWORDS[qTokens[i]]) out.push(qTokens[i]);
+    }
+    // An all-stopword query ("the best") has nothing to judge, so fall back to all.
+    return out.length ? out : qTokens;
+  }
 
   function expand(qTokens) {
     var out = qTokens.slice();
@@ -191,7 +215,20 @@
     for (var i = 0; i < fieldTokens.length; i++) {
       var ft = fieldTokens[i];
       if (ft === qt) return 1;
-      if (ft.length > qt.length && ft.indexOf(qt) === 0) {
+      /* Prefix matching, with a length rule.
+       *
+       * At 3 characters an unrestricted prefix matches far too much ordinary body copy:
+       * "tre" is a prefix of "treats", which is why searching "tre house" returned
+       * Daily Pet Co., Gigli and The Functional Chocolate Company — not one of them a
+       * brand the query names, all three matched on marketing text.
+       *
+       * But requiring 4 outright broke inflections on short words: "oil" stopped
+       * matching "oils", which lost the CBD Oils / Tinctures category from "cbd oil for
+       * dogs". So a 3-character token may still prefix-match a word at most ONE
+       * character longer, which is a plural or a simple inflection and nothing else —
+       * "oil"→"oils" and "pen"→"pens" pass, "tre"→"treats" does not. */
+      if (ft.length > qt.length && ft.indexOf(qt) === 0
+          && (qt.length >= 4 || ft.length - qt.length <= 1)) {
         if (best < 0.8) best = 0.8;                       // prefix: "gumm" → "gummies"
         continue;
       }
@@ -240,7 +277,7 @@
    * not whichever of its products happens to sort first. */
   var BRAND_PIN_BOOST = 26;
 
-  var TYPE_BASE = { product: 0, brand: 1.5, category: 1.2, page: 1.0 };
+  var TYPE_BASE = { product: 0, brand: 1.5, category: 1.2, page: 1.0, blog: 0.6 };
 
   /* RATING AS A RANKING SIGNAL — DELIBERATELY SMALL.
    *
@@ -359,23 +396,31 @@
     if (!matchedAny) return 0;
 
     /* Require most of a multi-word query to land somewhere. Without this, "flying
-     * horse gummies" matches every gummy on the strength of one token. */
-    if (qTokens.length > 1) {
+     * horse gummies" matches every gummy on the strength of one token.
+     *
+     * Judged on the MEANINGFUL tokens only — see contentTokens(). */
+    var content = contentTokens(qTokens);
+    if (content.length > 1) {
       var hits = 0;
-      for (var t = 0; t < qTokens.length; t++) {
+      for (var t = 0; t < content.length; t++) {
         var landed = false;
         for (var key2 in WEIGHTS) {
           if (key2 === 'br' && !brandNamed) continue;
-          if (f[key2] && f[key2].length && tokenScore(qTokens[t], f[key2]) > 0) { landed = true; break; }
+          if (f[key2] && f[key2].length && tokenScore(content[t], f[key2]) > 0) { landed = true; break; }
         }
         if (!landed) {
           for (var sk2 in entry.sq) {
-            if (squashScore(qTokens[t], entry.sq[sk2]) > 0) { landed = true; break; }
+            if (squashScore(content[t], entry.sq[sk2]) > 0) { landed = true; break; }
           }
         }
         if (landed) hits++;
       }
-      if (hits < Math.ceil(qTokens.length / 2)) return 0;
+      /* Was ceil(n/2), which for a two-word query is ONE — so half a query landing
+       * anywhere was enough to return a document. "tre house" came back with brands
+       * where only "tre" matched, inside a description, and "house" matched nothing.
+       * 60% means a two-word query needs both words, while longer queries can still
+       * tolerate a stray term: 3 tokens need 2, 4 need 3, 5 need 3. */
+      if (hits < Math.ceil(content.length * 0.6)) return 0;
     }
 
     /* Whole-query exactness beats an accumulation of partial hits. The squashed
@@ -439,7 +484,11 @@
     { t: 'product',  label: 'Products',   max: 6 },
     { t: 'brand',    label: 'Brands',     max: 3 },
     { t: 'category', label: 'Categories', max: 3 },
-    { t: 'page',     label: 'Pages',      max: 3 }
+    { t: 'page',     label: 'Pages',      max: 3 },
+    /* Articles last and capped low. They are the largest content type by count (307)
+     * and the lowest purchase intent, so they must not crowd out products — but they
+     * were completely unreachable before, which is worse. */
+    { t: 'blog',     label: 'Articles',   max: 3 }
   ];
 
   var prepared = null, loading = null, panel = null, active = -1, rows = [], lastQuery = '';
@@ -1210,7 +1259,7 @@
     fold: fold, squash: squash, tokens: tokens, expand: expand, within: within,
     prepare: prepare, search: search, retiredFor: retiredFor,
     stars: stars, ratingBoost: ratingBoost, stickyOffset: stickyOffset,
-    matchedBrand: matchedBrand,
+    matchedBrand: matchedBrand, contentTokens: contentTokens,
     chromeOver: chromeOver, scrollToGroup: scrollToGroup, initials: initials, clip: clip,
     resultsUrl: resultsUrl, fallbackUrl: fallbackUrl, queryFromUrl: queryFromUrl,
     SYNONYMS: SYNONYMS, WEIGHTS: WEIGHTS,
