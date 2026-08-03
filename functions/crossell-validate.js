@@ -1,6 +1,25 @@
 /**
- * crossell-validate.js  —  Netlify Function
+ * crossell-validate.js  —  DEAD CODE. NOT WIRED TO ANYTHING.
  * ─────────────────────────────────────────────────────────────────────────────
+ * ⚠️  THIS IS NOT THE PRE-PAYMENT WEBHOOK. Foxy allows exactly one, and the URL
+ *     registered in Foxy Admin → Store → Advanced is pre-payment-webhook.js.
+ *     Nothing here executes. It is an early standalone draft, superseded by the
+ *     cross-sell rules that now live inside functions/pre-payment-webhook.js.
+ *
+ *     It differs from the live validator in ways that matter, so do NOT treat it
+ *     as a reference:
+ *       • prices and the 40% discount are HARDCODED here; the live validator
+ *         reads discount %, max qty and prices from Airtable per offer
+ *       • the promo limit is one global cart-wide 3; the live one is per code
+ *       • there is NO stock validation here at all
+ *
+ *     The "DEPLOYMENT" section below is stale and was actively misleading —
+ *     following it would replace the live validator with this weaker one and
+ *     silently drop the membership, inventory and stock checks. Delete this file
+ *     rather than reviving it.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Original description follows.
+ *
  * Foxy pre-payment webhook.  Runs before any card is charged and enforces two
  * rules for CROSSELL_PROMO items:
  *

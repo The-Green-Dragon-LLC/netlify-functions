@@ -263,6 +263,107 @@ const getMembershipPrice = async (membershipCode, subFrequency) => {
   return tableRecords;
 };
 
+/**
+ * Stock validation for the whole cart, aggregated per product code.
+ *
+ * Returns an array of { type, value } shortfalls for the caller to file under the
+ * right rejection message; an empty array means every product has the stock the
+ * cart is asking for.
+ *
+ * TWO BUGS THIS FIXES, both of which let sold-out goods be charged:
+ *
+ *  1. IT NOW COVERS CROSS-SELL ITEMS. This logic used to be inlined in the final
+ *     `else` of the per-item chain below, so it ran for regular items only.
+ *     Cross-sell promo lines matched the earlier CROSSELL_PROMO branch, which
+ *     checks price and quantity but never inventory — a sold-out cross-sell was
+ *     discounted, accepted, and charged. Stock is stock regardless of the
+ *     category an item was added under.
+ *
+ *  2. IT AGGREGATES PER CODE RATHER THAN PER LINE. The same product legitimately
+ *     occupies more than one cart line: the cross-sell popup splits an over-limit
+ *     add into a discounted CROSSELL_PROMO line PLUS a full-price DEFAULT line
+ *     with the SAME code. Comparing each line against total inventory on its own
+ *     let both pass while together overselling — with 3 in stock, a promo line of
+ *     3 and an overflow line of 2 each looked fine and sold 5. Quantities are now
+ *     summed per code and checked once.
+ *
+ * Summing is also why quantity is parsed here: Foxy reports it as a string often
+ * enough that `a + b` would concatenate ("1" + "2" → "12") rather than add.
+ */
+const collectStockShortfalls = async (cartItems, shippingId) => {
+  // Everything needs stock except memberships (not physical) and anything flagged
+  // Delayed_shipping, which is knowingly fulfilled from a later restock.
+  const required = new Map(); // code -> { qty, name }
+
+  for (const cartItem of cartItems) {
+    if (cartItem["_embedded"]["fx:item_category"].code === "memberships") continue;
+
+    const isDelayedShipping = cartItem["_embedded"]["fx:item_options"]?.some(
+      (option) => option.name === "Delayed_shipping"
+    );
+    if (isDelayedShipping) continue;
+
+    const qty = parseInt(cartItem.quantity, 10) || 0;
+    const prev = required.get(cartItem.code);
+    if (prev) {
+      prev.qty += qty;
+    } else {
+      required.set(cartItem.code, { qty, name: cartItem.name });
+    }
+  }
+
+  const shortfalls = [];
+
+  // One Airtable lookup per unique code — fewer than the old per-line version.
+  await Promise.all(
+    [...required.entries()].map(async ([code, need]) => {
+      const tableRecords = await getProductInventory(code);
+
+      if (tableRecords.length !== 1) {
+        console.log(
+          `No records found for WPC ${code} in Products or Product Variants table`
+        );
+        shortfalls.push({ type: "invalidCode", value: code });
+        return;
+      }
+
+      const inventorySum = tableRecords[0].inventorySum;
+      const inventoryChesterfield = tableRecords[0].inventoryChesterfield;
+      const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
+      const inventoryStPeters = tableRecords[0].inventoryStPeters;
+
+      const cartQuantity = need.qty;
+
+      if (shippingId === "10011") {
+        // pickup in Chesterfield
+        if (inventoryChesterfield + inventoryWarehouse < cartQuantity) {
+          console.log(
+            `Inventory for ${need.name} (WPC: ${code}) is ${
+              inventoryChesterfield + inventoryWarehouse
+            }, but having ${cartQuantity} in cart`
+          );
+          shortfalls.push({ type: "chesterfield", value: need.name });
+        }
+      } else if (shippingId === "10012") {
+        // pickup in St Peters
+        if (inventoryStPeters + inventoryWarehouse < cartQuantity) {
+          console.log(
+            `Inventory for ${need.name} (WPC: ${code}) is ${inventoryStPeters} + ${inventoryWarehouse}, but having ${cartQuantity} in cart`
+          );
+          shortfalls.push({ type: "stPeters", value: need.name });
+        }
+      } else if (!inventorySum || cartQuantity > inventorySum) {
+        console.log(
+          `Inventory for ${need.name} (WPC: ${code}) is ${inventorySum}, but having ${cartQuantity} in cart`
+        );
+        shortfalls.push({ type: "stock", value: need.name });
+      }
+    })
+  );
+
+  return shortfalls;
+};
+
 exports.handler = async (event, context) => {
   const payload = JSON.parse(event.body);
   const cartItems = payload["_embedded"]["fx:items"];
@@ -276,6 +377,20 @@ exports.handler = async (event, context) => {
     const mismatchMembershipPrice = [];
     let hasActiveMembership = false;
     const crossellPriceMismatch = [];
+
+    /** File a collectStockShortfalls() result under the matching rejection list. */
+    const recordShortfall = (shortfall) => {
+      if (!shortfall) return;
+      if (shortfall.type === "invalidCode") {
+        invalidProductCode.push(shortfall.value);
+      } else if (shortfall.type === "chesterfield") {
+        insufficientStockChesterfield.push(shortfall.value);
+      } else if (shortfall.type === "stPeters") {
+        insufficientStockStPeters.push(shortfall.value);
+      } else {
+        insufficientStock.push(shortfall.value);
+      }
+    };
 
     // Pre-fetch the cross-sell price map once before processing items,
     // so we don't hit Airtable per-item inside the Promise.all loop.
@@ -352,81 +467,35 @@ exports.handler = async (event, context) => {
           if (offer === undefined) {
             // Code not found in Airtable's cross-sell products — reject.
             // This catches items added with a fabricated CROSSELL_PROMO category.
+            // We're already rejecting the order, so there's no point resolving
+            // stock for a code we don't recognise.
             console.log(`Unknown cross-sell promo code: ${cartItem.code}`);
             invalidProductCode.push(cartItem.code);
-          } else {
-            // Expected price uses the discount % configured in Airtable for this
-            // offer (e.g. 50% off → pay 50%), not a hardcoded 40%.
-            const payPct        = 100 - offer.discountPct;
-            const expectedPrice = Math.round(offer.price * payPct) / 100;
-            if (cartItem.price < expectedPrice - CROSSELL_PRICE_TOLERANCE) {
-              console.log(
-                `Cross-sell price mismatch for ${cartItem.name}: ` +
-                `expected >= ${expectedPrice.toFixed(2)} ` +
-                `(${offer.discountPct}% off ${offer.price}), got ${cartItem.price}`
-              );
-              crossellPriceMismatch.push(cartItem.name);
-            }
+            return;
           }
-        } else {
-          // ignore inventory validation if product has `Delayed shipping` option
-          const isDelayedShipping = cartItem["_embedded"][
-            "fx:item_options"
-          ]?.some((option) => option.name === "Delayed_shipping");
 
-          if (!isDelayedShipping) {
-            const tableRecords = await getProductInventory(cartItem.code);
-
-            if (tableRecords.length !== 1) { 
-              console.log(
-                `No records found for WPC ${cartItem.code} in Products or Product Variants table`
-              );
-              invalidProductCode.push(cartItem.code);
-            } else {
-              const inventorySum = tableRecords[0].inventorySum;
-              const inventoryChesterfield =
-                tableRecords[0].inventoryChesterfield;
-              const inventoryWarehouse = tableRecords[0].inventoryWarehouse;
-              const inventoryStPeters = tableRecords[0].inventoryStPeters;
-
-              const cartQuantity = cartItem.quantity;
-
-              if (shippingId === "10011") {
-                // pickup in Chesterfield
-                if (
-                  inventoryChesterfield + inventoryWarehouse <
-                  cartItem.quantity
-                ) {
-                  console.log(
-                    `Inventory for ${cartItem.name} (WPC: ${
-                      cartItem.code
-                    }) is ${
-                      inventoryChesterfield + inventoryWarehouse
-                    }, but having ${cartQuantity} in cart`
-                  );
-                  insufficientStockChesterfield.push(cartItem.name);
-                }
-              } else if (shippingId === "10012") {
-                // pickup in St Peters
-                if (inventoryStPeters + inventoryWarehouse < cartItem.quantity) {
-                  console.log(
-                    `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventoryStPeters} + ${inventoryWarehouse}, but having ${cartQuantity} in cart`
-                  );
-                  insufficientStockStPeters.push(cartItem.name);
-                }
-              } else {
-                if (!inventorySum || cartQuantity > inventorySum) {
-                  console.log(
-                    `Inventory for ${cartItem.name} (WPC: ${cartItem.code}) is ${inventorySum}, but having ${cartQuantity} in cart`
-                  );
-                  insufficientStock.push(cartItem.name);
-                }
-              }
-            }
+          // Expected price uses the discount % configured in Airtable for this
+          // offer (e.g. 50% off → pay 50%), not a hardcoded 40%.
+          const payPct        = 100 - offer.discountPct;
+          const expectedPrice = Math.round(offer.price * payPct) / 100;
+          if (cartItem.price < expectedPrice - CROSSELL_PRICE_TOLERANCE) {
+            console.log(
+              `Cross-sell price mismatch for ${cartItem.name}: ` +
+              `expected >= ${expectedPrice.toFixed(2)} ` +
+              `(${offer.discountPct}% off ${offer.price}), got ${cartItem.price}`
+            );
+            crossellPriceMismatch.push(cartItem.name);
           }
         }
+        // NB: stock is NOT checked here. It's checked once per product code after
+        // this loop — see collectStockShortfalls — because the same code can span
+        // several lines and a per-line check oversells.
       })
     );
+
+    // Stock — one check per product code, across every line that code appears on.
+    // Covers cross-sell promo lines, which used to skip inventory entirely.
+    (await collectStockShortfalls(cartItems, shippingId)).forEach(recordShortfall);
 
     // Cross-sell quantity limit — checked here so we can sum across all items.
     // The cap is per product code and comes from Airtable ("Max Qty" /
@@ -458,8 +527,12 @@ exports.handler = async (event, context) => {
       }
     });
 
+    // An unrecognised cross-sell code is reported twice — once by the promo branch
+    // and once by the stock pass, which also can't find it. Tell the customer once.
+    const invalidCodes = [...new Set(invalidProductCode)];
+
     if (
-      invalidProductCode.length > 0 ||
+      invalidCodes.length > 0 ||
       insufficientStockChesterfield.length > 0 ||
       insufficientStockStPeters.length > 0 ||
       insufficientStock.length > 0 ||
@@ -473,8 +546,8 @@ exports.handler = async (event, context) => {
         body: JSON.stringify({
           ok: false,
           details: `${
-            invalidProductCode.length > 0
-              ? `Invalid product code: ${invalidProductCode}. `
+            invalidCodes.length > 0
+              ? `Invalid product code: ${invalidCodes}. `
               : ""
           }${
             insufficientStockChesterfield.length > 0

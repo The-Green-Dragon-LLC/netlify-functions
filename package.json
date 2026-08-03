@@ -4,11 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "npm run test:index && npm run test:ranking && npm run test:dom && npm run test:sticky",
+    "test": "npm run test:index && npm run test:ranking && npm run test:dom && npm run test:sticky && npm run test:crossell && npm run test:prepay",
     "test:index": "node test/search-index-build.test.js",
     "test:ranking": "node test/search-ranking.test.js",
     "test:sticky": "node test/search-sticky-dom.test.js",
-    "test:dom": "node test/search-dropdown-dom.test.js"
+    "test:dom": "node test/search-dropdown-dom.test.js",
+    "test:crossell": "node test/crossell-stock-dom.test.js",
+    "test:prepay": "node test/prepayment-crossell-stock.test.js"
   },
   "keywords": [],
   "author": "",
