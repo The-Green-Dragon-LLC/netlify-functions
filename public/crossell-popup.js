@@ -9,8 +9,11 @@
  *     – Generic cross-sells:  shown as an in-cart widget (never in the popup)
  * • Discount % and max promo qty are configurable per cross-sell in Airtable.
  * • Units over the promo limit are added at full price automatically.
- * • Price tampering is blocked server-side by the pre-payment webhook
- *   (crossell-validate.js) before any card is ever charged.
+ * • Sold-out products and variants are filtered out before an offer renders —
+ *   live inventory comes from the crossell-stock endpoint, NOT from the
+ *   crossell-config response, which is cached for 6 hours (see §3b).
+ * • Price tampering, promo-qty abuse AND insufficient stock are all blocked
+ *   server-side by pre-payment-webhook.js before any card is ever charged.
  *
  * ─── SETUP CHECKLIST ──────────────────────────────────────────────────────────
  *
@@ -21,8 +24,15 @@
  *     whitelist only the categories the coupon should apply to, leaving
  *     CROSSELL_PROMO off the list.
  *
- *  3. Deploy crossell-validate.js as a Netlify function and register its URL
- *     in Foxy Admin → Store → Advanced → Pre-payment webhook URL.
+ *  3. Foxy Admin → Store → Advanced → Pre-payment webhook URL points at
+ *     functions/pre-payment-webhook.js. That is the function Foxy calls, and it
+ *     carries the cross-sell price, quantity AND stock checks alongside the
+ *     membership and inventory rules.
+ *
+ *     NOTE: functions/crossell-validate.js is NOT the registered webhook — it is
+ *     an unused early draft of the same checks with hardcoded 40%-off prices and
+ *     no stock validation. Don't mistake it for the live validator, and don't
+ *     "keep it in sync"; the live rules are in pre-payment-webhook.js.
  *
  *  4. In Webflow Site Settings → Custom Code → Footer Code, paste this file's
  *     contents wrapped in <script>…</script>.
@@ -38,11 +48,11 @@
      ══════════════════════════════════════════════════════════════════════════ */
 
   /**
-   * URL of the Netlify function that returns live config from Airtable.
-   * Auto-derived from this script's own src so the correct function is called
-   * on both the develop deploy and production — no manual URL updates needed.
+   * Base URL of this script's Netlify deploy, auto-derived from its own src so
+   * the correct functions are called on both the develop deploy and production —
+   * no manual URL updates needed.
    */
-  var CONFIG_URL = (function () {
+  var FUNCTIONS_BASE = (function () {
     try {
       var s = document.currentScript;
       if (!s) {
@@ -53,13 +63,22 @@
       if (s && s.src) {
         // Strip the script filename to get the deploy base URL, e.g.
         // "https://develop--wondrous-bublanina-d440ec.netlify.app"
-        var base = s.src.replace(/\/[^\/]*$/, '');
-        return base + '/.netlify/functions/crossell-config';
+        return s.src.replace(/\/[^\/]*$/, '') + '/.netlify/functions/';
       }
     } catch (e) { /* ignore */ }
     // Hard-coded fallback if src detection fails
-    return 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/crossell-config';
+    return 'https://wondrous-bublanina-d440ec.netlify.app/.netlify/functions/';
   })();
+
+  /** Cross-sell merchandising config (products, discounts, limits) from Airtable. */
+  var CONFIG_URL = FUNCTIONS_BASE + 'crossell-config';
+
+  /**
+   * Live inventory for cross-sell candidates. Deliberately a separate endpoint
+   * from CONFIG_URL: the config is cached for 6 hours to protect the Airtable
+   * quota, which is far too stale for stock. See crossell-stock.js.
+   */
+  var STOCK_URL = FUNCTIONS_BASE + 'crossell-stock';
 
   /** sessionStorage key for caching the Airtable config (one fetch per session). */
   var CONFIG_CACHE_KEY = 'tgd_crossell_config';
@@ -315,6 +334,141 @@
       if (!isPromoItem(asArray[i])) total += (itemQty(asArray[i]) || 1);
     }
     return total;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     3b. LIVE STOCK
+         Offers are built from crossell-config, which is cached for 6 hours to
+         protect the Airtable quota. Inventory can't ride along on that cache —
+         a product that sold out at noon would keep being offered at a discount
+         all afternoon — so stock comes from crossell-stock instead, fetched only
+         when an offer is about to render.
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * In-memory stock cache. renderCartCrossSell() runs on every cart event AND on
+   * the 1-second poll, so without this the endpoint would be hit dozens of times
+   * per cart visit. 60s is short enough that stock is effectively live.
+   */
+  var STOCK_TTL_MS  = 60000;
+  var stockCache    = null;  // { at: <ms>, map: { code: { inv, varInv, backorder } } }
+  var stockInFlight = null;  // dedupes concurrent fetches
+
+  /**
+   * Every product AND variant code referenced by any loaded cross-sell config.
+   * Sorted so the request URL is stable and the CDN cache actually hits.
+   */
+  function allCrossSellCodes() {
+    var configs = CATEGORYCROSSSELLS.concat(GENERICCROSSSELLS);
+    var seen    = {};
+    var codes   = [];
+    for (var c = 0; c < configs.length; c++) {
+      var prods = configs[c].products || [];
+      for (var i = 0; i < prods.length; i++) {
+        if (prods[i].code && !seen[prods[i].code]) {
+          seen[prods[i].code] = 1;
+          codes.push(prods[i].code);
+        }
+        var vars = prods[i].variants || [];
+        for (var j = 0; j < vars.length; j++) {
+          if (vars[j].code && !seen[vars[j].code]) {
+            seen[vars[j].code] = 1;
+            codes.push(vars[j].code);
+          }
+        }
+      }
+    }
+    return codes.sort();
+  }
+
+  /** Resolve the live stock map, from cache when it's still fresh. */
+  function loadStock() {
+    if (stockCache && (Date.now() - stockCache.at) < STOCK_TTL_MS) {
+      return Promise.resolve(stockCache.map);
+    }
+    if (stockInFlight) return stockInFlight;
+
+    var codes = allCrossSellCodes();
+    // Nothing loaded yet (config still in flight) — don't cache this, so the
+    // real fetch still happens once the config arrives.
+    if (!codes.length) return Promise.resolve({});
+
+    stockInFlight = fetch(STOCK_URL + '?codes=' + encodeURIComponent(codes.join(',')))
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        var map = (data && data.stock) || {};
+        stockCache    = { at: Date.now(), map: map };
+        stockInFlight = null;
+        return map;
+      })
+      .catch(function () {
+        stockInFlight = null;
+        // Fail OPEN — an empty map means "no stock data", and the helpers below
+        // treat an unknown code as available. The pre-payment webhook is the
+        // authoritative gate, so a transient error here can't sell a sold-out
+        // item; suppressing every offer instead would just cost sales.
+        return {};
+      });
+
+    return stockInFlight;
+  }
+
+  /**
+   * Is a specific variant purchasable? The Variants table has no Allow
+   * Backorders of its own, so a parent flagged for backorders keeps its
+   * variants sellable.
+   */
+  function variantInStock(variant, product, stockMap) {
+    var s = stockMap[variant.code];
+    if (!s) return true;                    // unknown code — fail open
+    if (s.inv > 0) return true;
+    var parent = stockMap[product.code];
+    return !!(parent && parent.backorder);
+  }
+
+  /**
+   * Is a product purchasable? Matches how site search computes its in-stock flag
+   * (see search-index-builder.js): own inventory, or the variant rollup — a
+   * variant parent's own Inventory formula reads 0 — or backorders allowed.
+   */
+  function productInStock(product, stockMap) {
+    var s = stockMap[product.code];
+    if (!s) return true;                    // unknown code — fail open
+    return s.inv > 0 || s.varInv > 0 || !!s.backorder;
+  }
+
+  /**
+   * Return a copy of a cross-sell config containing only what a customer can
+   * actually buy: sold-out variants are dropped, and a product is dropped
+   * entirely when it has no purchasable variant (or, for a simple product, no
+   * stock of its own). Returns null when nothing is left to offer, so the caller
+   * can skip rendering rather than show an offer that can't be fulfilled.
+   */
+  function filterCsByStock(cs, stockMap) {
+    if (!cs || !cs.products) return null;
+
+    var products = [];
+    for (var i = 0; i < cs.products.length; i++) {
+      var p    = cs.products[i];
+      var vars = p.variants || [];
+
+      if (vars.length) {
+        var okVars = vars.filter(function (v) { return variantInStock(v, p, stockMap); });
+        // Every variant sold out — drop the product rather than render a
+        // dropdown with nothing selectable in it.
+        if (!okVars.length) continue;
+        products.push(Object.assign({}, p, { variants: okVars }));
+      } else {
+        if (!productInStock(p, stockMap)) continue;
+        products.push(p);
+      }
+    }
+
+    if (!products.length) return null;
+    return Object.assign({}, cs, { products: products });
   }
 
   /* ══════════════════════════════════════════════════════════════════════════
@@ -981,94 +1135,115 @@
    */
   function renderCartCrossSell() {
     setTimeout(function () {
-      // Remove any stale injection
-      var existing = document.getElementById('tgd-cart-crossell');
-      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      if (!GENERICCROSSSELLS.length) return;
 
-      if (!GENERICCROSSSELLS.length) {
-        return;
-      }
-      // Randomly pick from all active generic cross-sell rows so different
-      // products surface across cart renders and sessions.
-      var csIdx = Math.floor(Math.random() * GENERICCROSSSELLS.length);
-      var cs = GENERICCROSSSELLS[csIdx];
-      if (!cs || !cs.products || !cs.products.length) return;
-
-      // Locate the items container — behaviour differs by cart type:
-      //   Sidecart   → .fc-cart__items  (inject AFTER: widget appears between items and totals sidebar)
-      //   Full-page  → .cart-item-blocks (inject INSIDE/append: widget appears below items in the left column)
-      var itemsList  = document.querySelector('.fc-cart__items');
-      var appendInside = false;
-      if (!itemsList) {
-        itemsList    = document.querySelector('.cart-item-blocks');
-        appendInside = true; // full-page is two-column flex; append inside keeps widget in left column
-      }
-      if (!itemsList || !itemsList.parentNode) {
-        return;
-      }
-
-      // Inject styles once per page load
-      if (!document.getElementById('tgd-cart-crossell-styles')) {
-        var s = document.createElement('style');
-        s.id  = 'tgd-cart-crossell-styles';
-        s.textContent = CART_STYLES;
-        document.head.appendChild(s);
-      }
-
-      var div       = document.createElement('div');
-      div.id        = 'tgd-cart-crossell';
-      div.innerHTML = cartCrossSellHTML(cs);
-      if (appendInside) {
-        itemsList.appendChild(div);                                    // full-page: bottom of items column
-      } else {
-        itemsList.parentNode.insertBefore(div, itemsList.nextSibling); // sidecart: after items container
-      }
-
-      // Stepper +/− and Add to Cart button
-      div.addEventListener('click', function (e) {
-        // Quantity stepper
-        var qtyBtn = e.target.closest ? e.target.closest('.cs-cart-qty-btn') : null;
-        if (qtyBtn) {
-          var code   = qtyBtn.getAttribute('data-product-code');
-          var input  = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
-          if (!input) return;
-          var val    = parseInt(input.value, 10) || 1;
-          var maxAttr = input.getAttribute('max');
-          var maxVal  = maxAttr ? (parseInt(maxAttr, 10) || Infinity) : Infinity; // no max attr = unlimited
-          if (qtyBtn.getAttribute('data-action') === 'minus') val = Math.max(1, val - 1);
-          if (qtyBtn.getAttribute('data-action') === 'plus')  val = Math.min(maxVal, val + 1);
-          input.value = val;
-          return;
-        }
-
-        // Add to Cart button — read quantity from the stepper
-        var btn = e.target.closest ? e.target.closest('.cs-cart-add-btn') : null;
-        if (!btn || btn.disabled) return;
-        var code     = btn.getAttribute('data-product-code');
-        var qtyInput = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
-        var qty      = qtyInput ? (parseInt(qtyInput.value, 10) || 1) : 1;
-        handleCartCrossSellAdd(code, cs, qty);
-      });
-
-      // Variant select — enable button and update displayed prices/image
-      div.addEventListener('change', function (e) {
-        var sel = e.target.closest ? e.target.closest('.cs-cart-variant-select') : null;
-        if (!sel) return;
-        var card = sel.closest ? sel.closest('.cs-cart-product') : sel.parentNode;
-        if (!card) return;
-        var btn = card.querySelector('.cs-cart-add-btn');
-        if (btn) btn.disabled = !sel.value;
-        if (sel.value) {
-          var opt   = sel.options[sel.selectedIndex];
-          var oOrig = card.querySelector('.cs-cart-price-orig');
-          var oSale = card.querySelector('.cs-cart-price-sale');
-          var oImg  = card.querySelector('.cs-cart-img');
-          if (oOrig) oOrig.textContent = '$' + opt.getAttribute('data-orig');
-          if (oSale) oSale.textContent = '$' + opt.getAttribute('data-sale');
-          if (oImg  && opt.getAttribute('data-image')) oImg.src = opt.getAttribute('data-image');
-        }
-      });
+      // Resolve stock BEFORE touching the DOM. injectCartCrossSell() removes any
+      // stale widget and injects the new one, and that pair has to stay
+      // synchronous — going async between them lets the 1-second poll (which
+      // re-injects whenever the widget is missing) leave two copies behind.
+      loadStock().then(injectCartCrossSell);
     }, 300);
+  }
+
+  /**
+   * Replace the in-cart widget with one built from currently purchasable stock.
+   * Called only from renderCartCrossSell(), with a resolved stock map.
+   */
+  function injectCartCrossSell(stockMap) {
+    // Remove any stale injection
+    var existing = document.getElementById('tgd-cart-crossell');
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+
+    // Offer only what a customer can actually buy. A generic cross-sell whose
+    // products are all sold out drops out of the rotation entirely, rather than
+    // being picked and then rendering an unbuyable card.
+    var candidates = [];
+    for (var i = 0; i < GENERICCROSSSELLS.length; i++) {
+      var filtered = filterCsByStock(GENERICCROSSSELLS[i], stockMap);
+      if (filtered) candidates.push(filtered);
+    }
+    if (!candidates.length) return;
+
+    // Randomly pick from the in-stock rows so different products surface across
+    // cart renders and sessions.
+    var cs = candidates[Math.floor(Math.random() * candidates.length)];
+
+    // Locate the items container — behaviour differs by cart type:
+    //   Sidecart   → .fc-cart__items  (inject AFTER: widget appears between items and totals sidebar)
+    //   Full-page  → .cart-item-blocks (inject INSIDE/append: widget appears below items in the left column)
+    var itemsList  = document.querySelector('.fc-cart__items');
+    var appendInside = false;
+    if (!itemsList) {
+      itemsList    = document.querySelector('.cart-item-blocks');
+      appendInside = true; // full-page is two-column flex; append inside keeps widget in left column
+    }
+    if (!itemsList || !itemsList.parentNode) {
+      return;
+    }
+
+    // Inject styles once per page load
+    if (!document.getElementById('tgd-cart-crossell-styles')) {
+      var s = document.createElement('style');
+      s.id  = 'tgd-cart-crossell-styles';
+      s.textContent = CART_STYLES;
+      document.head.appendChild(s);
+    }
+
+    var div       = document.createElement('div');
+    div.id        = 'tgd-cart-crossell';
+    div.innerHTML = cartCrossSellHTML(cs);
+    if (appendInside) {
+      itemsList.appendChild(div);                                    // full-page: bottom of items column
+    } else {
+      itemsList.parentNode.insertBefore(div, itemsList.nextSibling); // sidecart: after items container
+    }
+
+    // Stepper +/− and Add to Cart button
+    div.addEventListener('click', function (e) {
+      // Quantity stepper
+      var qtyBtn = e.target.closest ? e.target.closest('.cs-cart-qty-btn') : null;
+      if (qtyBtn) {
+        var code   = qtyBtn.getAttribute('data-product-code');
+        var input  = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
+        if (!input) return;
+        var val    = parseInt(input.value, 10) || 1;
+        var maxAttr = input.getAttribute('max');
+        var maxVal  = maxAttr ? (parseInt(maxAttr, 10) || Infinity) : Infinity; // no max attr = unlimited
+        if (qtyBtn.getAttribute('data-action') === 'minus') val = Math.max(1, val - 1);
+        if (qtyBtn.getAttribute('data-action') === 'plus')  val = Math.min(maxVal, val + 1);
+        input.value = val;
+        return;
+      }
+
+      // Add to Cart button — read quantity from the stepper
+      var btn = e.target.closest ? e.target.closest('.cs-cart-add-btn') : null;
+      if (!btn || btn.disabled) return;
+      var code     = btn.getAttribute('data-product-code');
+      var qtyInput = div.querySelector('.cs-cart-qty-input[data-product-code="' + code + '"]');
+      var qty      = qtyInput ? (parseInt(qtyInput.value, 10) || 1) : 1;
+      // `cs` here is the stock-filtered copy, so handleCartCrossSellAdd can only
+      // ever resolve a variant that was in stock when the widget was built.
+      handleCartCrossSellAdd(code, cs, qty);
+    });
+
+    // Variant select — enable button and update displayed prices/image
+    div.addEventListener('change', function (e) {
+      var sel = e.target.closest ? e.target.closest('.cs-cart-variant-select') : null;
+      if (!sel) return;
+      var card = sel.closest ? sel.closest('.cs-cart-product') : sel.parentNode;
+      if (!card) return;
+      var btn = card.querySelector('.cs-cart-add-btn');
+      if (btn) btn.disabled = !sel.value;
+      if (sel.value) {
+        var opt   = sel.options[sel.selectedIndex];
+        var oOrig = card.querySelector('.cs-cart-price-orig');
+        var oSale = card.querySelector('.cs-cart-price-sale');
+        var oImg  = card.querySelector('.cs-cart-img');
+        if (oOrig) oOrig.textContent = '$' + opt.getAttribute('data-orig');
+        if (oSale) oSale.textContent = '$' + opt.getAttribute('data-sale');
+        if (oImg  && opt.getAttribute('data-image')) oImg.src = opt.getAttribute('data-image');
+      }
+    });
   }
 
   /* ══════════════════════════════════════════════════════════════════════════
@@ -1143,8 +1318,11 @@
   }
 
   /**
-   * Show the popup for the given cross-sell config.
-   * Sets ACTIVE_CONFIG and updates PROMO_LIMIT for the session.
+   * Show the popup for the given cross-sell config, once live stock has been
+   * checked. Sold-out products and variants are stripped out first; if that
+   * leaves nothing to offer, no popup is shown and the session is deliberately
+   * NOT marked as shown, so a later add of the same category can still surface
+   * the offer if the product has been restocked.
    */
   function showPopup(cs) {
     if (alreadyShownFor(cs)) return;
@@ -1160,6 +1338,21 @@
     var path = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
     if (path === '/' || path === '/home') return;
 
+    // Guards above are cheap and synchronous — run them before asking for stock
+    // so pages that can never show the popup don't hit the endpoint at all.
+    loadStock().then(function (stockMap) {
+      var available = filterCsByStock(cs, stockMap);
+      if (!available) return;              // nothing purchasable — no offer
+      if (alreadyShownFor(cs)) return;     // re-check: the fetch above is async
+      renderPopup(available);
+    });
+  }
+
+  /**
+   * Render and wire up the popup for an already stock-filtered config.
+   * Sets ACTIVE_CONFIG and updates PROMO_LIMIT for the session.
+   */
+  function renderPopup(cs) {
     // Lock in this session's config for the popup that just fired
     ACTIVE_CONFIG = cs;
     PROMO_LIMIT   = effectiveMaxQty(cs);
