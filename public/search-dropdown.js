@@ -488,7 +488,7 @@
     /* Articles last and capped low. They are the largest content type by count (307)
      * and the lowest purchase intent, so they must not crowd out products — but they
      * were completely unreachable before, which is worse. */
-    { t: 'blog',     label: 'Articles',   max: 3 }
+    { t: 'blog',     label: 'Articles',   max: 3, page: 8 }
   ];
 
   var prepared = null, loading = null, panel = null, active = -1, rows = [], lastQuery = '';
@@ -804,6 +804,13 @@
     'margin-bottom:10px;border-radius:6px;background:#f1f5f2;color:#276749;',
     'font-weight:700;font-size:26px;letter-spacing:1px}',
     '.tgd-card-d{display:block;font-size:12px;color:#6b6b6b;line-height:1.45}',
+    /* Editorial photo: cover-fit and shorter than a product shot, so a full page of
+     * articles is not a wall of images. */
+    '.tgd-card-blog img{height:120px;object-fit:cover}',
+    '.tgd-card-noimg{display:block;height:120px;margin-bottom:10px;border-radius:6px;',
+    'background:linear-gradient(135deg,#eef3ef,#e2ebe5)}',
+    '.tgd-card-k{display:inline-block;margin-bottom:6px;padding:2px 8px;border-radius:999px;',
+    'background:#eef3ef;color:#276749;font-size:11px;font-weight:600;letter-spacing:.02em}',
     '.tgd-list a{display:block;padding:9px 0;border-bottom:1px solid #eee;text-decoration:none;color:inherit}',
     '.tgd-list-m{color:#7a8a80;font-size:12px;margin-left:8px}',
     '.tgd-more{margin-top:14px;padding:9px 16px;border:1px solid #276749;background:#fff;color:#276749;',
@@ -1026,25 +1033,48 @@
     if (d.t === 'product' && !d.st) badge += '<span class="tgd-b tgd-oos">Out of stock</span>';
     if (d.dc) badge += '<span class="tgd-b tgd-dc">While supplies last</span>';
 
-    /* Brands use the same card as products so the two grids line up, but a logo is not a
-     * product shot: it wants a shorter, padded, white tile so wordmarks stay legible and
-     * transparent PNGs do not disappear into the page. */
+    /* One card for three content types, because a results page that changes shape
+     * halfway down reads as broken. What differs is the MEDIA, and only because the
+     * three images are genuinely different things:
+     *
+     *   product  a photo on a plain background — fill the tile (cover)
+     *   brand    a logo, often a transparent PNG or a wide wordmark — a shorter padded
+     *            white tile, contain-fitted, or it gets cropped or vanishes
+     *   article  an editorial photo — cover, and shorter than a product shot so a grid
+     *            of 24 articles does not turn into a wall of images
+     *
+     * An article with no thumbnail gets a neutral tile rather than a collapsed card, so
+     * one missing image cannot make the row ragged. */
     var isBrand = d.t === 'brand';
-    var media = d.img
-      ? '<img src="' + esc(d.img) + '" alt="" loading="lazy">'
-      : (isBrand ? '<span class="tgd-card-init" aria-hidden="true">' + esc(initials(d.n)) + '</span>' : '');
+    var isBlog = d.t === 'blog';
+    var media;
+    if (d.img) {
+      media = '<img src="' + esc(d.img) + '" alt="" loading="lazy">';
+    } else if (isBrand) {
+      media = '<span class="tgd-card-init" aria-hidden="true">' + esc(initials(d.n)) + '</span>';
+    } else if (isBlog) {
+      media = '<span class="tgd-card-noimg" aria-hidden="true"></span>';
+    } else {
+      media = '';
+    }
 
-    return '<a class="tgd-card' + (isBrand ? ' tgd-card-brand' : '') + '" href="' + esc(d.u) + '">'
+    var cls = 'tgd-card' + (isBrand ? ' tgd-card-brand' : '') + (isBlog ? ' tgd-card-blog' : '');
+    return '<a class="' + cls + '" href="' + esc(d.u) + '">'
       + media
+      + (isBlog ? '<span class="tgd-card-k">Article</span>' : '')
       + '<span class="tgd-card-n">' + esc(d.n) + badge + '</span>'
       + (d.b ? '<span class="tgd-card-m">' + esc(d.b) + '</span>' : '')
       + (d.t === 'product' && stars(d) ? '<span class="tgd-card-m">' + stars(d) + '</span>' : '')
       + (isBrand ? '<span class="tgd-card-d">' + (d.d ? esc(clip(d.d, 90)) : 'Shop ' + esc(d.n)) + '</span>' : '')
+      + (isBlog && d.d ? '<span class="tgd-card-d">' + esc(clip(d.d, 110)) + '</span>' : '')
       + (d.t === 'product' ? '<span class="tgd-card-p">' + money(d) + '</span>' : '')
       + '</a>';
   }
 
-  function renderResults(host, query) {
+  /* `docsOverride` exists so the RENDER can be tested with a known index instead of only
+   * the ranker. The byType bug — which silently discarded all 306 article results — passed
+   * every ranking assertion, because nothing exercised the HTML that came out. */
+  function renderResults(host, query, docsOverride) {
     var retired = retiredFor(query);
     if (retired) {
       host.innerHTML = '<div class="tgd-res"><div class="tgd-res-note">' + esc(retired) + '</div></div>';
@@ -1052,7 +1082,7 @@
       return;
     }
 
-    var all = search(prepared, query, 400);
+    var all = search(docsOverride || prepared, query, 400);
     track('search', { search_term: query, results_count: all.length, surface: 'results_page' });
     track('view_search_results', { search_term: query, results_count: all.length });
 
@@ -1063,7 +1093,12 @@
       return;
     }
 
-    var byType = { product: [], brand: [], category: [], page: [] };
+    /* Built from GROUPS, never hand-listed. When `blog` was added to GROUPS this was a
+     * hardcoded literal without it, so the guard below silently discarded all 306
+     * articles — they matched, ranked, and then vanished before rendering. Deriving the
+     * buckets means adding a group cannot desync from the renderer again. */
+    var byType = {};
+    for (var bt = 0; bt < GROUPS.length; bt++) byType[GROUPS[bt].t] = [];
     for (var i = 0; i < all.length; i++) {
       var t = all[i].doc.t;
       if (byType[t]) byType[t].push(all[i].doc);
@@ -1098,18 +1133,22 @@
       var list = byType[grp.t];
       if (!list || !list.length) continue;
       html += '<h2 id="tgd-g-' + grp.t + '">' + grp.label + ' (' + list.length + ')</h2>';
-      if (grp.t === 'product' || grp.t === 'brand') {
-        html += '<div class="tgd-res-grid" data-grid="' + grp.t + '">';
-        for (var pi = 0; pi < Math.min(list.length, RESULTS_PAGE_SIZE); pi++) html += cardHtml(list[pi]);
+      if (grp.t === 'product' || grp.t === 'brand' || grp.t === 'blog') {
+        /* Per-group page size. Articles show fewer up front: they are the lowest
+         * purchase intent and the largest type by count — "what is thca" matches 108. */
+        var size = grp.page || RESULTS_PAGE_SIZE;
+        html += '<div class="tgd-res-grid" data-grid="' + grp.t + '" data-page="' + size + '">';
+        for (var pi = 0; pi < Math.min(list.length, size); pi++) html += cardHtml(list[pi]);
         html += '</div>';
-        if (list.length > RESULTS_PAGE_SIZE) {
+        if (list.length > size) {
           html += '<button class="tgd-more" data-more="' + grp.t + '">Show more '
             + esc(grp.label.toLowerCase()) + '</button>';
         }
       } else {
         /* Categories and pages stay a compact list: they are navigational and carry no
-         * artwork, so a grid would just be rows of near-identical text cards. Brands do
-         * have logos, so they get the grid above. */
+         * artwork, so a grid would just be rows of near-identical text cards. Brands and
+         * articles both have images, so they get the grid above — which also paginates
+         * them, and "what is thca" matches 108 articles. */
         html += '<div class="tgd-list">';
         for (var li = 0; li < list.length; li++) {
           var mb = matchedBrand(list[li], query);
@@ -1138,11 +1177,14 @@
       (function (btn) {
         var type = btn.getAttribute('data-more');
         var list = byType[type] || [];
-        var shown = RESULTS_PAGE_SIZE;
+        var grid0 = host.querySelector('[data-grid="' + type + '"]');
+        // Read the size back off the grid so it cannot drift from what was rendered.
+        var size = Number(grid0 && grid0.getAttribute('data-page')) || RESULTS_PAGE_SIZE;
+        var shown = size;
         btn.addEventListener('click', function () {
           var grid = host.querySelector('[data-grid="' + type + '"]');
           if (!grid) return;
-          var next = list.slice(shown, shown + RESULTS_PAGE_SIZE);
+          var next = list.slice(shown, shown + size);
           var frag = '';
           for (var k = 0; k < next.length; k++) frag += cardHtml(next[k]);
           grid.insertAdjacentHTML('beforeend', frag);
@@ -1259,6 +1301,9 @@
     fold: fold, squash: squash, tokens: tokens, expand: expand, within: within,
     prepare: prepare, search: search, retiredFor: retiredFor,
     stars: stars, ratingBoost: ratingBoost, stickyOffset: stickyOffset,
+    /* Exported so the RENDER is testable, not just the ranker. A hardcoded byType list
+     * silently dropped all 306 article results while every ranking assertion passed. */
+    renderResults: renderResults, cardHtml: cardHtml,
     matchedBrand: matchedBrand, contentTokens: contentTokens,
     chromeOver: chromeOver, scrollToGroup: scrollToGroup, initials: initials, clip: clip,
     resultsUrl: resultsUrl, fallbackUrl: fallbackUrl, queryFromUrl: queryFromUrl,

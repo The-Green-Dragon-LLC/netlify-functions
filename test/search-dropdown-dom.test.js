@@ -52,6 +52,8 @@ global.window = {
 global.document = {
   readyState: 'complete',
   head, body,
+  // renderResults writes the measured sticky offset into a CSS custom property.
+  documentElement: { style: { setProperty() {} } },
   createElement: makeEl,
   addEventListener() {},
   querySelector(sel) { return sel.indexOf('search') !== -1 ? input : null; },
@@ -150,9 +152,68 @@ ok(/tgd-card-brand/.test(src), 'brand cards get their own class so the logo tile
 ok(/tgd-card-init/.test(src), 'a brand with no logo in the CMS falls back to initials rather than a hole');
 ok(/data-grid="' \+ grp\.t/.test(src) && !/data-grid="1"/.test(src),
   'each grid is keyed by type, so "show more products" cannot inject into the brand grid');
-ok(/var shown = RESULTS_PAGE_SIZE;[\s\S]{0,400}btn\.addEventListener/.test(src),
-  'the show-more counter is per type — one shared counter would page the second grid from the first grid position');
+ok(/var type = btn\.getAttribute\('data-more'\);[\s\S]{0,500}var shown = size;[\s\S]{0,120}btn\.addEventListener/.test(src),
+  'the show-more counter lives inside the per-button closure — one shared counter would page the second grid from the first grid position');
+ok(/data-page="' \+ size/.test(src) && /getAttribute\('data-page'\)/.test(src),
+  'page size is written onto the grid and read back, so it cannot drift from what was rendered');
+ok(/\{ t: 'blog',[^}]*page: 8/.test(src),
+  'articles cap at 8 up front — lowest intent and the largest type ("what is thca" matches 108)');
+
+console.log(' article cards');
+ok(/grp\.t === 'product' \|\| grp\.t === 'brand' \|\| grp\.t === 'blog'/.test(src),
+  'articles render as cards in the grid, which is also what paginates them');
+ok(/tgd-card-blog img\{height:120px;object-fit:cover\}/.test(src),
+  'an editorial photo is cover-fitted, unlike a contain-fitted brand logo');
+ok(/tgd-card-noimg/.test(src), 'an article with no thumbnail gets a neutral tile rather than a ragged row');
+ok(/for \(var bt = 0; bt < GROUPS\.length; bt\+\+\) byType\[GROUPS\[bt\]\.t\] = \[\];/.test(src),
+  'result buckets are derived from GROUPS — a hardcoded list silently dropped all 306 articles');
+ok(!/byType = \{ product: \[\]/.test(src), 'and the hand-listed literal is gone');
 ok(/object-fit:contain/.test(src), 'logos are contain-fitted so wordmarks are not cropped');
+
+/* ─── RENDERED OUTPUT ────────────────────────────────────────────────────────────
+ *
+ * Everything above this point checks the source or the ranker. That was not enough: a
+ * hardcoded `byType` literal missing 'blog' silently discarded all 306 article results
+ * AFTER they had matched and ranked, and every ranking assertion still passed. These
+ * assertions look at the HTML that actually comes out. */
+console.log(' rendered output');
+
+const RDOCS = { docs: [] };
+for (let i = 0; i < 30; i++) {
+  RDOCS.docs.push({ t: 'blog', n: 'THCa Article ' + i, u: '/blog/thca-' + i,
+    d: 'All about THCa and what it does.', img: 'https://img/thca-' + i + '.png' });
+}
+RDOCS.docs.push({ t: 'product', n: 'THCa Gummies', u: '/product/thca-gummies', p: 30, st: 1 });
+RDOCS.docs.push({ t: 'brand', n: 'THCa Co', u: '/brand/thca-co', img: 'https://img/logo.png' });
+RDOCS.docs.push({ t: 'blog', n: 'THCa With No Picture', u: '/blog/no-pic', d: 'No thumbnail here.' });
+
+const rhost = { _html: '', set innerHTML(v) { this._html = v; }, get innerHTML() { return this._html; },
+  querySelector: () => null, querySelectorAll: () => [] };
+S.renderResults(rhost, 'thca', S.prepare(RDOCS));
+const out = rhost.innerHTML;
+const sections = [...out.matchAll(/<h2 id="tgd-g-([a-z]+)">([^<]*)</g)].map((m) => m[1]);
+
+ok(sections.indexOf('blog') !== -1, 'an Articles section is rendered at all', sections);
+ok(sections.indexOf('product') !== -1 && sections.indexOf('brand') !== -1,
+  'alongside products and brands', sections);
+ok((out.match(/tgd-card-blog/g) || []).length === 8,
+  'articles are capped at 8 up front', (out.match(/tgd-card-blog/g) || []).length);
+ok(/data-more="blog"/.test(out) && /Show more articles/.test(out),
+  'with a Show more articles button, since 31 matched');
+ok(/data-grid="blog" data-page="8"/.test(out), 'the grid records its own page size for the button to read');
+ok(/tgd-card-k">Article</.test(out), 'article cards are labelled "Article"');
+ok(/tgd-card-blog[\s\S]{0,400}<img/.test(out), 'article cards render their thumbnail');
+/* Asserted on cardHtml directly: whether the no-thumbnail article lands inside the first
+ * 8 depends on ranking, so checking the page output would be a test that passes by
+ * accident. A ragged row is the failure mode being guarded against. */
+const noPic = S.cardHtml({ t: 'blog', n: 'No Picture', u: '/blog/no-pic', d: 'Text only.' });
+ok(/tgd-card-noimg/.test(noPic), 'an article with no thumbnail gets a placeholder tile, not a collapsed card', noPic);
+ok(/tgd-card-blog/.test(noPic) && !/<img/.test(noPic), 'and no empty img element');
+const withPic = S.cardHtml({ t: 'blog', n: 'Has Picture', u: '/blog/p', img: 'https://img/x.png' });
+ok(/<img src="https:\/\/img\/x\.png"/.test(withPic) && !/tgd-card-noimg/.test(withPic),
+  'while one with a thumbnail uses it and skips the placeholder');
+ok(!/tgd-card-p/.test(withPic), 'article cards carry no price');
+ok(!/\$NaN|undefined/.test(out), 'no undefined or NaN leaks into the markup');
 
 console.log(' escaping');
 ok(S.fold('<script>') === 'script', 'folding strips markup characters');
