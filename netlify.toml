@@ -53,7 +53,7 @@
     Cache-Control = "public, max-age=0, must-revalidate"
 
 # Back-in-stock notifier: once a day at 4pm Central it checks Airtable inventory for
-# Pending signups and fires the Omnisend "back in stock" alert for restocks.
+# Pending signups and triggers the Rejoiner restock-alert journey for restocks.
 # Netlify cron is UTC-only with no DST handling, and 4pm Central is 21:00 UTC in
 # summer (CDT) but 22:00 UTC in winter (CST). So we fire at BOTH hours and the
 # function itself drops the wrong one (it proceeds only when the America/Chicago

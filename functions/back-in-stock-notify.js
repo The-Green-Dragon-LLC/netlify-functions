@@ -3,9 +3,9 @@
  * ────────────────────────────────────────────────────────────────────────────
  * Runs ONCE A DAY at 4pm Central. For every Pending row in the Airtable "Back In
  * Stock Requests" table it checks the item's CURRENT inventory in Airtable (the
- * source of record). When an item is back in stock it fires the Omnisend "back in
- * stock" alert event to that customer and flips the row to Notified so it never
- * sends twice.
+ * source of record). When an item is back in stock it triggers the Rejoiner
+ * restock-alert journey for that customer and flips the row to Notified so it
+ * never sends twice.
  *
  * Why the schedule looks odd: Netlify cron is UTC-only and DST-blind, so 4pm Central
  * is 21:00 UTC in summer and 22:00 UTC in winter. netlify.toml fires at BOTH hours
@@ -24,12 +24,22 @@
  * HTTP hit BYPASSES the 4pm hour guard so you can test at any time of day. If env
  * BIS_NOTIFY_KEY is set, an HTTP call must pass ?key=<that value>.
  *
- * Env: AIRTABLE_API_KEY (or AIRTABLE_TOKEN), OMNISEND_API_KEY, optional BIS_NOTIFY_KEY,
+ * EMAIL PLATFORM: REJOINER (migrated off Omnisend, Aug 2026)
+ * ─────────────────────────────────────────────────────────
+ * The alert is a webhook-TRIGGERED Rejoiner journey, started per customer:
+ *   POST /api/v2/{site}/journeys/{journey_id}/webhook_trigger/
+ *   { email, session_data: { ... } }
+ * Every session_data key is readable in the template as
+ * {{ session.metadata.<key> }}. See sessionData() below for the contract.
+ *
+ * Env: AIRTABLE_API_KEY (or AIRTABLE_TOKEN), optional BIS_NOTIFY_KEY,
+ *      REJOINER_API_KEY, REJOINER_SITE_ID, REJOINER_BIS_ALERT_JOURNEY,
  *      optional BIS_TZ (default America/Chicago) and BIS_SEND_HOUR (default 16).
  *      If you change BIS_SEND_HOUR or BIS_TZ, revisit the UTC hours in netlify.toml.
  */
 
 const https = require('https');
+const rejoiner = require('../lib/rejoiner.js');
 
 const AIRTABLE_BASE = process.env.AIRTABLE_BASE_ID || 'appWUsGD3byrYcN3l';
 const REQUESTS_TABLE = process.env.AIRTABLE_BIS_TABLE || 'tblcPKQSoRpYu7VXW'; // Back In Stock Requests
@@ -37,9 +47,8 @@ const VARIANTS_TABLE = process.env.AIRTABLE_VARIANTS_TABLE || 'tblEtb1aIH5Xk4Nh9
 const PRODUCTS_TABLE = process.env.AIRTABLE_PRODUCTS_TABLE || 'tblkLl9qqg654fWi7';
 const WEBSITE_CODE_FIELD = 'Website Product Code'; // RECORD_ID() formula, for the fallback lookup
 
-const OMNISEND_BASE = 'https://api.omnisend.com/api';
-const OMNISEND_VERSION = '2026-03-15';
-const ALERT_EVENT_NAME = 'back in stock';
+// Rejoiner journey that sends the "it's back in stock" alert.
+const ALERT_JOURNEY = process.env.REJOINER_BIS_ALERT_JOURNEY || '';
 
 const RECORD_ID_RE = /^rec[A-Za-z0-9]{14}$/;
 
@@ -159,26 +168,51 @@ async function markNotified(recordId) {
   if (!res.ok) throw new Error(`Airtable mark ${res.status}: ${(res.text || '').slice(0, 200)}`);
 }
 
-/* ─── Omnisend alert ──────────────────────────────────────────────────────── */
-async function fireAlertEvent(email, properties) {
-  const apiKey = process.env.OMNISEND_API_KEY;
-  if (!apiKey) { console.warn('[bis-notify] OMNISEND_API_KEY not set — cannot send alert'); return false; }
-  const res = await httpsReq(OMNISEND_BASE + '/events', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Omnisend-API-Key ' + apiKey,
-      'Omnisend-Version': OMNISEND_VERSION,
-    },
-  }, {
-    eventName: ALERT_EVENT_NAME,
-    origin: 'api',
-    eventTime: new Date().toISOString(),
-    contact: { email },
-    properties: properties || {},
-  });
-  if (!res.ok) { console.error('[bis-notify] Omnisend alert failed', res.status, (res.text || '').slice(0, 300)); return false; }
-  return true;
+/* ─── Rejoiner alert ──────────────────────────────────────────────────────── */
+
+/* session_data for the alert template — {{ session.metadata.<key> }}.
+ * Mirrors sessionData() in back-in-stock-subscribe.js (plus inventory and
+ * requested_at) so the confirmation and alert templates can share a block. */
+function sessionData(row, inventory) {
+  const name = String(row['Product Name'] || '').trim();
+  const label = String(row['Variant Label'] || '').trim();
+  const price = row.Price != null ? Number(row.Price) : null;
+  return {
+    product_code: String(row['Product Code'] || '').trim(),
+    product_name: name,
+    variant_label: label,
+    product_title: label ? `${name} — ${label}` : name,
+    product_url: row['Product URL'] || '',
+    image_url: row['Image URL'] || '',
+    price: Number.isFinite(price) ? price : null,
+    inventory,
+    // Lets the template say "you asked about this on ..." — often weeks earlier.
+    requested_at: row['Requested At'] || '',
+  };
+}
+
+/* Returns true only if Rejoiner accepted the trigger. Returning false leaves the
+ * row Pending so the next sweep retries — never mark Notified on a failure. */
+async function sendAlert(email, row, inventory) {
+  if (!rejoiner.isConfigured()) {
+    console.warn('[bis-notify] REJOINER_API_KEY/REJOINER_SITE_ID not set — cannot send alert');
+    return false;
+  }
+  if (!ALERT_JOURNEY) {
+    console.warn('[bis-notify] REJOINER_BIS_ALERT_JOURNEY not set — cannot send alert');
+    return false;
+  }
+  try {
+    // ensureCustomer defaults on: a signup could predate any other contact with
+    // this address, or the profile could have been pruned since.
+    await rejoiner.triggerJourney(ALERT_JOURNEY, email, sessionData(row, inventory), {
+      customerFields: { metadata: { source: 'back-in-stock' } },
+    });
+    return true;
+  } catch (e) {
+    console.error('[bis-notify] Rejoiner alert failed:', e.message);
+    return false;
+  }
 }
 
 /* ─── Core sweep ──────────────────────────────────────────────────────────── */
@@ -206,15 +240,7 @@ async function runSweep() {
 
       // Back in stock → alert, then mark Notified (mark immediately so an
       // overlapping run never double-sends this row).
-      const sent = await fireAlertEvent(email, {
-        productCode: code,
-        productName: row.f['Product Name'] || '',
-        variantLabel: row.f['Variant Label'] || '',
-        productUrl: row.f['Product URL'] || '',
-        imageUrl: row.f['Image URL'] || '',
-        price: (row.f.Price != null) ? Number(row.f.Price) : undefined,
-        inventory: inv,
-      });
+      const sent = await sendAlert(email, row.f, inv);
       if (!sent) { errors++; continue; }               // keep Pending, retry next run
       await markNotified(row.id);
       notified++;

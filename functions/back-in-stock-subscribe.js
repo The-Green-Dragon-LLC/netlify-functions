@@ -9,21 +9,41 @@
  *   1. validate email + code
  *   2. de-dupe: skip if an identical Pending row already exists
  *   3. insert a row in Airtable "Back In Stock Requests" (Status = Pending)
- *   4. fire the Omnisend "back in stock signup" event  → confirmation automation
- *   5. if optIn: upsert the Omnisend contact as email-subscribed (marketing)
+ *   4. trigger the Rejoiner signup-confirmation journey
+ *   5. if optIn: record consent + add to the marketing list in Rejoiner
  *
  * The scheduled sibling `back-in-stock-notify.js` later reads the Pending rows,
- * checks Airtable inventory, and fires the "back in stock" alert event.
+ * checks Airtable inventory, and triggers the restock alert journey.
+ *
+ * EMAIL PLATFORM: REJOINER (migrated off Omnisend, Aug 2026)
+ * ─────────────────────────────────────────────────────────
+ * Rejoiner has no "custom event" primitive like Omnisend's. The equivalent is a
+ * webhook-TRIGGERED journey, started per customer:
+ *
+ *   POST /api/v2/{site}/journeys/{journey_id}/webhook_trigger/
+ *   { email, session_data: { ... } }
+ *
+ * `session_data` becomes the journey session's metadata, so every key below is
+ * readable in the email template as {{ session.metadata.<key> }}.
+ *
+ * Rejoiner will NOT create an unknown customer — it answers
+ * 404 {"error":"No customer was found with email ..."} — and a back-in-stock
+ * signup is very often the first time we've ever seen that address. lib/rejoiner
+ * handles this by upserting the profile and retrying once.
  *
  * Env (on the netlify-functions site):
- *   AIRTABLE_API_KEY (or AIRTABLE_TOKEN)  — needs data.records:read + write on the Website base
- *   OMNISEND_API_KEY                       — events.write (+ contacts write for the opt-in upsert)
+ *   AIRTABLE_API_KEY (or AIRTABLE_TOKEN)  — data.records:read + write on the Website base
+ *   REJOINER_API_KEY                      — Rejoiner → Domain Settings → API Key
+ *   REJOINER_SITE_ID                      — Rejoiner → Domain Settings (e.g. ZLZZEJL)
+ *   REJOINER_BIS_SIGNUP_JOURNEY           — journey id of the "we'll let you know" confirmation
+ *   REJOINER_BIS_LIST_ID                  — optional; list opted-in shoppers join
  *
- * Best-effort on both Omnisend calls: a signup is never failed because Omnisend
+ * Best-effort on every Rejoiner call: a signup is never failed because Rejoiner
  * hiccups — the Airtable row is the source of truth the notifier reads.
  */
 
 const https = require('https');
+const rejoiner = require('../lib/rejoiner.js');
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -34,9 +54,10 @@ const CORS = {
 const AIRTABLE_BASE = process.env.AIRTABLE_BASE_ID || 'appWUsGD3byrYcN3l';
 const AIRTABLE_TABLE = process.env.AIRTABLE_BIS_TABLE || 'tblcPKQSoRpYu7VXW'; // "Back In Stock Requests"
 
-const OMNISEND_BASE = 'https://api.omnisend.com/api';
-const OMNISEND_VERSION = '2026-03-15';
-const SIGNUP_EVENT_NAME = 'back in stock signup';
+// Rejoiner journey that sends the "we'll email you when it's back" confirmation.
+const SIGNUP_JOURNEY = process.env.REJOINER_BIS_SIGNUP_JOURNEY || '';
+// Optional list that opted-in shoppers join. Leave unset to record consent only.
+const MARKETING_LIST = process.env.REJOINER_BIS_LIST_ID || '';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -106,56 +127,68 @@ async function createRequest(token, fields) {
   return res.json;
 }
 
-/* ─── Omnisend (best-effort) ─────────────────────────────────────────────── */
-async function fireSignupEvent(email, properties) {
-  const apiKey = process.env.OMNISEND_API_KEY;
-  if (!apiKey) { console.warn('[bis] OMNISEND_API_KEY not set — skipping signup event'); return; }
+/* ─── Rejoiner (best-effort) ─────────────────────────────────────────────── */
+
+/* Build the session_data payload the email template reads.
+ * Every key here is available in Rejoiner as {{ session.metadata.<key> }}.
+ * Keep this in sync with the same helper in back-in-stock-notify.js so the
+ * confirmation and the alert can share one template block. */
+function sessionData(item) {
+  const label = String(item.variantLabel || '').trim();
+  const name = String(item.productName || '').trim();
+  return {
+    product_code: item.code,
+    product_name: name,
+    variant_label: label,
+    // Pre-joined for templates that just want one line to print.
+    product_title: label ? `${name} — ${label}` : name,
+    product_url: item.productUrl || '',
+    image_url: item.imageUrl || '',
+    price: Number.isFinite(item.price) ? item.price : null,
+  };
+}
+
+/* Confirmation email: "we'll let you know when this is back." */
+async function sendSignupConfirmation(email, item) {
+  if (!rejoiner.isConfigured()) {
+    console.warn('[bis] REJOINER_API_KEY/REJOINER_SITE_ID not set — skipping confirmation');
+    return;
+  }
+  if (!SIGNUP_JOURNEY) {
+    console.warn('[bis] REJOINER_BIS_SIGNUP_JOURNEY not set — skipping confirmation');
+    return;
+  }
   try {
-    const res = await httpsReq(OMNISEND_BASE + '/events', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Omnisend-API-Key ' + apiKey,
-        'Omnisend-Version': OMNISEND_VERSION,
-      },
-    }, {
-      eventName: SIGNUP_EVENT_NAME,
-      origin: 'api',
-      eventTime: new Date().toISOString(),
-      contact: { email },
-      properties: properties || {},
+    // ensureCustomer (the default) matters most here: a back-in-stock signup is
+    // frequently the first time this address has ever hit the account.
+    await rejoiner.triggerJourney(SIGNUP_JOURNEY, email, sessionData(item), {
+      customerFields: { metadata: { source: 'back-in-stock' } },
     });
-    if (!res.ok) console.error('[bis] Omnisend signup event failed', res.status, (res.text || '').slice(0, 300));
   } catch (e) {
-    console.error('[bis] Omnisend signup event error:', e.message);
+    console.error('[bis] Rejoiner confirmation failed:', e.message);
   }
 }
 
-/* Only called when the customer ticked the marketing opt-in box. */
-async function subscribeContact(email, ip) {
-  const apiKey = process.env.OMNISEND_API_KEY;
-  if (!apiKey) { console.warn('[bis] OMNISEND_API_KEY not set — skipping contact upsert'); return; }
+/* Only called when the customer ticked the marketing opt-in box.
+ * Consent is recorded first and independently of the list add: if the list add
+ * fails we still want a durable record that they said yes. */
+async function optInMarketing(email, ip) {
+  if (!rejoiner.isConfigured()) {
+    console.warn('[bis] Rejoiner not configured — skipping marketing opt-in');
+    return;
+  }
   try {
-    const now = new Date().toISOString();
-    const res = await httpsReq(OMNISEND_BASE + '/contacts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Omnisend-API-Key ' + apiKey,
-        'Omnisend-Version': OMNISEND_VERSION,
-      },
-    }, {
-      identifiers: [{
-        type: 'email',
-        id: email,
-        channels: { email: { status: 'subscribed', statusChangedAt: now } },
-        consent: { source: 'Back in Stock Form', createdAt: now, ip: ip || undefined },
-      }],
-      tags: ['source: back-in-stock'],
-    });
-    if (!res.ok) console.error('[bis] Omnisend contact upsert failed', res.status, (res.text || '').slice(0, 300));
+    await rejoiner.recordOptIn(email, { ip_address: ip || undefined });
   } catch (e) {
-    console.error('[bis] Omnisend contact upsert error:', e.message);
+    console.error('[bis] Rejoiner opt-in record failed:', e.message);
+  }
+  if (!MARKETING_LIST) return;
+  try {
+    // Adding to a list can itself start a journey (that's how the welcome flow
+    // fires), so this runs ONLY behind the explicit opt-in checkbox.
+    await rejoiner.addToList(MARKETING_LIST, email);
+  } catch (e) {
+    console.error('[bis] Rejoiner list add failed:', e.message);
   }
 }
 
@@ -184,16 +217,18 @@ exports.handler = async (event) => {
   const token = airtableToken();
   if (!token) return resp(500, { ok: false, error: 'Server not configured.' });
 
+  const item = {
+    code, productName, variantLabel, productUrl, imageUrl,
+    price: Number.isFinite(priceNum) ? priceNum : null,
+  };
+
   // De-dupe — a repeat signup for the same item is a no-op success.
   try {
     if (await hasPendingRequest(token, email, code)) {
-      // Still (re)fire the signup event so the customer gets a confirmation and
-      // any opt-in is honored, but don't create a duplicate row.
-      await fireSignupEvent(email, {
-        productCode: code, productName, variantLabel, productUrl, imageUrl,
-        price: Number.isFinite(priceNum) ? priceNum : undefined,
-      });
-      if (optIn) await subscribeContact(email, clientIp(event));
+      // Still (re)send the confirmation so the customer gets feedback and any
+      // opt-in is honored, but don't create a duplicate row.
+      await sendSignupConfirmation(email, item);
+      if (optIn) await optInMarketing(email, clientIp(event));
       return resp(200, { ok: true, already: true });
     }
   } catch (e) {
@@ -221,12 +256,10 @@ exports.handler = async (event) => {
     return resp(502, { ok: false, error: 'Could not save your request. Please try again.' });
   }
 
-  // Fire-and-forget Omnisend touches — never fail the signup on these.
-  await fireSignupEvent(email, {
-    productCode: code, productName, variantLabel, productUrl, imageUrl,
-    price: Number.isFinite(priceNum) ? priceNum : undefined,
-  });
-  if (optIn) await subscribeContact(email, clientIp(event));
+  // Fire-and-forget Rejoiner touches — never fail the signup on these. The
+  // Airtable row is already saved, and it's what the notifier actually reads.
+  await sendSignupConfirmation(email, item);
+  if (optIn) await optInMarketing(email, clientIp(event));
 
   return resp(200, { ok: true });
 };
