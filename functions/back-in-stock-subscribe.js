@@ -132,19 +132,27 @@ async function createRequest(token, fields) {
 /* Build the session_data payload the email template reads.
  * Every key here is available in Rejoiner as {{ session.metadata.<key> }}.
  * Keep this in sync with the same helper in back-in-stock-notify.js so the
- * confirmation and the alert can share one template block. */
+ * confirmation and the alert can share one template block.
+ *
+ * Deliberately PRE-FORMATTED: Rejoiner does not document its template engine, so
+ * filters and fallbacks (|default, price rounding, "name — variant" joins) can't
+ * be written with confidence in the template. Sending display-ready strings means
+ * the template only ever needs plain {{ }} substitution. Numeric `price` is kept
+ * alongside `price_formatted` for any conditional logic. */
 function sessionData(item) {
   const label = String(item.variantLabel || '').trim();
   const name = String(item.productName || '').trim();
+  const price = Number.isFinite(item.price) ? item.price : null;
   return {
     product_code: item.code,
     product_name: name,
     variant_label: label,
-    // Pre-joined for templates that just want one line to print.
+    // Pre-joined so the template needs no conditional for the variant.
     product_title: label ? `${name} — ${label}` : name,
     product_url: item.productUrl || '',
     image_url: item.imageUrl || '',
-    price: Number.isFinite(item.price) ? item.price : null,
+    price,
+    price_formatted: price == null ? '' : `$${price.toFixed(2)}`,
   };
 }
 

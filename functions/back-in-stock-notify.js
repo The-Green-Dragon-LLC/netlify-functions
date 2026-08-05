@@ -170,13 +170,29 @@ async function markNotified(recordId) {
 
 /* ─── Rejoiner alert ──────────────────────────────────────────────────────── */
 
+/* Human-readable date for the template, e.g. "July 1, 2026", in store-local time.
+ * Returns '' for a missing/unparseable value so the template never prints junk. */
+function formatDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ, month: 'long', day: 'numeric', year: 'numeric',
+  }).format(d);
+}
+
 /* session_data for the alert template — {{ session.metadata.<key> }}.
- * Mirrors sessionData() in back-in-stock-subscribe.js (plus inventory and
- * requested_at) so the confirmation and alert templates can share a block. */
+ * Mirrors sessionData() in back-in-stock-subscribe.js (plus inventory and the
+ * requested_* pair) so the confirmation and alert templates can share a block.
+ *
+ * Values are PRE-FORMATTED for the same reason as in the subscribe function:
+ * Rejoiner's template engine is undocumented, so the template should only ever
+ * need plain {{ }} substitution — no filters, no fallbacks, no conditionals. */
 function sessionData(row, inventory) {
   const name = String(row['Product Name'] || '').trim();
   const label = String(row['Variant Label'] || '').trim();
-  const price = row.Price != null ? Number(row.Price) : null;
+  const raw = row.Price != null ? Number(row.Price) : null;
+  const price = Number.isFinite(raw) ? raw : null;
   return {
     product_code: String(row['Product Code'] || '').trim(),
     product_name: name,
@@ -184,10 +200,12 @@ function sessionData(row, inventory) {
     product_title: label ? `${name} — ${label}` : name,
     product_url: row['Product URL'] || '',
     image_url: row['Image URL'] || '',
-    price: Number.isFinite(price) ? price : null,
+    price,
+    price_formatted: price == null ? '' : `$${price.toFixed(2)}`,
     inventory,
     // Lets the template say "you asked about this on ..." — often weeks earlier.
     requested_at: row['Requested At'] || '',
+    requested_date: formatDate(row['Requested At']),
   };
 }
 

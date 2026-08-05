@@ -110,6 +110,7 @@ const SIGNUP_BODY = {
   check('session_data.product_title joins name + variant',
     sd.product_title === 'Chapo Extrax Blanco Gummies — Blue Razz', sd.product_title);
   check('session_data.price is a number in dollars', sd.price === 39.99, String(sd.price));
+  check('session_data.price_formatted is display-ready', sd.price_formatted === '$39.99', sd.price_formatted);
 
   /* ── 2. Unknown address: create profile, then retry the trigger ────────── */
   console.log('\n[2] Unknown customer → upsert profile, retry trigger');
@@ -199,6 +200,10 @@ const SIGNUP_BODY = {
   check('session_data.inventory passed through', at?.body.session_data.inventory === 12);
   check('session_data.requested_at passed through',
     at?.body.session_data.requested_at === '2026-07-01T12:00:00.000Z');
+  check('session_data.requested_date is human-readable',
+    at?.body.session_data.requested_date === 'July 1, 2026', at?.body.session_data.requested_date);
+  check('session_data.price_formatted on the alert too',
+    at?.body.session_data.price_formatted === '$39.99', at?.body.session_data.price_formatted);
   check('row marked Notified', patch?.body?.fields?.Status === 'Notified', JSON.stringify(patch?.body));
 
   /* ── 6. Notifier: alert fails → row stays Pending ─────────────────────── */
