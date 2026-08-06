@@ -39,15 +39,38 @@
  *   supplied.  A customer can therefore only modify a subscription they actually
  *   hold the token for — passing someone else's subscription URI is rejected.
  *
- * OMNISEND EVENTS
- *   After a successful change we fire a custom Omnisend event (best-effort) so an
- *   automation can email the customer: `subscription cancelled` on cancel,
- *   `subscription updated` on every other mutating action.
+ * CUSTOMER EMAILS — REJOINER (migrated off Omnisend, Aug 2026)
+ *   After a successful change we start a webhook-triggered Rejoiner journey
+ *   (best-effort) so the customer gets an email: the Cancelled journey on
+ *   `cancel`, the Updated journey on every other mutating action.
+ *
+ *   Rejoiner's template engine is UNDOCUMENTED — there is no published filter,
+ *   conditional, or loop syntax, and the only form confirmed working in this
+ *   account is plain substitution: {{ session.metadata.<key> }}. So everything
+ *   the old Omnisend templates did with template logic is pre-computed HERE and
+ *   sent as display-ready strings:
+ *
+ *     Omnisend template did                  → we now send
+ *     [[…|date: '%B %-d, %Y']]               → next_charge_date / end_date
+ *     [% case event.frequency %]…            → frequency_label
+ *     [% case event.action %]…                → headline / intro_line
+ *     dynamic list over event.lineItems      → items_html (pre-rendered rows)
+ *     |default: "there"                       → fallback already applied
+ *
+ *   Upside beyond compatibility: the per-action wording now lives next to the
+ *   action names it switches on, so the two cannot silently drift apart.
+ *
+ *   NOTE: the 2-day renewal REMINDER is not sent from here — a Make scenario
+ *   ("Foxy → Omnisend | 2-Day Renewal Reminder") builds that payload on a daily
+ *   schedule. Repointing it at Rejoiner is a separate, non-branch-aware change.
  *
  * ENV VARS
  *   FOXY_CLIENT_ID, FOXY_CLIENT_SECRET, FOXY_REFRESH_TOKEN  (required)
  *   WEBFLOW_API_TOKEN  (required for list-variants / set-variant price lookups)
- *   OMNISEND_API_KEY   (optional — enables the cancel/update customer-email events)
+ *   REJOINER_API_KEY, REJOINER_SITE_ID          (enable the customer emails)
+ *   REJOINER_SUB_CANCEL_JOURNEY                 (journey id, cancel)
+ *   REJOINER_SUB_UPDATED_JOURNEY                (journey id, every other action)
+ *   REJOINER_MANAGE_URL  (optional — link in the emails; defaults to the live page)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -55,6 +78,7 @@
 
 const https = require('https');
 const crypto = require('crypto');
+const rejoiner = require('../lib/rejoiner.js');
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -66,14 +90,13 @@ const ALLOWED_FREQUENCIES = ['1w', '2w', '1m'];
 const PAUSE_YEARS_OUT = 5; // "indefinite" — far enough that it never charges until resumed
 const FOXY_API_HOST = 'api.foxycart.com';
 
-/* Omnisend custom-event trigger (fires on cancel so an automation can email the
- * customer their cancellation details). Best-effort — never blocks the cancel.
- * Requires OMNISEND_API_KEY on THIS Netlify site (same key/scope as the order
- * sync: events.write). Matches the Events API used by foxy-order-sync.js. */
-const OMNISEND_BASE = 'https://api.omnisend.com/api';
-const OMNISEND_VERSION = '2026-03-15';
-const CANCEL_EVENT_NAME = 'subscription cancelled';
-const UPDATE_EVENT_NAME = 'subscription updated';
+/* Rejoiner webhook-triggered journeys that email the customer after a change.
+ * Best-effort — a missing id or a failed call never blocks the subscription
+ * change itself. See lib/rejoiner.js for the verified API contract. */
+const CANCEL_JOURNEY = process.env.REJOINER_SUB_CANCEL_JOURNEY || '';
+const UPDATED_JOURNEY = process.env.REJOINER_SUB_UPDATED_JOURNEY || '';
+const MANAGE_URL = process.env.REJOINER_MANAGE_URL
+  || 'https://www.thegreendragoncbd.com/account/memberships';
 
 /* ── Webflow CMS (variant price guard) ──────────────────────────────────────
  * Foxy global HMAC cart validation is OFF for this store, so Foxy does NOT
@@ -827,13 +850,15 @@ async function patchOrThrow(url, headers, bodyObj, label) {
   return r;
 }
 
-/* ─── OMNISEND CUSTOMER-EMAIL EVENTS ────────────────────────────────────────
- * After a successful change we fire a custom Omnisend event so an automation can
- * email the customer: `subscription cancelled` on cancel, `subscription updated`
- * on every other mutating action (ship-now, skip, frequency, quantity, variant,
- * address, resume, restart). Best-effort — a missing key, missing email, or a
+/* ─── CUSTOMER-EMAIL DATA ────────────────────────────────────────────────────
+ * After a successful change we start a Rejoiner journey so the customer gets an
+ * email: the Cancelled journey on `cancel`, the Updated journey on every other
+ * mutating action (ship-now, skip, frequency, quantity, variant, address,
+ * resume, restart). Best-effort — a missing journey id, missing email, or a
  * failed call is logged and swallowed so the subscription change still succeeds.
- * Requires OMNISEND_API_KEY (events.write) on this Netlify site. */
+ *
+ * subDetails() below is the raw snapshot; sessionDataFor() turns it into the
+ * display-ready strings the template needs. */
 
 function customerEmailFrom(sub) {
   const cust = (sub && sub._embedded && sub._embedded['fx:customer']) || {};
@@ -886,42 +911,183 @@ function subDetails(sub, subId) {
   };
 }
 
-/* POST a custom event to Omnisend. Throws only on network error (callers wrap). */
-async function fireOmnisendEvent(eventName, email, properties) {
-  const apiKey = process.env.OMNISEND_API_KEY;
-  if (!apiKey) { console.warn(`[manage] OMNISEND_API_KEY not set — skipping "${eventName}" event`); return; }
-  if (!email) { console.warn(`[manage] no customer email — skipping "${eventName}" event`); return; }
-  const res = await httpsReq(OMNISEND_BASE + '/events', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Omnisend-API-Key ' + apiKey,
-      'Omnisend-Version': OMNISEND_VERSION,
-    },
-  }, {
-    eventName,
-    origin: 'api',
-    eventTime: new Date().toISOString(),
-    contact: { email },
-    properties: properties || {},
-  });
-  if (!res.ok) console.error(`[manage] Omnisend "${eventName}" failed`, res.status, (res.text || '').slice(0, 300));
+/* ─── DISPLAY FORMATTING FOR THE REJOINER TEMPLATES ─────────────────────────
+ * Everything below produces finished strings, because the Rejoiner template can
+ * only substitute — see the header note. */
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+/* "2026-08-08" → "August 8, 2026".
+ * Parsed from the string PARTS on purpose: `new Date('2026-08-08')` is UTC
+ * midnight, so formatting it in a US timezone renders the PREVIOUS day. These
+ * values are already date-only (subDetails slices to 10 chars), so there is no
+ * timezone to honor and none should be introduced. */
+function fmtDate(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+  if (!m) return '';
+  const month = MONTHS[Number(m[2]) - 1];
+  if (!month) return '';
+  return `${month} ${Number(m[3])}, ${Number(m[1])}`;
 }
 
-/* Re-fetch the subscription fresh (so the event reflects the POST-update state)
- * and fire the matching Omnisend event. Never throws. */
+function fmtMoney(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? `$${v.toFixed(2)}` : '';
+}
+
+function frequencyLabel(freq) {
+  const f = String(freq || '').trim();
+  if (f === '1w') return 'weekly';
+  if (f === '2w') return 'every 2 weeks';
+  if (f === '1m') return 'monthly';
+  return f; // e.g. ".5m" — better to show the raw code than an empty line
+}
+
+/* Escape for HTML text/attribute context. Product names come from Foxy and the
+ * Webflow CMS, so an unescaped "&" or "<" would corrupt the rendered email. */
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* Pre-rendered <tr> rows — one per line item. This is what lets the template
+ * show any number of items without a loop. */
+function itemsHtml(lineItems) {
+  return (lineItems || []).map((it) => {
+    const img = it.image
+      ? `<img src="${esc(it.image)}" width="100" alt="" style="display:block;border:0;border-radius:6px;">`
+      : '';
+    const qty = (it.quantity != null) ? it.quantity : 1;
+    return '<tr>'
+      + `<td width="120" style="padding:8px 0;">${img}</td>`
+      + `<td style="padding:8px 12px;font-weight:bold;">${esc(it.productTitle)}</td>`
+      + `<td align="right" style="padding:8px 0;white-space:nowrap;">${esc(qty)} &times; ${fmtMoney(it.price)}</td>`
+      + '</tr>';
+  }).join('');
+}
+
+/* One line: "123 Main St, Austin, TX 78701" — commas only between parts that
+ * actually exist, so a missing address2 doesn't leave ", ,". */
+function shippingLine(addr) {
+  const a = addr || {};
+  const street = [a.address1, a.address2].filter(Boolean).join(' ');
+  const tail = [a.state, a.postalCode].filter(Boolean).join(' ');
+  return [street, a.city, tail].filter(Boolean).join(', ');
+}
+
+/* Per-action wording. Lives here, beside the action names it switches on, so a
+ * new action can't quietly inherit generic copy without someone noticing. */
+const ACTION_COPY = {
+  'skip': {
+    headline: 'Your next shipment is skipped',
+    intro: "Your next shipment is skipped — we'll pick things back up on the date below.",
+  },
+  'ship-now': {
+    headline: 'Your Green Dragon order is on the way',
+    intro: "We're processing your order now, ahead of schedule.",
+  },
+  'set-frequency': {
+    headline: 'Your delivery schedule is updated',
+    intro: 'Your delivery schedule is updated.',
+  },
+  'set-quantity': {
+    headline: 'Your subscription quantity is updated',
+    intro: 'Your quantity is updated.',
+  },
+  'set-variant': {
+    headline: 'Your flavor swap is confirmed',
+    intro: 'Your flavor swap is confirmed.',
+  },
+  'change-address': {
+    headline: 'Your shipping details are updated',
+    intro: 'Your shipping details are updated.',
+  },
+  'restart': {
+    headline: 'Welcome back — your subscription is active',
+    intro: 'Your subscription is active again — welcome back.',
+  },
+  'resume': {
+    headline: 'Your subscription is resumed',
+    intro: 'Your subscription is resumed.',
+  },
+};
+const ACTION_COPY_FALLBACK = {
+  headline: 'Your subscription has been updated',
+  intro: 'Your subscription has been updated.',
+};
+
+/* Build the session_data for a journey. Every key is readable in the Rejoiner
+ * template as {{ session.metadata.<key> }}. Keep this in sync with the three
+ * subscription templates. */
+function sessionDataFor(action, d) {
+  const copy = ACTION_COPY[action] || ACTION_COPY_FALLBACK;
+  return {
+    // identity / greeting (fallback baked in — no |default filter available)
+    first_name: d.firstName || 'there',
+    // per-action wording (replaces the old [% case event.action %])
+    headline: copy.headline,
+    intro_line: copy.intro,
+    action,
+    // dates, pre-formatted (no |date filter available)
+    next_charge_date: fmtDate(d.nextChargeDate),
+    end_date: fmtDate(d.endDate),
+    frequency_label: frequencyLabel(d.frequency),
+    // items, pre-rendered (no loop available)
+    items_html: itemsHtml(d.lineItems),
+    // money, pre-formatted
+    subtotal_formatted: fmtMoney(d.subtotal),
+    tax_formatted: fmtMoney(d.tax),
+    shipping_formatted: fmtMoney(d.shipping),
+    total_formatted: fmtMoney(d.total),
+    shipping_line: shippingLine(d.shippingAddress),
+    manage_url: MANAGE_URL,
+    subscription_id: d.subscriptionID,
+  };
+}
+
+/* ─── REJOINER TRIGGER ──────────────────────────────────────────────────────── */
+
+/* Re-fetch the subscription fresh (so the email reflects the POST-update state)
+ * and start the matching Rejoiner journey. Never throws — the subscription
+ * change has already succeeded by the time this runs, and an email problem must
+ * not turn a successful change into an error for the customer. */
 async function finishWithEvent(action, adminSubUrl, authHeaders, subId, applied) {
   try {
-    const eventName = (action === 'cancel') ? CANCEL_EVENT_NAME : UPDATE_EVENT_NAME;
+    const journeyId = (action === 'cancel') ? CANCEL_JOURNEY : UPDATED_JOURNEY;
+    if (!rejoiner.isConfigured()) {
+      console.warn('[manage] REJOINER_API_KEY/REJOINER_SITE_ID not set — skipping customer email');
+      return;
+    }
+    if (!journeyId) {
+      console.warn(`[manage] no Rejoiner journey configured for "${action}" — skipping customer email`);
+      return;
+    }
+
     let fresh = null;
     try {
       const r = await httpsReq(adminSubUrl + '?zoom=transaction_template:items,customer', { headers: authHeaders });
       fresh = r.json;
-    } catch (_) { /* fire with whatever we have */ }
-    const props = subDetails(fresh, subId);
-    props.action = action;
-    if (applied) props.applied = applied;
-    await fireOmnisendEvent(eventName, customerEmailFrom(fresh), props);
+    } catch (_) { /* send with whatever we have */ }
+
+    const email = customerEmailFrom(fresh);
+    if (!email) { console.warn(`[manage] no customer email — skipping "${action}" journey`); return; }
+
+    const d = subDetails(fresh, subId);
+    const sd = sessionDataFor(action, d);
+    if (applied) sd.applied = String(applied);
+
+    // ensureCustomer (default) covers the rare case where the buyer isn't yet a
+    // Rejoiner customer — the trigger 404s on an unknown address.
+    await rejoiner.triggerJourney(journeyId, email, sd, {
+      customerFields: {
+        first_name: d.firstName || undefined,
+        last_name: d.lastName || undefined,
+        metadata: { source: 'subscription-management' },
+      },
+    });
+    console.log(`[manage] Rejoiner "${action}" journey ${journeyId} started for ${email}`);
   } catch (e) {
     console.error('[manage] finishWithEvent error:', e.message);
   }

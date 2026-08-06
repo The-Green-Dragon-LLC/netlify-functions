@@ -4,8 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "npm run test:index && npm run test:ranking && npm run test:dom && npm run test:sticky && npm run test:crossell && npm run test:prepay && npm run test:bis",
+    "test": "npm run test:index && npm run test:ranking && npm run test:dom && npm run test:sticky && npm run test:crossell && npm run test:prepay && npm run test:bis && npm run test:subrj",
     "test:bis": "node test/back-in-stock-rejoiner.test.js",
+    "test:subrj": "node test/subscription-rejoiner.test.js",
     "test:index": "node test/search-index-build.test.js",
     "test:ranking": "node test/search-ranking.test.js",
     "test:sticky": "node test/search-sticky-dom.test.js",
