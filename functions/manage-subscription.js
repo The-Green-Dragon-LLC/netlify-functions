@@ -24,10 +24,12 @@
  *                   billing address (address_type: 'shipping' | 'billing'; Foxy
  *                   does not allow address edits on the subscription itself).
  *   list-variants → (read) return the switchable variants for a line item, priced
- *                   from the Webflow CMS.
+ *                   from the Webflow CMS at the subscription rate (22% off the
+ *                   REGULAR price — sale prices never stack with it).
  *   set-quantity  → change a line item's quantity (1..99).
  *   set-variant   → swap a line item to a sibling variant of the same product.
- *                   Price is read from the CMS, never the client (HMAC is off).
+ *                   Price is read from the CMS, never the client (HMAC is off),
+ *                   and re-priced at the standard subscription rate.
  *
  * SECURITY
  *   The browser sends the subscription's own `sub_token` (an unguessable
@@ -84,6 +86,14 @@ const WF_PRODUCTS_COLLECTION = '62a16d0c459d465de7ebf815';
 const WF_VARIANTS_COLLECTION = '62a16e12370c3ef89e3c8c79';
 const VARIANT_ATTR_SLUGS = ['strain', 'size', 'flavor', 'strength', 'type'];
 const MAX_QUANTITY = 99;
+
+/* Subscribe-and-save rate: subscriptions are ALWAYS priced at this ratio of the
+ * variant's REGULAR CMS price (22% off regular). Two rules baked in here:
+ *  - the subscription discount never stacks with a temporary sale price, so
+ *    `sale-price` is ignored entirely (see variantPrice), and
+ *  - the rate is fixed rather than derived from what the line is currently
+ *    charged, so every variant swap re-prices to the standard subscription rate. */
+const SUB_DISCOUNT_RATIO = 0.78;
 
 /* ─── HTTPS HELPER ──────────────────────────────────────────────────────────── */
 
@@ -247,27 +257,21 @@ function variantLabel(fd, productName) {
   return n || fd.name || 'Option';
 }
 
+/* Subscription pricing is always based on the REGULAR price — the subscription
+ * discount does NOT stack on top of a temporary sale price, so `sale-price` is
+ * deliberately ignored here. */
 function variantPrice(fd) {
-  return (fd['sale-price'] !== undefined && fd['sale-price'] !== null) ? fd['sale-price'] : fd.price;
+  return fd.price;
 }
 
 function roundMoney(n) { return Math.round(Number(n) * 100) / 100; }
 
-/* The subscription's effective discount (e.g. Green Dragon's 22% off → ~0.78)
- * derived from the CURRENT line item: its charged unit price ÷ the current
- * variant's CMS retail price. Applied to sibling variants so the dropdown shows
- * the real subscription price AND a flavor swap keeps the same discount instead
- * of jumping to full retail. Falls back to 1 (no discount) when it can't be
- * derived or would imply a markup (ratio > 1). */
-function subDiscountRatio(item, variants) {
-  const cur = variants.find((v) => String(v.code) === String(item.code));
-  const retail = cur && Number(cur.price);
-  const line = Number(item.price);
-  if (retail > 0 && line > 0) {
-    const r = line / retail;
-    if (r > 0 && r <= 1.0001) return r;
-  }
-  return 1;
+/* The subscription price for a variant: SUB_DISCOUNT_RATIO × its REGULAR price.
+ * Used for the variant dropdown and for the price we PATCH on a swap, so both
+ * show/charge the standard subscription rate off regular — never a sale price,
+ * and never a rate inferred from the line's current price. */
+function subPrice(regularPrice) {
+  return (regularPrice != null) ? roundMoney(Number(regularPrice) * SUB_DISCOUNT_RATIO) : null;
 }
 
 /* Load a product's variants (by the item's product slug) → normalized list. */
@@ -678,11 +682,10 @@ exports.handler = async (event) => {
 
       if (action === 'list-variants') {
         const { variants, variant_type } = await loadProductVariants(item);
-        const ratio = subDiscountRatio(item, variants);
         const priced = variants.map((v) => Object.assign({}, v, {
-          sub_price: (v.price != null) ? roundMoney(v.price * ratio) : null,
+          sub_price: subPrice(v.price),
         }));
-        return resp(200, { success: true, current_code: item.code, quantity: item.quantity, variants: priced, discount_ratio: ratio, variant_type });
+        return resp(200, { success: true, current_code: item.code, quantity: item.quantity, variants: priced, discount_ratio: SUB_DISCOUNT_RATIO, variant_type });
       }
 
       if (action === 'set-quantity') {
@@ -703,11 +706,11 @@ exports.handler = async (event) => {
       if (!target.in_stock) return resp(400, { error: 'That option is out of stock.' });
       const current = variants.find((v) => String(v.code) === String(item.code));
 
-      // Preserve the subscription's discount: charge the sibling variant at the
-      // same effective ratio as the current line, not full CMS retail.
-      const ratio = subDiscountRatio(item, variants);
+      // Price the sibling variant at the standard subscription rate off its
+      // REGULAR price — not full retail, and not a rate carried over from the
+      // old line (which may have been priced off a since-expired sale).
       const itemUrl = toAdminItemUrl(item._links && item._links.self && item._links.self.href);
-      const patch = { code: target.code, name: target.name || (productName + ' - ' + target.label), price: roundMoney(target.price * ratio) };
+      const patch = { code: target.code, name: target.name || (productName + ' - ' + target.label), price: subPrice(target.price) };
       if (target.image) patch.image = target.image;
       const r = await patchOrThrow(itemUrl, patchHeaders, patch, 'set-variant');
 
