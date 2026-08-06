@@ -155,13 +155,33 @@ SUB._links['fx:sub_token_url'] = { href: 'https://api.foxycart.com/s/customer?su
     !JSON.stringify(sd).includes('[%') && !JSON.stringify(sd).includes('|default'));
 
   console.log('\n[3] items_html renders EVERY item and escapes HTML');
-  check('one row per line item (2)', (sd.items_html.match(/<tr>/g) || []).length === 2,
-    String((sd.items_html.match(/<tr>/g) || []).length));
+  check('one top-level row per line item (2)',
+    (sd.items_html.match(/^<tr>|<\/td><\/tr><tr>/g) || []).length === 2,
+    String((sd.items_html.match(/^<tr>|<\/td><\/tr><tr>/g) || []).length));
   check('first item name present', sd.items_html.includes('Chapo Extrax Blanco Gummies - Blue Razz'));
   check('ampersand ESCAPED (would corrupt the email otherwise)',
     sd.items_html.includes('Ghost Emerald Blend &amp; Co'), sd.items_html);
   check('quantity x price rendered', sd.items_html.includes('2 &times; $15.50'), sd.items_html);
   check('image omitted cleanly when absent', !sd.items_html.includes('src=""'));
+
+  console.log('\n[3b] Layout: rows must NOT add columns to the template table');
+  // A multi-column top-level row joins the surrounding template's column grid and
+  // squeezes every other row in the email into the image column's width.
+  const topCells = sd.items_html
+    .split(/<\/td><\/tr>/)                       // one chunk per top-level row
+    .filter((s) => s.includes('<tr>'))
+    .map((s) => {
+      const outer = s.slice(0, s.indexOf('<table'));  // before the nested table
+      return (outer.match(/<td/g) || []).length;
+    });
+  check('exactly one top-level <td> per item row', topCells.every((n) => n === 1),
+    JSON.stringify(topCells));
+  check('three-part layout is NESTED, not top-level',
+    (sd.items_html.match(/<table/g) || []).length === 2, sd.items_html.slice(0, 200));
+  check('no fixed-width cell at the top level (would set the parent column width)',
+    !/^<tr><td width=/.test(sd.items_html), sd.items_html.slice(0, 80));
+  check('item WITH an image renders a 100px image cell inside the nested table',
+    sd.items_html.includes('width="100"'));
 
   console.log('\n[4] Date formatting must not shift a day across timezones');
   // '2026-08-01' via new Date() is UTC midnight → Jul 31 in US zones. Regression guard.
