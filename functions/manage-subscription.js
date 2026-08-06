@@ -860,6 +860,40 @@ async function patchOrThrow(url, headers, bodyObj, label) {
  * subDetails() below is the raw snapshot; sessionDataFor() turns it into the
  * display-ready strings the template needs. */
 
+/* Money figures for the emails, derived so they always reconcile.
+ *
+ *   subtotal = Σ(price × qty) over the line items the email actually lists
+ *   total    = subtotal + tax + shipping
+ *
+ * Falls back to the template's own total_item_price only when there are no items
+ * to sum. Tax and shipping have no better source than the template.
+ *
+ * When the derived total disagrees with Foxy's stored total_order we log it: that
+ * divergence is the stale-total symptom, and it's worth seeing in the function log
+ * rather than silently papering over. */
+function money(tt, items) {
+  const list = items || [];
+  const summed = list.reduce((acc, it) => {
+    const price = Number(it.price);
+    const qty = Number(it.quantity);
+    if (!Number.isFinite(price)) return acc;
+    return acc + price * (Number.isFinite(qty) ? qty : 1);
+  }, 0);
+
+  const subtotal = roundMoney(list.length ? summed : (Number(tt.total_item_price) || 0));
+  const tax = roundMoney(Number(tt.total_tax) || 0);
+  const shipping = roundMoney(Number(tt.total_shipping) || 0);
+  const total = roundMoney(subtotal + tax + shipping);
+
+  const reported = Number(tt.total_order);
+  if (Number.isFinite(reported) && Math.abs(reported - total) > 0.009) {
+    console.warn(`[manage] total_order ${reported} disagrees with derived total ${total}`
+      + ` (subtotal ${subtotal} + tax ${tax} + shipping ${shipping}) — using the derived value`);
+  }
+
+  return { subtotal, tax, shipping, total };
+}
+
 function customerEmailFrom(sub) {
   const cust = (sub && sub._embedded && sub._embedded['fx:customer']) || {};
   const tt = (sub && sub._embedded && sub._embedded['fx:transaction_template']) || {};
@@ -891,12 +925,17 @@ function subDetails(sub, subId) {
     nextChargeDate: String(s.next_transaction_date || '').slice(0, 10),
     endDate: String(s.end_date || '').slice(0, 10),
     isActive: s.is_active !== false,
-    // Money totals for the reminder/update email. Foxy gives these as DECIMAL
-    // DOLLARS on the transaction_template (do NOT convert to cents).
-    subtotal: Number(tt.total_item_price) || 0,
-    tax: Number(tt.total_tax) || 0,
-    shipping: Number(tt.total_shipping) || 0,
-    total: Number(tt.total_order) || 0,
+    // Money totals for the emails. Foxy gives these as DECIMAL DOLLARS on the
+    // transaction_template (do NOT convert to cents).
+    //
+    // DERIVED, not read from total_order. `total_order` is a STORED value that
+    // goes stale when line item prices change — and our own set-variant /
+    // set-quantity actions PATCH item prices, so an edited subscription can carry
+    // a total that no longer matches its items. Seen live on sub 650018: one item
+    // at $109.99 with total_order still $98.99, no coupon, gift card, or discount
+    // resource to explain the $11 gap. An email that prints the rows AND the
+    // total has to have those agree, so both come from the same source here.
+    ...money(tt, items),
     firstName: cust.first_name || '',
     lastName: cust.last_name || '',
     lineItems: items.map((it) => ({
