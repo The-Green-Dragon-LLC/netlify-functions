@@ -144,8 +144,11 @@ SUB._links['fx:sub_token_url'] = { href: 'https://api.foxycart.com/s/customer?su
   check('first_name', sd.first_name === 'Sarah', sd.first_name);
   check('frequency_label maps 2w → "every 2 weeks"', sd.frequency_label === 'every 2 weeks', sd.frequency_label);
   check('next_charge_date is human-readable', sd.next_charge_date === 'August 20, 2026', sd.next_charge_date);
-  check('subtotal_formatted', sd.subtotal_formatted === '$39.99', sd.subtotal_formatted);
-  check('total_formatted', sd.total_formatted === '$43.29', sd.total_formatted);
+  // Derived from the line items (1×39.99 + 2×15.50), NOT from the template's
+  // total_item_price/total_order — which this very fixture sets inconsistently
+  // (39.99 / 43.29) to mimic the stale values seen on live subscriptions.
+  check('subtotal_formatted is derived from the items', sd.subtotal_formatted === '$70.99', sd.subtotal_formatted);
+  check('total_formatted = subtotal + tax + shipping', sd.total_formatted === '$74.29', sd.total_formatted);
   check('shipping_formatted renders $0.00 not ""', sd.shipping_formatted === '$0.00', sd.shipping_formatted);
   check('shipping_line joined without empty commas',
     sd.shipping_line === '123 Main St, Austin, TX 78701', sd.shipping_line);
@@ -163,6 +166,48 @@ SUB._links['fx:sub_token_url'] = { href: 'https://api.foxycart.com/s/customer?su
     sd.items_html.includes('Ghost Emerald Blend &amp; Co'), sd.items_html);
   check('quantity x price rendered', sd.items_html.includes('2 &times; $15.50'), sd.items_html);
   check('image omitted cleanly when absent', !sd.items_html.includes('src=""'));
+
+  console.log('\n[2b] Money must reconcile with the rows shown above it');
+  // The email prints the line items AND a totals block. If the total comes from
+  // Foxy's stored total_order it can disagree with the items — total_order goes
+  // stale when item prices change, and set-variant/set-quantity change them.
+  const money = (s) => Number(String(s).replace(/[^0-9.]/g, ''));
+  const sub = money(sd.subtotal_formatted), tx = money(sd.tax_formatted);
+  const sh = money(sd.shipping_formatted), tot = money(sd.total_formatted);
+  check('subtotal = sum of the listed items (1×39.99 + 2×15.50 = 70.99)',
+    sub === 70.99, String(sub));
+  check('subtotal + tax + shipping === total (arithmetic the customer can check)',
+    Math.abs((sub + tx + sh) - tot) < 0.005, `${sub} + ${tx} + ${sh} != ${tot}`);
+
+  console.log('\n[2c] A STALE total_order must not reach the customer');
+  // Reproduces live sub 650018: one item at 109.99, total_order still 98.99,
+  // with no coupon/discount/gift card to explain the gap.
+  reset();
+  const STALE = JSON.parse(JSON.stringify(SUB));
+  const stt = STALE._embedded['fx:transaction_template'];
+  stt._embedded['fx:items'] = [{ code: 'v9', name: 'Dragon Master', quantity: 1, price: 109.99, image: '' }];
+  stt.total_item_price = 109.99;
+  stt.total_order = 98.99;   // <- stale
+  stt.total_tax = 0; stt.total_shipping = 0;
+  const warned = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => { warned.push(a.join(' ')); };
+  route((u) => u.includes('foxycart.com/token'), 200, { access_token: 'tok' });
+  route((u) => u.includes('rj2.rejoiner.com'), 200, {});
+  route((u) => u.includes('/transaction_templates/'), 200, stt);
+  route((u) => u.includes('foxycart.com'), 200, STALE);
+  delete require.cache[require.resolve(FN)];
+  await require(FN).handler({
+    httpMethod: 'POST', headers: {},
+    body: JSON.stringify({ action: 'skip', subscription_uri: 'https://api.foxycart.com/subscriptions/726352', sub_token: 'tok123' }),
+  });
+  console.warn = realWarn;
+  const st = captured.find((c) => trig(c.url))?.body.session_data || {};
+  check('total is the DERIVED 109.99, not the stale 98.99',
+    st.total_formatted === '$109.99', st.total_formatted);
+  check('subtotal matches the single listed item', st.subtotal_formatted === '$109.99', st.subtotal_formatted);
+  check('the divergence is logged, not silently swallowed',
+    warned.some((w) => /total_order .*disagrees/.test(w)), JSON.stringify(warned));
 
   console.log('\n[3b] Layout: rows must NOT add columns to the template table');
   // A multi-column top-level row joins the surrounding template's column grid and
