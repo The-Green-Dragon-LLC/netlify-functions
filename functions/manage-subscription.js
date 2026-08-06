@@ -952,19 +952,36 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-/* Pre-rendered <tr> rows — one per line item. This is what lets the template
- * show any number of items without a loop. */
+/* Pre-rendered rows — one per line item. This is what lets the template show any
+ * number of items without a loop.
+ *
+ * LAYOUT CONTRACT, learned the hard way: each item is ONE row with ONE cell at
+ * the top level, and the three-part image/title/price layout lives in a NESTED
+ * table inside that cell. A multi-column row here would join the surrounding
+ * template table's column grid — a `width="120"` image cell then squeezes every
+ * other row in the email (headings, body copy, the button) into a 120px column
+ * while the item content sprawls across the rest. Single-column rows cannot
+ * collide with the parent's grid, and nesting is safe inside a <td>.
+ *
+ * The image cell is omitted entirely when there's no image, so a variant without
+ * one doesn't reserve a dead 100px gutter. */
 function itemsHtml(lineItems) {
   return (lineItems || []).map((it) => {
-    const img = it.image
-      ? `<img src="${esc(it.image)}" width="100" alt="" style="display:block;border:0;border-radius:6px;">`
-      : '';
     const qty = (it.quantity != null) ? it.quantity : 1;
-    return '<tr>'
-      + `<td width="120" style="padding:8px 0;">${img}</td>`
-      + `<td style="padding:8px 12px;font-weight:bold;">${esc(it.productTitle)}</td>`
-      + `<td align="right" style="padding:8px 0;white-space:nowrap;">${esc(qty)} &times; ${fmtMoney(it.price)}</td>`
-      + '</tr>';
+    const imgCell = it.image
+      ? `<td width="100" style="padding:0 12px 0 0;">`
+        + `<img src="${esc(it.image)}" width="100" alt="" style="display:block;width:100px;border:0;border-radius:6px;">`
+        + `</td>`
+      : '';
+    return '<tr><td style="padding:8px 0;">'
+      + '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">'
+      + '<tr>'
+      + imgCell
+      + `<td style="font-weight:bold;vertical-align:middle;">${esc(it.productTitle)}</td>`
+      + `<td align="right" style="white-space:nowrap;vertical-align:middle;padding-left:12px;">`
+      + `${esc(qty)} &times; ${fmtMoney(it.price)}</td>`
+      + '</tr></table>'
+      + '</td></tr>';
   }).join('');
 }
 
